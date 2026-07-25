@@ -5,7 +5,7 @@ window/level, cine, DICOMDIR) keeps its industry meaning and is not redefined he
 
 ## DICOM Viewer (public/dicom)
 
-- Product name: **ClearEvo.com DICOM Viewer** (renamed 2026-07-25 from "MRI/CT CD Viewer" for keyword match; patient-facing copy still says "open your MRI/CT scan CD").
+- Product name: **DICOM Viewer by ClearEvo.com** (renamed 2026-07-25 from "MRI/CT CD Viewer" for keyword match, brand moved to suffix; patient-facing copy still says "open your MRI/CT scan CD").
 
 - **Simple mode** — the default UI mode a first-time visitor gets: plain-language
   button labels and pro-only controls hidden. Aimed at a patient opening their own
