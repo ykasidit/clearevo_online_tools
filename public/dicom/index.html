@@ -10,7 +10,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- tab title stays constant on open; keep the version here in sync with APP_VERSION in the script -->
-<title>ClearEvo.com MRI/CT CD Viewer v1.4.1 - open or stream your DICOM scan CD in the browser, no upload</title>
+<title>ClearEvo.com MRI/CT CD Viewer v1.5.0 - open or stream your DICOM scan CD in the browser, no upload</title>
 <meta name="description" content="Free online MRI/CT CD viewer: open or stream the DICOM CD from your MRI or CT scan right in your browser, on PC and phone - series list, slice scrolling, window/level, measure, tags. 100% client-side, your medical images are never uploaded. A DICOM viewer with no install and no sign-up.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='13' fill='%230c2035'/><ellipse cx='32' cy='33' rx='18' ry='21' fill='%231c5680' stroke='%235bb6e6' stroke-width='3'/><g fill='none' stroke='%230a2338' stroke-width='2.4' stroke-linecap='round'><path d='M32 14 V27 M32 39 V52'/><path d='M26 19 C21 27, 22 39, 27 47'/><path d='M38 19 C43 27, 42 39, 37 47'/><path d='M22 26 C19 32, 20 40, 24 45'/><path d='M42 26 C45 32, 44 40, 40 45'/></g><g fill='%23cdefff'><path d='M30.6 31 C28 33, 27.4 36, 29 39 C30 36, 30 34, 30.6 32Z'/><path d='M33.4 31 C36 33, 36.6 36, 35 39 C34 36, 34 34, 33.4 32Z'/></g></svg>">
 <link rel="canonical" href="https://www.clearevo.com/dicom/">
@@ -172,6 +172,7 @@ body.simple .adv{display:none!important}
     <ul style="margin:0;padding-left:18px">
       <li><a href="https://github.com/cornerstonejs/dicomParser" target="_blank" rel="noopener">dicom-parser</a> 1.8.12 - MIT License, &copy; Chris Hafey (DICOM / DICOMDIR parsing)</li>
       <li><a href="https://github.com/rii-mango/JPEGLosslessDecoderJS" target="_blank" rel="noopener">jpeg-lossless-decoder-js</a> - MIT License, by rii-mango (JPEG Lossless pixel decoding)</li>
+      <li><a href="https://github.com/cornerstonejs/codec-openjpeg" target="_blank" rel="noopener">@cornerstonejs/codec-openjpeg</a> - MIT License, &copy; Open Health Imaging Foundation (JPEG 2000 decoding, <a href="https://github.com/uclouvain/openjpeg" target="_blank" rel="noopener">OpenJPEG</a> compiled to WebAssembly, BSD 2-clause)</li>
       <li>Native browser APIs, no third-party code: <b>DecompressionStream</b> (Zip inflate), <b>createImageBitmap</b> (baseline JPEG), Canvas 2D.</li>
     </ul>
     <p style="margin-top:12px;font-size:12px;color:#8fb3cf">The MIT-licensed components above are used unmodified; the MIT license permits their use within this GPL-v2 program.</p>
@@ -180,12 +181,12 @@ body.simple .adv{display:none!important}
 </div>
 <script src="./dicomParser.min.js"></script>
 <script type="module">
-import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate } from './logic.js';
+import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame } from './logic.js';
 import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - bump APP_VERSION here and in the <title> tag together.
 const APP_NAME = 'ClearEvo.com MRI/CT CD Viewer';
-const APP_VERSION = '1.4.1';
+const APP_VERSION = '1.5.0';
 const APP_TITLE = `${APP_NAME} v${APP_VERSION}`;
 $('titleText').textContent = APP_TITLE;
 $('aboutVer').textContent = `v${APP_VERSION}`;
@@ -520,7 +521,46 @@ function renderSeriesList() {
 const UNCOMPRESSED = ['1.2.840.10008.1.2', '1.2.840.10008.1.2.1', '1.2.840.10008.1.2.2'];
 const JPEG_LOSSLESS = ['1.2.840.10008.1.2.4.70', '1.2.840.10008.1.2.4.57'];
 const JPEG_BASELINE = ['1.2.840.10008.1.2.4.50', '1.2.840.10008.1.2.4.51'];
+const JPEG_2000 = ['1.2.840.10008.1.2.4.90', '1.2.840.10008.1.2.4.91'];
 
+// JPEG 2000: OpenJPEG WASM (MIT, Open Health Imaging Foundation), lazy-loaded
+// on the first J2K slice so non-J2K CDs never pay the ~310 KB download.
+let _j2kDecoder = null;
+async function j2kDecode(bytes) {
+  if (!_j2kDecoder) {
+    if (typeof OpenJPEGWASM === 'undefined') {
+      await new Promise((ok, err) => {
+        const s = document.createElement('script');
+        s.src = './openjpegwasm_decode.js';
+        s.onload = ok; s.onerror = () => err(new Error('cannot load the JPEG 2000 decoder'));
+        document.head.appendChild(s);
+      });
+    }
+    const m = await OpenJPEGWASM({ locateFile: (f) => `./${f}` });
+    _j2kDecoder = new m.J2KDecoder();
+  }
+  // set-buffer + decode + copy-out is synchronous, so one shared decoder is safe
+  const enc = _j2kDecoder.getEncodedBuffer(bytes.length);
+  enc.set(bytes);
+  _j2kDecoder.decode();
+  const fi = _j2kDecoder.getFrameInfo();
+  return { fi, data: _j2kDecoder.getDecodedBuffer().slice() };   // copy out of the wasm heap
+}
+
+// pull one frame's worth of encapsulated bytes: use the Basic Offset Table when
+// present, else assume one fragment per frame (the standard layout for RLE and
+// the usual one for JPEG); for baseline JPEG without either, scan SOI markers.
+function encapFrame(ds, el, f, nf, isJpeg) {
+  if (nf <= 1) {
+    return el.fragments && el.fragments.length
+      ? dicomParser.readEncapsulatedPixelDataFromFragments(ds, el, 0, el.fragments.length)
+      : new Uint8Array(ds.byteArray.buffer, ds.byteArray.byteOffset + el.dataOffset, el.length);
+  }
+  if (el.basicOffsetTable && el.basicOffsetTable.length === nf) return dicomParser.readEncapsulatedImageFrame(ds, el, f);
+  if (el.fragments.length === nf) return dicomParser.readEncapsulatedPixelDataFromFragments(ds, el, f, 1);
+  if (isJpeg) return dicomParser.readEncapsulatedImageFrame(ds, el, f, dicomParser.createJPEGBasicOffsetTable(ds, el));
+  throw new Error(`cannot split ${nf} frames across ${el.fragments.length} fragments`);
+}
 async function decodeInstance(inst) {
   const bytes = await inst.item.getBytes();
   const ds = dicomParser.parseDicom(bytes);
@@ -529,31 +569,41 @@ async function decodeInstance(inst) {
   const bits = ds.uint16('x00280100'), signed = ds.uint16('x00280103') === 1;
   const samples = ds.uint16('x00280002') || 1;
   const photo = (ds.string('x00280004') || 'MONOCHROME2').trim();
+  const nframes = firstNum(ds.string('x00280008')) || 1;
+  const f = Math.min(inst.frame || 0, nframes - 1);
+  // per-frame delay for cine: FrameTime (ms), else RecommendedDisplayFrameRate
+  const fps = firstNum(ds.string('x00082144'));
+  const frameTime = firstNum(ds.string('x00181063')) || (fps ? 1000 / fps : null);
   const el = ds.elements.x7fe00010;
   if (!el) throw new Error('no pixel data');
   let px;
   if (UNCOMPRESSED.includes(ts)) {
-    const bo = ds.byteArray.buffer, off = ds.byteArray.byteOffset + el.dataOffset;
+    const bo = ds.byteArray.buffer, frameLen = rows * cols * samples;
+    const off = ds.byteArray.byteOffset + el.dataOffset + f * frameLen * (bits <= 8 ? 1 : 2);
     if (ts.endsWith('.2')) throw new Error('big-endian DICOM not supported yet');
-    px = bits <= 8 ? new Uint8Array(bo, off, rows * cols * samples)
-      : signed ? new Int16Array(bo, off, rows * cols * samples) : new Uint16Array(bo, off, rows * cols * samples);
+    px = bits <= 8 ? new Uint8Array(bo, off, frameLen)
+      : signed ? new Int16Array(bo, off, frameLen) : new Uint16Array(bo, off, frameLen);
   } else if (JPEG_LOSSLESS.includes(ts)) {
-    const frame = el.fragments && el.fragments.length > 1
-      ? dicomParser.readEncapsulatedPixelDataFromFragments(ds, el, 0, el.fragments.length)
-      : dicomParser.readEncapsulatedPixelDataFromFragments(ds, el, 0);
+    const frame = encapFrame(ds, el, f, nframes, false);
     const out = new jpegLossless.Decoder().decompress(frame.buffer, frame.byteOffset, frame.length);
     px = bits <= 8 ? new Uint8Array(out) : signed ? new Int16Array(out) : new Uint16Array(out);
+  } else if (JPEG_2000.includes(ts)) {
+    const frame = encapFrame(ds, el, f, nframes, false);
+    const { fi, data } = await j2kDecode(frame);
+    px = fi.bitsPerSample <= 8 ? new Uint8Array(data.buffer)
+      : fi.isSigned ? new Int16Array(data.buffer, 0, rows * cols * samples) : new Uint16Array(data.buffer, 0, rows * cols * samples);
+  } else if (ts === '1.2.840.10008.1.2.5') {
+    // RLE: exactly one fragment per frame (PS3.5 A.4.2)
+    const frame = dicomParser.readEncapsulatedPixelDataFromFragments(ds, el, f, 1);
+    const raw = rleDecodeFrame(frame, rows * cols, bits <= 8 ? 1 : 2, samples);
+    px = bits <= 8 ? raw : signed ? new Int16Array(raw.buffer) : new Uint16Array(raw.buffer);
   } else if (JPEG_BASELINE.includes(ts)) {
     // ultrasound & co: standard JPEG inside - the browser decodes it natively
-    const frame = el.fragments && el.fragments.length
-      ? dicomParser.readEncapsulatedPixelDataFromFragments(ds, el, 0, el.fragments.length)
-      : new Uint8Array(ds.byteArray.buffer, ds.byteArray.byteOffset + el.dataOffset, el.length);
+    const frame = encapFrame(ds, el, f, nframes, true);
     const bmp = await createImageBitmap(new Blob([frame], { type: 'image/jpeg' }));
-    const nf = firstNum(ds.string('x00280008'));
-    if (nf > 1) stat(`multi-frame clip: showing frame 1/${nf} (cine not supported yet)`);
-    return { bitmap: bmp, rows: bmp.height, cols: bmp.width, samples, photo, slope: 1, icept: 0, wc0: 128, ww0: 256, ts, ds, spacing: spacingOf(ds) };
+    return { bitmap: bmp, rows: bmp.height, cols: bmp.width, samples, photo, slope: 1, icept: 0, wc0: 128, ww0: 256, ts, ds, spacing: spacingOf(ds), nframes, frameTime };
   } else {
-    throw new Error(`transfer syntax ${ts} not supported yet (JPEG 2000 / RLE CDs) - tell me in the blog comments`);
+    throw new Error(`transfer syntax ${ts} not supported yet - tell me in the blog comments`);
   }
   const slope = firstNum(ds.string('x00281053')) ?? 1;
   const icept = firstNum(ds.string('x00281052')) ?? 0;
@@ -563,7 +613,7 @@ async function decodeInstance(inst) {
     for (let i = 0; i < px.length; i += 7) { const v = px[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
     wc = ((mn + mx) / 2) * slope + icept; ww = Math.max(1, (mx - mn)) * slope;
   }
-  return { px, rows, cols, samples, photo, slope, icept, wc0: wc, ww0: ww, ts, ds, spacing: spacingOf(ds) };
+  return { px, rows, cols, samples, photo, slope, icept, wc0: wc, ww0: ww, ts, ds, spacing: spacingOf(ds), nframes, frameTime };
 }
 function spacingOf(ds) {
   const v = ds.string('x00280030') || ds.string('x00181164'); // PixelSpacing, else ImagerPixelSpacing
@@ -676,6 +726,21 @@ async function show(i) {
     if (!showGate.isCurrent(token)) return;             // a newer show() is already the current frame
     busy(null);
     frame = fr;
+    // a single multi-frame file (ultrasound/angio clip): expand its frames into
+    // virtual instances so the slider, browse drag and cine all just work.
+    // ponytail: only the 1-file-series case; a series mixing several multi-frame
+    // files still shows each file's frame 1 - expand per-file if that ever shows up.
+    if ((fr.nframes || 1) > 1 && cur.instances.length === 1 && !cur.expanded) {
+      const inst0 = cur.instances[0];
+      cur.instances = Array.from({ length: fr.nframes }, (_, k) => ({ ...inst0, name: `${inst0.name}#${k}`, frame: k }));
+      cur.expanded = true;
+      cur.frameTimeMs = fr.frameTime || null;
+      nameIdx = new Map(cur.instances.map((it, k) => [it.name, k]));
+      cachePut(cur.instances[0].name, fr);
+      $('slice').max = fr.nframes - 1;
+      $('sliceLbl').textContent = `1/${fr.nframes}`;
+      if (cur.el) cur.el.querySelector('.lbl').innerHTML = `<b>S${cur.num ?? '?'} ${cur.modality}</b><br>${(cur.desc || '').slice(0, 40)}<br>${fr.nframes} frames`;
+    }
     if (needWL) { wc = fr.wc0; ww = fr.ww0; needWL = false; }
     if (presetSel.value !== '0') { const p = CT_PRESETS[+presetSel.value]; wc = p.wc; ww = p.ww; }
     render();
@@ -921,7 +986,7 @@ function stopCine() { if (cineTimer) { clearInterval(cineTimer); cineTimer = 0; 
 $('bCine').onclick = () => {
   if (cineTimer) { stopCine(); return; }
   if (!ready || !cur || cur.instances.length < 2) return;
-  cineTimer = setInterval(() => show(idx + 1 >= cur.instances.length ? 0 : idx + 1), 110);
+  cineTimer = setInterval(() => show(idx + 1 >= cur.instances.length ? 0 : idx + 1), cur.frameTimeMs || 110);
   setCineUI(true);
 };
 $('tBrowse').classList.add('on');   // Browse (slice scroll) active by default - what phone users want first

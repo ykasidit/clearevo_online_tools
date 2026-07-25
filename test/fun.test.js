@@ -441,3 +441,40 @@ test('dicom: anatomical orientation markers from ImageOrientationPatient', () =>
   assert.equal(orientationString(0.71, 0, 0.71), 'LH');   // oblique -> two letters, dominant first
   assert.equal(edgeOrientations(null), null);
 });
+
+import { packbits, rleDecodeFrame } from '../public/dicom/logic.js';
+
+test('dicom rle: packbits literal, run, noop, truncation safety', () => {
+  const out = new Uint8Array(8);
+  // literal 3 bytes [1,2,3], run of 4x9, noop, run of 1x7
+  const n = packbits(Uint8Array.from([2, 1, 2, 3, 0x100 - 3, 9, 0x80, 0, 7]), out);
+  assert.equal(n, 8);
+  assert.deepEqual([...out], [1, 2, 3, 9, 9, 9, 9, 7]);
+  const small = new Uint8Array(2);                       // output cap respected
+  assert.equal(packbits(Uint8Array.from([3, 1, 2, 3, 4]), small), 2);
+});
+
+test('dicom rle: 16-bit frame round-trip (MSB-first planes -> LE bytes)', () => {
+  // 2x2 signed pixels incl. negative HU values
+  const px = Int16Array.from([-1000, -1, 0, 3071]);
+  const msb = new Uint8Array(4), lsb = new Uint8Array(4);
+  px.forEach((v, i) => { msb[i] = (v >> 8) & 255; lsb[i] = v & 255; });
+  const enc = (plane) => { const b = [plane.length - 1, ...plane]; return b; };  // one literal packet
+  const seg0 = enc(msb), seg1 = enc(lsb);
+  const header = new Uint8Array(64), dvh = new DataView(header.buffer);
+  dvh.setUint32(0, 2, true); dvh.setUint32(4, 64, true); dvh.setUint32(8, 64 + seg0.length, true);
+  const frame = Uint8Array.from([...header, ...seg0, ...seg1]);
+  const out = rleDecodeFrame(frame, 4, 2, 1);
+  assert.deepEqual([...new Int16Array(out.buffer)], [...px]);
+});
+
+test('dicom rle: rgb 8-bit planes interleave to RGBRGB', () => {
+  const R = [10, 11], G = [20, 21], B = [30, 31];
+  const seg = (p) => [p.length - 1, ...p];
+  const s = [seg(R), seg(G), seg(B)];
+  const header = new Uint8Array(64), dv = new DataView(header.buffer);
+  dv.setUint32(0, 3, true);
+  let off = 64; s.forEach((x, i) => { dv.setUint32(4 + i * 4, off, true); off += x.length; });
+  const frame = Uint8Array.from([...header, ...s.flat()]);
+  assert.deepEqual([...rleDecodeFrame(frame, 2, 1, 3)], [10, 20, 30, 11, 21, 31]);
+});

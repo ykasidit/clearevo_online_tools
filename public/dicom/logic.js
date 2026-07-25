@@ -207,3 +207,40 @@ export function makeLut(slope, intercept, wc, ww, invert) {
     return invert ? 255 - y : y;
   };
 }
+
+// ---- DICOM RLE (transfer syntax 1.2.840.10008.1.2.5, PS3.5 Annex G) ----
+// PackBits: n>=0 -> copy n+1 literal bytes; -127<=n<=-1 -> repeat next byte 1-n
+// times; -128 -> no-op. Decodes into out (fixed length) - stops when full.
+export function packbits(src, out) {
+  let i = 0, o = 0;
+  while (i < src.length && o < out.length) {
+    const n = src[i] < 128 ? src[i] : src[i] - 256;
+    i++;
+    if (n >= 0) { for (let k = 0; k <= n && i < src.length && o < out.length; k++) out[o++] = src[i++]; }
+    else if (n !== -128) { const b = src[i++]; for (let k = 0; k < 1 - n && o < out.length; k++) out[o++] = b; }
+  }
+  return o;
+}
+// one RLE frame -> interleaved little-endian sample bytes.
+// Header: 16 uint32 LE (count + up to 15 segment offsets). Segments are byte
+// planes MSB-first per sample; samples (e.g. R,G,B) come as consecutive planes.
+export function rleDecodeFrame(bytes, pixelCount, bytesPerSample, samples) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const nseg = dv.getUint32(0, true);
+  if (nseg !== bytesPerSample * samples) throw new Error(`RLE: ${nseg} segments for ${bytesPerSample * samples} planes`);
+  const offs = [];
+  for (let i = 1; i <= nseg; i++) offs.push(dv.getUint32(i * 4, true));
+  offs.push(bytes.length);
+  const out = new Uint8Array(pixelCount * bytesPerSample * samples);
+  const plane = new Uint8Array(pixelCount);
+  for (let s = 0; s < samples; s++) {
+    for (let b = 0; b < bytesPerSample; b++) {
+      const seg = s * bytesPerSample + b;
+      const got = packbits(bytes.subarray(offs[seg], offs[seg + 1]), plane);
+      if (got < pixelCount) throw new Error(`RLE: segment ${seg} short (${got}/${pixelCount})`);
+      const lePos = bytesPerSample - 1 - b;                  // MSB-first plane -> LE byte slot
+      for (let i = 0; i < pixelCount; i++) out[(i * samples + s) * bytesPerSample + lePos] = plane[i];
+    }
+  }
+  return out;
+}
