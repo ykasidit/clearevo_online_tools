@@ -114,7 +114,7 @@ body.simple .adv{display:none!important}
     <select id="preset" class="adv" title="CT window presets"></select>
     <span id="wlz"></span>
     <select id="mode" title="Simple or Advanced toolbar"></select>
-    <select id="lang" title="language"></select>
+    <span title="language" style="align-self:center;font-size:14px">🌐</span><select id="lang" title="language"></select>
     <span id="stat"></span>
   </div>
   <div id="main">
@@ -187,7 +187,7 @@ import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
 const APP_NAME = 'DICOM Viewer by ClearEvo.com';
-const APP_VERSION = '1.6.2';
+const APP_VERSION = '1.6.3';
 const APP_TITLE = `${APP_NAME} v${APP_VERSION}`;
 $('titleText').textContent = APP_TITLE;
 $('aboutVer').textContent = `v${APP_VERSION}`;
