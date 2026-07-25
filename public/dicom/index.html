@@ -10,14 +10,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- title is deliberately version-free: a stable SERP snippet; the version lives in APP_VERSION (title bar + About) -->
-<title>DICOM Viewer by ClearEvo.com - open your MRI/CT scan CD on your phone or PC, free, no upload</title>
-<meta name="description" content="Free online MRI/CT CD viewer: open the DICOM CD from your MRI or CT scan right in your browser, on phone and PC - series list, slice scrolling, window/level, measure, angle, ultrasound cine clips, tags; JPEG 2000, JPEG Lossless and RLE CDs supported. 100% client-side, your medical images are never uploaded. No install, no sign-up.">
+<title>DICOM Viewer by ClearEvo.com - open your MRI, CT or ultrasound scan CD, free, no upload</title>
+<meta name="description" content="Free online DICOM viewer: open the CD or USB your hospital gave you and see your own MRI, CT scan or ultrasound clips, right in your browser on phone or PC - series list, slice scrolling, window/level, measure, angle, cine playback, DICOM tags; JPEG 2000, JPEG Lossless and RLE CDs supported. 100% client-side: your medical images are never uploaded. No install, no sign-up.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='13' fill='%230c2035'/><ellipse cx='32' cy='33' rx='18' ry='21' fill='%231c5680' stroke='%235bb6e6' stroke-width='3'/><g fill='none' stroke='%230a2338' stroke-width='2.4' stroke-linecap='round'><path d='M32 14 V27 M32 39 V52'/><path d='M26 19 C21 27, 22 39, 27 47'/><path d='M38 19 C43 27, 42 39, 37 47'/><path d='M22 26 C19 32, 20 40, 24 45'/><path d='M42 26 C45 32, 44 40, 40 45'/></g><g fill='%23cdefff'><path d='M30.6 31 C28 33, 27.4 36, 29 39 C30 36, 30 34, 30.6 32Z'/><path d='M33.4 31 C36 33, 36.6 36, 35 39 C34 36, 34 34, 33.4 32Z'/></g></svg>">
 <link rel="canonical" href="https://www.clearevo.com/dicom/">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://www.clearevo.com/dicom/">
-<meta property="og:title" content="DICOM Viewer by ClearEvo.com - open your MRI/CT scan CD on your phone or PC, free, no upload">
-<meta property="og:description" content="Free online MRI/CT CD viewer: open the DICOM CD from your MRI or CT scan right in your browser, on phone and PC - series list, slice scrolling, window/level, measure, angle, ultrasound cine clips, tags; JPEG 2000, JPEG Lossless and RLE CDs supported. 100% client-side, your medical images are never uploaded. No install, no sign-up.">
+<meta property="og:title" content="DICOM Viewer by ClearEvo.com - open your MRI, CT or ultrasound scan CD, free, no upload">
+<meta property="og:description" content="Free online DICOM viewer: open the CD or USB your hospital gave you and see your own MRI, CT scan or ultrasound clips, right in your browser on phone or PC - series list, slice scrolling, window/level, measure, angle, cine playback, DICOM tags; JPEG 2000, JPEG Lossless and RLE CDs supported. 100% client-side: your medical images are never uploaded. No install, no sign-up.">
 <meta property="og:image" content="https://www.clearevo.com/dicom/icon-512.png">
 <meta name="twitter:card" content="summary">
 <link rel="manifest" href="manifest.json">
@@ -187,7 +187,7 @@ import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
 const APP_NAME = 'DICOM Viewer by ClearEvo.com';
-const APP_VERSION = '1.6.1';
+const APP_VERSION = '1.6.2';
 const APP_TITLE = `${APP_NAME} v${APP_VERSION}`;
 $('titleText').textContent = APP_TITLE;
 $('aboutVer').textContent = `v${APP_VERSION}`;
@@ -214,7 +214,7 @@ const I18N = {
     gZoom: 'Drag up = zoom in, down = zoom out (pinch or Ctrl +/- too)',
     gMeasure: 'Tap two points - length in mm. Undo pt removes the last point',
     browseHint: 'drag / swipe to scroll through slices; pinch or Zoom tool to zoom; double-tap to zoom',
-    emptyHint: 'Open your CT/MRI scan CD (.zip or .tar) or its folder - images stay on your device, nothing is uploaded. No scan file yet? Download a demo below, then press "Open file" and pick the zip.',
+    emptyHint: 'Open your MRI, CT or ultrasound scan CD (.zip or .tar) or its folder - images stay on your device, nothing is uploaded. No scan file yet? Download a demo below, then press "Open file" and pick the zip.',
     sourceLocal: 'local', sourceOnDevice: 'on your device', sourceRemote: 'streaming - nothing downloaded whole',
     downloadFull: 'download the full CD (GPL)', fastest: 'For fastest scrolling,', andOpenLocally: 'and open it locally.',
     loadingIndex: 'Reading scan index', parsing: 'Parsing index...', connecting: 'Connecting...',
@@ -239,7 +239,7 @@ const I18N = {
     gZoom: 'ลากขึ้น = ซูมเข้า, ลง = ซูมออก (สองนิ้วหุบ-ถ่าง หรือ Ctrl +/- ก็ได้)',
     gMeasure: 'แตะสองจุด = ระยะเป็น mm ปุ่มลบจุดจะลบจุดล่าสุด',
     browseHint: 'ลาก / ปัดเพื่อไล่ดู slice; ใช้สองนิ้วหุบ-ถ่าง หรือเครื่องมือ Zoom เพื่อซูม; แตะสองครั้งเพื่อซูม',
-    emptyHint: 'เปิดแผ่น CD สแกน CT/MRI (.zip หรือ .tar) หรือโฟลเดอร์ของแผ่น - ภาพอยู่ในเครื่องคุณ ไม่มีการอัปโหลดใด ๆ ยังไม่มีไฟล์สแกน? ดาวน์โหลดตัวอย่างด้านล่าง เสร็จแล้วกด "เปิดไฟล์" แล้วเลือกไฟล์ zip',
+    emptyHint: 'เปิดแผ่น CD สแกน MRI, CT หรืออัลตราซาวด์ (.zip หรือ .tar) หรือโฟลเดอร์ของแผ่น - ภาพอยู่ในเครื่องคุณ ไม่มีการอัปโหลดใด ๆ ยังไม่มีไฟล์สแกน? ดาวน์โหลดตัวอย่างด้านล่าง เสร็จแล้วกด "เปิดไฟล์" แล้วเลือกไฟล์ zip',
     sourceLocal: 'local', sourceOnDevice: 'อยู่ในเครื่องคุณ', sourceRemote: 'สตรีม - ไม่ได้ดาวน์โหลดทั้งไฟล์',
     downloadFull: 'ดาวน์โหลดทั้งแผ่น (GPL)', fastest: 'ถ้าอยากให้ไล่ดูภาพลื่นที่สุด', andOpenLocally: 'แล้วเปิดจากในเครื่อง',
     loadingIndex: 'กำลังอ่านรายการภาพสแกน', parsing: 'กำลังแปลงรายการภาพ...', connecting: 'กำลังเชื่อมต่อ...',
