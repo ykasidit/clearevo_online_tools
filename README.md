@@ -13,8 +13,8 @@ a per-app `README.md` carrying the copyright/licence notice:
 
 | App | Path | What it is |
 |-----|------|-----------|
-| 🩻 ClearEvo.com MRI/CT CD Viewer | [`public/dicom`](public/dicom) | Open/stream a DICOM CT/MRI scan CD in the browser |
-| 🔢 ClearEvo.com Hex Viewer/Editor | [`public/hex`](public/hex) | Hex view/edit + hex/text/number/bit search |
+| 🩻 ClearEvo.com DICOM Viewer | [`public/dicom`](public/dicom) | Open/stream a DICOM CT/MRI scan CD in the browser |
+| 🔢 ClearEvo.com Hex Editor | [`public/hex`](public/hex) | Hex view/edit + hex/text/number/bit search |
 | 🌍 ClearEvo.com GIS Converter | [`public/geo`](public/geo) | GDAL `ogr2ogr` (WebAssembly) format converter |
 | 🔳 ClearEvo.com QR Code Generator | [`public/qr`](public/qr) | Static QR that never expires, 12 languages |
 | 🎵 ClearEvo.com Audio Converter | [`public/audio`](public/audio) | ffmpeg.wasm audio extract/convert |

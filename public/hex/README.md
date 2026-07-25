@@ -1,4 +1,4 @@
-# ClearEvo.com Hex Viewer/Editor
+# ClearEvo.com Hex Editor
 
 🔢 View and edit any file as hex, search by hex/text/number/bit-sequence.
 

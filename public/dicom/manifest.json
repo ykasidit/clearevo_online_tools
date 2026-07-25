@@ -1,5 +1,5 @@
 {
-  "name": "DICOM Viewer - CT/MRI CDs in your browser",
+  "name": "ClearEvo.com DICOM Viewer - open MRI/CT scan CDs",
   "short_name": "DICOM",
   "start_url": ".",
   "display": "standalone",

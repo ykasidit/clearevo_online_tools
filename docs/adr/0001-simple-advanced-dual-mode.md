@@ -1,4 +1,4 @@
-# 0001 — Simple/Advanced dual-mode UI for the MRI/CT CD Viewer
+# 0001 — Simple/Advanced dual-mode UI for the DICOM Viewer
 
 Date: 2026-07-25
 Status: accepted
