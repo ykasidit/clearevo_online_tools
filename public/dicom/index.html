@@ -10,7 +10,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- tab title stays constant on open; keep the version here in sync with APP_VERSION in the script -->
-<title>ClearEvo.com MRI/CT CD Viewer v1.4.0 - open or stream your DICOM scan CD in the browser, no upload</title>
+<title>ClearEvo.com MRI/CT CD Viewer v1.4.1 - open or stream your DICOM scan CD in the browser, no upload</title>
 <meta name="description" content="Free online MRI/CT CD viewer: open or stream the DICOM CD from your MRI or CT scan right in your browser, on PC and phone - series list, slice scrolling, window/level, measure, tags. 100% client-side, your medical images are never uploaded. A DICOM viewer with no install and no sign-up.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='13' fill='%230c2035'/><ellipse cx='32' cy='33' rx='18' ry='21' fill='%231c5680' stroke='%235bb6e6' stroke-width='3'/><g fill='none' stroke='%230a2338' stroke-width='2.4' stroke-linecap='round'><path d='M32 14 V27 M32 39 V52'/><path d='M26 19 C21 27, 22 39, 27 47'/><path d='M38 19 C43 27, 42 39, 37 47'/><path d='M22 26 C19 32, 20 40, 24 45'/><path d='M42 26 C45 32, 44 40, 40 45'/></g><g fill='%23cdefff'><path d='M30.6 31 C28 33, 27.4 36, 29 39 C30 36, 30 34, 30.6 32Z'/><path d='M33.4 31 C36 33, 36.6 36, 35 39 C34 36, 34 34, 33.4 32Z'/></g></svg>">
 <link rel="canonical" href="https://www.clearevo.com/dicom/">
@@ -81,15 +81,15 @@ button,select,input{font-family:inherit}
   <div class="title-bar"><div class="title-bar-text"><svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect width="64" height="64" rx="13" fill="#0c2035"/><ellipse cx="32" cy="33" rx="18" ry="21" fill="#1c5680" stroke="#5bb6e6" stroke-width="3"/><g fill="none" stroke="#0a2338" stroke-width="2.4" stroke-linecap="round"><path d="M32 14 V27 M32 39 V52"/><path d="M26 19 C21 27, 22 39, 27 47"/><path d="M38 19 C43 27, 42 39, 37 47"/><path d="M22 26 C19 32, 20 40, 24 45"/><path d="M42 26 C45 32, 44 40, 40 45"/></g><g fill="#cdefff"><path d="M30.6 31 C28 33, 27.4 36, 29 39 C30 36, 30 34, 30.6 32Z"/><path d="M33.4 31 C36 33, 36.6 36, 35 39 C34 36, 34 34, 33.4 32Z"/></g></svg><span id="titleText">ClearEvo.com MRI/CT CD Viewer</span></div><div class="title-bar-controls"><button class="fontbtn" id="bAbout" type="button" title="About - license, warranty, open-source credits">ⓘ About</button><button class="fontbtn" id="fMinus" type="button" title="smaller text">A-</button><button class="fontbtn" id="fPlus" type="button" title="larger text">A+</button></div></div>
   <div class="window-body">
   <div class="toolbar">
-    <button class="tbtn" id="bZip" ><svg viewBox="0 0 24 24"><path d="M3 7h5l2 2h11v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M3 11h18"/></svg><span class="lbl"></span></button>
-    <button class="tbtn" id="bDir" title="an unzipped CD folder"><svg viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v11H3z"/></svg><span class="lbl"></span></button>
+    <button class="tbtn" id="bZip" ><svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><text x="12" y="17" text-anchor="middle" font-size="6" font-family="Tahoma,sans-serif" font-weight="bold" fill="currentColor" stroke="none">ZIP</text></svg><span class="lbl"></span></button>
+    <button class="tbtn" id="bDir" title="an unzipped CD folder"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/><path d="M12 3a9 9 0 0 1 9 9" opacity=".45"/><path d="M6.5 17.5A7.7 7.7 0 0 1 4.3 12" opacity=".45"/></svg><span class="lbl"></span></button>
     <div class="tsep"></div>
     <button class="tbtn" id="tWL" title="drag left-right = window width, up-down = level (PACS default)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg><span class="lbl"></span></button>
     <button class="tbtn" id="tBrowse" title="drag/swipe to scroll slices (wheel always scrolls)"><svg viewBox="0 0 24 24"><path d="M4 9l8-4 8 4-8 4z"/><path d="M4 13l8 4 8-4"/></svg><span class="lbl"></span></button>
     <button class="tbtn" id="tPan" ><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/><path d="M12 3l-2.4 3M12 3l2.4 3M12 21l-2.4-3M12 21l2.4-3M3 12l3-2.4M3 12l3 2.4M21 12l-3-2.4M21 12l-3 2.4"/></svg><span class="lbl"></span></button>
     <button class="tbtn" id="tZoom" title="drag to zoom (Ctrl +/-; pinch on touch)"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/></svg><span class="lbl"></span></button>
     <button class="tbtn" id="tMeasure" title="click two points - length in mm"><svg viewBox="0 0 24 24"><path d="M3 15L15 3l6 6L9 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/></svg><span class="lbl"></span></button>
-    <button class="tbtn" id="bMUndo" title="remove the last measure point"><svg viewBox="0 0 24 24"><path d="M8 4H3v5"/><path d="M3.5 4.5A10.5 10.5 0 0 1 13 11"/><path d="M9 17l8-8 4 4-8 8z"/><path d="M12 16l1.5 1.5M15 13l1.5 1.5"/></svg><span class="lbl"></span></button>
+    <button class="tbtn" id="bMUndo" title="remove the last measure point"><svg viewBox="0 0 24 24"><path d="M3 15L15 3l6 6L9 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/><path d="M7.5 3.5H3V8"/><path d="M3.5 4A8 8 0 0 1 11 9.5"/></svg><span class="lbl"></span></button>
     <div class="tsep"></div>
     <button class="tbtn" id="bCine" title="play/stop cine loop"><svg viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z" fill="currentColor" stroke="none"/></svg><span class="lbl"></span></button>
     <button class="tbtn" id="bInvert" title="invert black/white"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M6.34 6.34 A8 8 0 0 0 17.66 17.66 Z" fill="currentColor" stroke="none"/></svg><span class="lbl"></span></button>
@@ -173,7 +173,7 @@ import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - bump APP_VERSION here and in the <title> tag together.
 const APP_NAME = 'ClearEvo.com MRI/CT CD Viewer';
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 const APP_TITLE = `${APP_NAME} v${APP_VERSION}`;
 $('titleText').textContent = APP_TITLE;
 $('aboutVer').textContent = `v${APP_VERSION}`;
