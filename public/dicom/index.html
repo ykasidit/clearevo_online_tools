@@ -62,6 +62,8 @@ button,select,input{font-family:inherit}
 .status-bar a{color:#4aa9e0}
 .demobtn{font:600 14px 'Segoe UI',Tahoma,sans-serif;color:#fff;background:linear-gradient(#1c86c8,#125a92);border:1px solid #2aa9e0;border-radius:7px;padding:11px 20px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4)}
 .demobtn:hover{background:linear-gradient(#2a96d8,#1a6aa2)}
+.linkbtn{background:none;border:none;color:#4aa9e0;text-decoration:underline;cursor:pointer;font:12px 'Segoe UI',Tahoma,sans-serif;padding:2px}
+.linkbtn:hover{color:#8fd0ff}
 #gesture{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:22px;pointer-events:none;background:rgba(3,10,18,.38)}
 #gestIcon{font-size:54px;filter:drop-shadow(0 3px 8px #000)}
 #gestTxt{background:rgba(9,22,36,.94);border:1px solid #2f6a8f;color:#cfe8fb;font:13px Tahoma,sans-serif;padding:7px 14px;border-radius:8px;max-width:88%;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,.55)}
@@ -71,6 +73,8 @@ button,select,input{font-family:inherit}
 @keyframes gestTap{0%,24%,100%{transform:translate(-40px,16px) scale(1)}12%{transform:translate(-40px,16px) scale(.65)}50%,74%{transform:translate(40px,-16px) scale(1)}62%{transform:translate(40px,-16px) scale(.65)}}
 @keyframes blinkOpen{0%,100%{background:#0d3a5c;border-color:#2aa9e0;color:#8fd8ff;box-shadow:0 0 9px rgba(42,169,224,.75)}50%{background:transparent;border-color:transparent;color:#a7bccf;box-shadow:none}}
 .blinkOpen{animation:blinkOpen 1.1s ease-in-out infinite}
+/* Simple mode hides pro-only controls; labels/visibility only, never behavior (ADR 0001) */
+body.simple .adv{display:none!important}
 .title-bar-controls{position:fixed;top:8px;right:12px;display:flex;align-items:center;z-index:999}
 .title-bar .fontbtn{width:24px;height:18px;font:bold 10px Tahoma,sans-serif;color:#cdd9e5;background:#183350;border:1px solid #2aa9e0;border-radius:4px;cursor:pointer;padding:0;margin-left:3px}
 @media (max-width:700px){#main{flex-direction:column}#serieslist{flex:0 0 92px;display:flex;overflow-x:auto;overflow-y:hidden;border-right:none;border-bottom:1px solid #1c3550}.ser{flex:0 0 150px}.tbtn .lbl{display:none}.tbtn{min-width:38px;padding:5px 7px}}
@@ -86,25 +90,29 @@ button,select,input{font-family:inherit}
     <div class="tsep"></div>
     <button class="tbtn" id="tWL" title="drag left-right = window width, up-down = level (PACS default)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg><span class="lbl"></span></button>
     <button class="tbtn" id="tBrowse" title="drag/swipe to scroll slices (wheel always scrolls)"><svg viewBox="0 0 24 24"><path d="M4 9l8-4 8 4-8 4z"/><path d="M4 13l8 4 8-4"/></svg><span class="lbl"></span></button>
-    <button class="tbtn" id="tPan" ><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/><path d="M12 3l-2.4 3M12 3l2.4 3M12 21l-2.4-3M12 21l2.4-3M3 12l3-2.4M3 12l3 2.4M21 12l-3-2.4M21 12l-3 2.4"/></svg><span class="lbl"></span></button>
+    <button class="tbtn adv" id="tPan" ><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/><path d="M12 3l-2.4 3M12 3l2.4 3M12 21l-2.4-3M12 21l2.4-3M3 12l3-2.4M3 12l3 2.4M21 12l-3-2.4M21 12l-3 2.4"/></svg><span class="lbl"></span></button>
     <button class="tbtn" id="tZoom" title="drag to zoom (Ctrl +/-; pinch on touch)"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l5 5"/></svg><span class="lbl"></span></button>
     <button class="tbtn" id="tMeasure" title="click two points - length in mm"><svg viewBox="0 0 24 24"><path d="M3 15L15 3l6 6L9 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/></svg><span class="lbl"></span></button>
+    <button class="tbtn adv" id="tAngle" title="click three points - angle at the middle point"><svg viewBox="0 0 24 24"><path d="M4 20L12 4M4 20h17"/><path d="M9.5 14.5A9 9 0 0 1 13 20"/></svg><span class="lbl"></span></button>
     <button class="tbtn" id="bMUndo" title="remove the last measure point"><svg viewBox="0 0 24 24"><path d="M3 15L15 3l6 6L9 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/><path d="M7.5 3.5H3V8"/><path d="M3.5 4A8 8 0 0 1 11 9.5"/></svg><span class="lbl"></span></button>
     <div class="tsep"></div>
     <button class="tbtn" id="bCine" title="play/stop cine loop"><svg viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z" fill="currentColor" stroke="none"/></svg><span class="lbl"></span></button>
-    <button class="tbtn" id="bInvert" title="invert black/white"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M6.34 6.34 A8 8 0 0 0 17.66 17.66 Z" fill="currentColor" stroke="none"/></svg><span class="lbl"></span></button>
+    <button class="tbtn adv" id="bInvert" title="invert black/white"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M6.34 6.34 A8 8 0 0 0 17.66 17.66 Z" fill="currentColor" stroke="none"/></svg><span class="lbl"></span></button>
+    <button class="tbtn adv" id="bRotate" title="rotate 90° clockwise"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M18 2v4.5h-4.5"/></svg><span class="lbl"></span></button>
+    <button class="tbtn adv" id="bFlip" title="flip left-right (mirror)"><svg viewBox="0 0 24 24"><path d="M12 3v18" stroke-dasharray="2.5 2.5"/><path d="M9 7L3 12l6 5z"/><path d="M15 7l6 5-6 5z" fill="currentColor" stroke="none" opacity=".55"/></svg><span class="lbl"></span></button>
     <button class="tbtn" id="bReset" title="reset zoom/pan/window"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4.5v4.5h4.5"/></svg><span class="lbl"></span></button>
     <button class="tbtn" id="bCapture" title="save current image as PNG"><svg viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg><span class="lbl"></span></button>
-    <button class="tbtn" id="bCaptureAs" title="save current image as PNG with a file name you choose"><svg viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><text x="12" y="16" text-anchor="middle" font-size="7.5" font-family="Tahoma,sans-serif" font-weight="bold" fill="currentColor" stroke="none">ABC</text></svg><span class="lbl"></span></button>
-    <button class="tbtn" id="bTags" title="all DICOM tags of the current image"><svg viewBox="0 0 24 24"><path d="M3 11l8-8h7v7l-8 8z"/><circle cx="15.5" cy="8.5" r="1.3" fill="currentColor" stroke="none"/></svg><span class="lbl"></span></button>
+    <button class="tbtn adv" id="bCaptureAs" title="save current image as PNG with a file name you choose"><svg viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><text x="12" y="16" text-anchor="middle" font-size="7.5" font-family="Tahoma,sans-serif" font-weight="bold" fill="currentColor" stroke="none">ABC</text></svg><span class="lbl"></span></button>
+    <button class="tbtn adv" id="bTags" title="all DICOM tags of the current image"><svg viewBox="0 0 24 24"><path d="M3 11l8-8h7v7l-8 8z"/><circle cx="15.5" cy="8.5" r="1.3" fill="currentColor" stroke="none"/></svg><span class="lbl"></span></button>
     <div class="tsep"></div>
-    <select id="preset" title="CT window presets"></select>
-    <select id="buf" title="how many slices to buffer ahead for smooth scrolling">
+    <select id="preset" class="adv" title="CT window presets"></select>
+    <select id="buf" class="adv" title="how many slices to buffer ahead for smooth scrolling">
       <option value="25">buffer 25</option>
       <option value="50" selected>buffer 50</option>
       <option value="100">buffer 100</option>
     </select>
     <span id="wlz"></span>
+    <select id="mode" title="Simple or Advanced toolbar"></select>
     <select id="lang" title="language"></select>
     <span id="stat"></span>
   </div>
@@ -123,9 +131,13 @@ button,select,input{font-family:inherit}
       <div id="empty" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#9fb3c8;gap:14px;padding:24px;pointer-events:none">
         <div style="width:88px;height:88px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.5))"><svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect width="64" height="64" rx="13" fill="#0c2035"/><ellipse cx="32" cy="33" rx="18" ry="21" fill="#1c5680" stroke="#5bb6e6" stroke-width="3"/><g fill="none" stroke="#0a2338" stroke-width="2.4" stroke-linecap="round"><path d="M32 14 V27 M32 39 V52"/><path d="M26 19 C21 27, 22 39, 27 47"/><path d="M38 19 C43 27, 42 39, 37 47"/><path d="M22 26 C19 32, 20 40, 24 45"/><path d="M42 26 C45 32, 44 40, 40 45"/></g><g fill="#cdefff"><path d="M30.6 31 C28 33, 27.4 36, 29 39 C30 36, 30 34, 30.6 32Z"/><path d="M33.4 31 C36 33, 36.6 36, 35 39 C34 36, 34 34, 33.4 32Z"/></g></svg></div>
         <div id="emptyTxt" style="font:14px Tahoma,'Segoe UI',sans-serif;max-width:520px;line-height:1.5"></div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;pointer-events:auto;margin-top:4px">
-          <button id="demoCtBtn" class="demobtn"></button>
-          <button id="demoMriBtn" class="demobtn"></button>
+        <div style="display:flex;flex-direction:column;gap:10px;align-items:center;pointer-events:auto;margin-top:4px">
+          <button id="demoSmallBtn" class="demobtn"></button>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center">
+            <button id="demoCtBtn" class="linkbtn"></button>
+            <button id="demoMriBtn" class="linkbtn"></button>
+            <button id="shareBtn" class="linkbtn"></button>
+          </div>
         </div>
       </div>
       <div id="gesture"><div id="gestIcon">👆</div><div id="gestTxt"></div></div>
@@ -163,7 +175,7 @@ button,select,input{font-family:inherit}
       <li>Native browser APIs, no third-party code: <b>DecompressionStream</b> (Zip inflate), <b>createImageBitmap</b> (baseline JPEG), Canvas 2D.</li>
     </ul>
     <p style="margin-top:12px;font-size:12px;color:#8fb3cf">The MIT-licensed components above are used unmodified; the MIT license permits their use within this GPL-v2 program.</p>
-    <div style="text-align:right;margin-top:18px"><button id="aboutClose" class="demobtn" style="padding:8px 18px">Close</button></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:18px"><button id="aboutShare" class="linkbtn"></button><button id="aboutClose" class="demobtn" style="padding:8px 18px">Close</button></div>
   </div>
 </div>
 <script src="./dicomParser.min.js"></script>
@@ -186,8 +198,14 @@ const I18N = {
     pngPrompt: 'File name for the PNG:', pngSaved: 'saved - check your Downloads folder', pngFail: 'could not save: ',
     demoDl: 'Demo download started (check your Downloads). When it finishes, press the blinking "Open file" and pick the zip.',
     loadingPreviews: 'Loading series previews…', ready: 'Ready', startReached: 'Start of series', endReached: 'End of series', frame: 'frame', frames: 'frames',
-    demoCT: '⬇ Download CT demo (1.2 GB)', demoMRI: '⬇ Download MRI demo (870 MB)',
+    demoSmall: '▶ Try a small demo scan (37 MB)', demoCT: '⬇ Full CT demo CD (1.2 GB)', demoMRI: '⬇ Full MRI demo CD (870 MB)',
+    share: '📤 Share this tool', shareCopied: 'Link copied - paste it anywhere',
     browse: 'Browse', wl: 'W/L', pan: 'Pan', zoom: 'Zoom', measure: 'Measure', undoPt: 'Undo pt', reset: 'Reset', invert: 'Invert', tags: 'Tags',
+    wlSimple: 'Brightness', playSimple: 'Play', captureSimple: 'Save image',
+    modeSimple: 'Simple', modeAdvanced: 'Advanced',
+    gWLSimple: 'Drag left-right = contrast, up-down = brightness',
+    angle: 'Angle', rotate: 'Rotate', flip: 'Flip',
+    gAngle: 'Tap three points - the angle is measured at the middle point',
     gBrowse: 'Swipe / drag up-down to scroll slices (wheel and ◀ ▶ too)',
     gWL: 'Drag left-right = window width, up-down = level',
     gPan: 'Drag to move the image',
@@ -205,8 +223,14 @@ const I18N = {
     pngPrompt: 'ตั้งชื่อไฟล์ PNG:', pngSaved: 'บันทึกแล้ว - ดูในโฟลเดอร์ดาวน์โหลด (Downloads)', pngFail: 'บันทึกไม่สำเร็จ: ',
     demoDl: 'เริ่มดาวน์โหลดสแกนตัวอย่างแล้ว (ดูในโฟลเดอร์ดาวน์โหลด) พอเสร็จ กดปุ่ม "เปิดไฟล์" ที่กะพริบ แล้วเลือกไฟล์ zip',
     loadingPreviews: 'กำลังโหลดตัวอย่างซีรีส์…', ready: 'พร้อมแล้ว', startReached: 'ต้นซีรีส์แล้ว', endReached: 'ท้ายซีรีส์แล้ว', frame: 'ภาพ', frames: 'ภาพ',
-    demoCT: '⬇ ดาวน์โหลดตัวอย่าง CT (1.2 GB)', demoMRI: '⬇ ดาวน์โหลดตัวอย่าง MRI (870 MB)',
+    demoSmall: '▶ ลองสแกนตัวอย่างขนาดเล็ก (37 MB)', demoCT: '⬇ แผ่น CT ตัวอย่างเต็มแผ่น (1.2 GB)', demoMRI: '⬇ แผ่น MRI ตัวอย่างเต็มแผ่น (870 MB)',
+    share: '📤 แชร์เครื่องมือนี้', shareCopied: 'คัดลอกลิงก์แล้ว - วางส่งต่อได้เลย',
     browse: 'ดูภาพ', wl: 'W/L', pan: 'เลื่อนภาพ', zoom: 'Zoom', measure: 'วัดระยะ', undoPt: 'ลบจุด', reset: 'รีเซ็ต', invert: 'สลับขาว-ดำ', tags: 'Tags',
+    wlSimple: 'ปรับแสง', playSimple: 'เล่น', captureSimple: 'บันทึกภาพ',
+    modeSimple: 'แบบง่าย', modeAdvanced: 'ขั้นสูง',
+    gWLSimple: 'ลากซ้าย-ขวา = ความคมชัด, ขึ้น-ลง = ความสว่าง',
+    angle: 'มุม', rotate: 'หมุน', flip: 'พลิก',
+    gAngle: 'แตะสามจุด - วัดมุมที่จุดกลาง',
     gBrowse: 'ปัด / ลากขึ้น-ลง เพื่อไล่ดู slice (ลูกกลิ้งเมาส์และ ◀ ▶ ก็ได้)',
     gWL: 'ลากซ้าย-ขวา = ความกว้างหน้าต่าง, ขึ้น-ลง = ระดับ',
     gPan: 'ลากเพื่อเลื่อนภาพ',
@@ -222,15 +246,21 @@ const I18N = {
     privacy: 'ทำงานในเบราว์เซอร์ของคุณ 100% - ภาพทางการแพทย์ของคุณไม่ถูกอัปโหลดออกไป', langName: 'ไทย' },
 };
 let T = I18N.en;
+// Simple (patient) vs Advanced (clinician) mode - labels + visibility only, never behavior (ADR 0001)
+let mode = localStorage.getItem('ce_mode') === 'advanced' ? 'advanced' : 'simple';
 function applyLang(code) {
   T = I18N[code] || I18N.en;
   document.documentElement.lang = code;
   $('lang').value = code;
+  const simple = mode === 'simple';
+  $('mode').innerHTML = `<option value="simple">${T.modeSimple}</option><option value="advanced">${T.modeAdvanced}</option>`;
+  $('mode').value = mode;
   const lbl = (id, t) => { const el = $(id) && $(id).querySelector('.lbl'); if (el) el.textContent = t; };
   lbl('bZip', T.open); lbl('bDir', T.folder);
-  $('demoCtBtn').textContent = T.demoCT; $('demoMriBtn').textContent = T.demoMRI;
-  lbl('tWL', T.wl); lbl('tBrowse', T.browse); lbl('tPan', T.pan); lbl('tZoom', T.zoom); lbl('tMeasure', T.measure); lbl('bMUndo', T.undoPt);
-  lbl('bCine', T.cine); lbl('bInvert', T.invert); lbl('bReset', T.reset); lbl('bCapture', T.capture); lbl('bCaptureAs', T.captureAs); lbl('bTags', T.tags);
+  $('demoSmallBtn').textContent = T.demoSmall; $('demoCtBtn').textContent = T.demoCT; $('demoMriBtn').textContent = T.demoMRI;
+  $('shareBtn').textContent = T.share; $('aboutShare').textContent = T.share;
+  lbl('tWL', simple ? T.wlSimple : T.wl); lbl('tBrowse', T.browse); lbl('tPan', T.pan); lbl('tZoom', T.zoom); lbl('tMeasure', T.measure); lbl('tAngle', T.angle); lbl('bMUndo', T.undoPt);
+  lbl('bCine', simple ? T.playSimple : T.cine); lbl('bInvert', T.invert); lbl('bRotate', T.rotate); lbl('bFlip', T.flip); lbl('bReset', T.reset); lbl('bCapture', simple ? T.captureSimple : T.capture); lbl('bCaptureAs', T.captureAs); lbl('bTags', T.tags);
   $('tBrowse').title = T.browseHint;
   $('sbPrivacy').textContent = T.privacy; $('sbNotDevice').textContent = T.notDevice;
   if (!frame && !series.length) drawEmpty();
@@ -560,7 +590,23 @@ function paint(fr, wc, ww, invert) {
 
 // ---- viewer state ----
 let frame = null, wc = 0, ww = 1, invert = false, zoom = 1, panX = 0, panY = 0, tool = 'browse', needWL = true;
-let measure = [], lastTf = null, lastTap = 0;
+let rot = 0, flipH = false;                    // quarter-turns CW, mirror left-right
+let measure = [], measureKind = 'measure', lastTf = null, lastTap = 0;
+// image px <-> screen px through the current pan/zoom/rotate/flip transform
+function img2scr(p) {
+  const t = lastTf;
+  let x = (p.x - t.cols / 2) * t.base, y = (p.y - t.rows / 2) * t.base;
+  if (t.flipH) x = -x;
+  for (let i = 0; i < t.rot; i++) { const nx = -y; y = x; x = nx; }   // 90° CW per turn
+  return [t.cx + x, t.cy + y];
+}
+function scr2img(sx, sy) {
+  const t = lastTf;
+  let x = sx - t.cx, y = sy - t.cy;
+  for (let i = 0; i < t.rot; i++) { const nx = y; y = -x; x = nx; }   // undo 90° CW turns
+  if (t.flipH) x = -x;
+  return { x: x / t.base + t.cols / 2, y: y / t.base + t.rows / 2 };
+}
 // ---- slice cache + rolling prefetch buffer ----
 // Like map-tile prefetch: keep `prefetchN` slices buffered AHEAD in the scroll
 // direction (a couple behind too). Fetches run concurrently (capped) and each
@@ -601,7 +647,7 @@ function ensurePrefetch() {
 
 async function selectSeries(s) {
   if (typeof stopCine === 'function') stopCine();
-  cur = s; idx = 0; inflight.clear(); seriesGen++; zoom = 1; panX = panY = 0; invert = false; needWL = true; lastDir = 1;
+  cur = s; idx = 0; inflight.clear(); seriesGen++; zoom = 1; panX = panY = 0; rot = 0; flipH = false; $('bFlip').classList.remove('on'); invert = false; needWL = true; lastDir = 1;
   nameIdx = new Map(s.instances.map((it, i) => [it.name, i]));
   series.forEach((x) => x.el && x.el.classList.toggle('on', x === s));
   $('slice').max = s.instances.length - 1; $('slice').value = 0;
@@ -669,22 +715,40 @@ function render() {
   if (!frame) { drawEmpty(); return; }
   $('empty').style.display = 'none';
   const off = frame.bitmap ?? paint(frame, wc, ww, invert);
-  const base = Math.min(w / frame.cols, h / frame.rows) * zoom;
+  // fit against the rotated footprint (90/270 swap width/height)
+  const fw = rot % 2 ? frame.rows : frame.cols, fh = rot % 2 ? frame.cols : frame.rows;
+  const base = Math.min(w / fw, h / fh) * zoom;
   const dw = frame.cols * base, dh = frame.rows * base;
-  const ox = (w - dw) / 2 + panX, oy = (h - dh) / 2 + panY;
-  lastTf = { base, ox, oy };
+  const cx = w / 2 + panX, cy = h / 2 + panY;
+  lastTf = { base, cx, cy, rot, flipH, cols: frame.cols, rows: frame.rows };
   ctx.imageSmoothingEnabled = frame.bitmap ? true : base < 2;
-  ctx.drawImage(off, ox, oy, dw, dh);
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(rot * Math.PI / 2);
+  if (flipH) ctx.scale(-1, 1);
+  ctx.drawImage(off, -dw / 2, -dh / 2, dw, dh);
+  ctx.restore();
   if (measure.length) {
     ctx.strokeStyle = '#00e5ff'; ctx.fillStyle = '#00e5ff'; ctx.lineWidth = 1.5; ctx.font = '12px Tahoma';
-    const P = measure.map((p) => [ox + p.x * base, oy + p.y * base]);
+    const P = measure.map(img2scr);
     for (const [x, y] of P) { ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.stroke(); }
-    if (P.length === 2) {
+    const sp = frame.spacing;
+    if (measureKind === 'measure' && P.length === 2) {
       ctx.beginPath(); ctx.moveTo(P[0][0], P[0][1]); ctx.lineTo(P[1][0], P[1][1]); ctx.stroke();
       const dxi = measure[1].x - measure[0].x, dyi = measure[1].y - measure[0].y;
-      const label = frame.spacing ? `${Math.hypot(dxi * frame.spacing.c, dyi * frame.spacing.r).toFixed(1)} mm`
-                                  : `${Math.hypot(dxi, dyi).toFixed(0)} px (no pixel spacing)`;
+      const label = sp ? `${Math.hypot(dxi * sp.c, dyi * sp.r).toFixed(1)} mm`
+                       : `${Math.hypot(dxi, dyi).toFixed(0)} px (no pixel spacing)`;
       ctx.fillText(label, (P[0][0] + P[1][0]) / 2 + 6, (P[0][1] + P[1][1]) / 2 - 6);
+    } else if (measureKind === 'angle' && P.length >= 2) {
+      ctx.beginPath(); ctx.moveTo(P[1][0], P[1][1]); ctx.lineTo(P[0][0], P[0][1]); ctx.stroke();
+      if (P.length === 3) {
+        ctx.beginPath(); ctx.moveTo(P[1][0], P[1][1]); ctx.lineTo(P[2][0], P[2][1]); ctx.stroke();
+        // physical angle at the middle point (pixel spacing corrects non-square pixels)
+        const v = (i) => [(measure[i].x - measure[1].x) * (sp ? sp.c : 1), (measure[i].y - measure[1].y) * (sp ? sp.r : 1)];
+        const [ax, ay] = v(0), [bx, by] = v(2);
+        const deg = Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / (Math.hypot(ax, ay) * Math.hypot(bx, by) || 1)))) * 180 / Math.PI;
+        ctx.fillText(`${deg.toFixed(1)}°`, P[1][0] + 8, P[1][1] - 8);
+      }
     }
   }
   const p = bannerMeta || {};
@@ -692,9 +756,11 @@ function render() {
   $('ovTR').textContent = [p.institution, p.study, p.studyDate].filter(Boolean).join('\n');
   $('ovBL').textContent = `S${cur.num ?? '?'} ${cur.modality} ${cur.desc}\nimg ${idx + 1}/${cur.instances.length}  ${frame.cols}x${frame.rows}`;
   $('ovBR').textContent = frame.bitmap ? `zoom ${(zoom * 100).toFixed(0)}%` : `WL ${Math.round(wc)} / WW ${Math.round(ww)}\nzoom ${(zoom * 100).toFixed(0)}%`;
-  $('wlz').textContent = frame.bitmap ? `zoom ${(zoom * 100).toFixed(0)}%` : `WL ${Math.round(wc)} · WW ${Math.round(ww)} · zoom ${(zoom * 100).toFixed(0)}%`;
+  const rotTxt = `${rot ? ` · rot ${rot * 90}°` : ''}${flipH ? ' · mirrored' : ''}`;
+  $('wlz').textContent = (frame.bitmap ? `zoom ${(zoom * 100).toFixed(0)}%` : `WL ${Math.round(wc)} · WW ${Math.round(ww)} · zoom ${(zoom * 100).toFixed(0)}%`) + rotTxt;
   let eo = null;
-  try { const iop = frame.ds && frame.ds.string('x00200037'); if (iop) eo = edgeOrientations(iop.split('\\').map(parseFloat)); } catch {}
+  // anatomical edge markers are only valid unrotated/unmirrored - hide rather than mislabel
+  if (!rot && !flipH) try { const iop = frame.ds && frame.ds.string('x00200037'); if (iop) eo = edgeOrientations(iop.split('\\').map(parseFloat)); } catch {}
   $('edgeT').textContent = eo ? eo.top : ''; $('edgeB').textContent = eo ? eo.bottom : '';
   $('edgeL').textContent = eo ? eo.left : ''; $('edgeR').textContent = eo ? eo.right : '';
   drawBufBar();
@@ -761,6 +827,7 @@ $('bDir').onclick = () => { const i = document.createElement('input'); i.type = 
 // buffer pauses felt slow and put people off, and a 1.2 GB download on wifi/5G is
 // quick. openUrl (HTTP Range streaming) is kept for the #load=/#cap= dev hooks.
 const DEMOS = {
+  small: { url: '/dicom-demo/scds_ct_small_demo.zip' },
   ct: { url: '/dicom-demo/scds_ct_demo.zip' },
   mri: { url: '/dicom-demo/scds_mri_demo.zip' },
 };
@@ -769,14 +836,23 @@ function downloadDemo(key) {
   a.href = DEMOS[key].url; a.download = ''; a.click();     // same-origin (worker proxies R2), so download works
   toast(T.demoDl, true);
 }
+$('demoSmallBtn').onclick = () => downloadDemo('small');
 $('demoCtBtn').onclick = () => downloadDemo('ct');
 $('demoMriBtn').onclick = () => downloadDemo('mri');
+// share: native sheet on phones (LINE/WhatsApp etc.), copy-link on desktop. No tracking.
+async function shareTool() {
+  const url = 'https://www.clearevo.com/dicom/';
+  if (navigator.share) { try { await navigator.share({ title: APP_NAME, url }); } catch {} return; }
+  try { await navigator.clipboard.writeText(url); toast(T.shareCopied); } catch { prompt('URL:', url); }
+}
+$('shareBtn').onclick = shareTool;
+$('aboutShare').onclick = shareTool;
 // blink the open buttons until a scan is opened - the one action the start page needs
 function setOpenBlink(on) { for (const id of ['bZip', 'bDir']) $(id).classList.toggle('blinkOpen', on); }
 setOpenBlink(true);
-const TOOLS = [['tBrowse', 'browse'], ['tWL', 'wl'], ['tPan', 'pan'], ['tZoom', 'zoom'], ['tMeasure', 'measure']];
+const TOOLS = [['tBrowse', 'browse'], ['tWL', 'wl'], ['tPan', 'pan'], ['tZoom', 'zoom'], ['tMeasure', 'measure'], ['tAngle', 'angle']];
 // animated gesture hint: a finger acting out the tool's drag over the viewport for a few seconds
-const GESTURES = { browse: ['gestV', () => T.gBrowse], wl: ['gestCross', () => T.gWL], pan: ['gestCross', () => T.gPan], zoom: ['gestV', () => T.gZoom], measure: ['gestTap', () => T.gMeasure] };
+const GESTURES = { browse: ['gestV', () => T.gBrowse], wl: ['gestCross', () => (mode === 'simple' ? T.gWLSimple : T.gWL)], pan: ['gestCross', () => T.gPan], zoom: ['gestV', () => T.gZoom], measure: ['gestTap', () => T.gMeasure], angle: ['gestTap', () => T.gAngle] };
 let gestTimer = 0;
 function showGesture(t) {
   const g = GESTURES[t]; if (!g) return;
@@ -805,7 +881,9 @@ $('bTags').onclick = () => {
   el.textContent = rows.join('\n');
   el.style.display = 'block';
 };
-$('bReset').onclick = () => { zoom = 1; panX = panY = 0; if (frame) { wc = frame.wc0; ww = frame.ww0; } presetSel.value = '0'; render(); };
+$('bReset').onclick = () => { zoom = 1; panX = panY = 0; rot = 0; flipH = false; $('bFlip').classList.remove('on'); if (frame) { wc = frame.wc0; ww = frame.ww0; } presetSel.value = '0'; render(); };
+$('bRotate').onclick = () => { rot = (rot + 1) % 4; render(); };
+$('bFlip').onclick = () => { flipH = !flipH; $('bFlip').classList.toggle('on', flipH); render(); };
 // snapshot: save the current windowed slice as a native-resolution PNG.
 // Toast the file name on success (on phones the save is otherwise silent).
 function defaultPngName() {
@@ -836,7 +914,7 @@ const CINE_PAUSE = '<rect x="7" y="5" width="3.4" height="14" rx="1" fill="curre
 function setCineUI(playing) {
   const btn = $('bCine');
   btn.querySelector('svg').innerHTML = playing ? CINE_PAUSE : CINE_PLAY;
-  btn.querySelector('.lbl').textContent = playing ? T.pause : T.cine;
+  btn.querySelector('.lbl').textContent = playing ? T.pause : (mode === 'simple' ? T.playSimple : T.cine);
   btn.classList.toggle('on', playing);
 }
 function stopCine() { if (cineTimer) { clearInterval(cineTimer); cineTimer = 0; } setCineUI(false); }
@@ -879,11 +957,12 @@ vp.addEventListener('pointerdown', (e) => {
   hideGesture();   // user is doing the gesture - get the demo out of the way
   vp.setPointerCapture(e.pointerId); pts.set(e.pointerId, { x: e.clientX, y: e.clientY, moved: 0 });
   if (pts.size === 2) { const [a, b] = [...pts.values()]; pinchD = Math.hypot(a.x - b.x, a.y - b.y); }
-  if (tool === 'measure' && frame && lastTf && pts.size === 1) {
+  if ((tool === 'measure' || tool === 'angle') && frame && lastTf && pts.size === 1) {
     const r = vp.getBoundingClientRect();
-    const ix = (e.clientX - r.left - lastTf.ox) / lastTf.base, iy = (e.clientY - r.top - lastTf.oy) / lastTf.base;
-    if (measure.length >= 2) measure = [];
-    measure.push({ x: ix, y: iy }); render();
+    const cap = tool === 'angle' ? 3 : 2;
+    if (measureKind !== tool || measure.length >= cap) measure = [];
+    measureKind = tool;
+    measure.push(scr2img(e.clientX - r.left, e.clientY - r.top)); render();
   }
   // double-tap: photo-app zoom toggle
   const now = performance.now();
@@ -927,7 +1006,15 @@ $('buf').onchange = () => { prefetchN = +$('buf').value; ensurePrefetch(); };
 // captured by the viewport's pointer handlers (which would scroll instead of click)
 ['pointerdown', 'pointerup', 'pointermove', 'click'].forEach((ev) => $('srcbadge').addEventListener(ev, (e) => e.stopPropagation()));
 $('lang').onchange = () => { localStorage.setItem('ce_lang', $('lang').value); applyLang($('lang').value); };
+function applyMode(m) {
+  mode = m; localStorage.setItem('ce_mode', m);
+  document.body.classList.toggle('simple', m === 'simple');
+  if (m === 'simple') { if (tool === 'pan') $('tBrowse').click(); $('tags').style.display = 'none'; }
+  applyLang($('lang').value);
+}
+$('mode').onchange = () => applyMode($('mode').value);
 applyLang(detectLang());
+applyMode(mode);
 drawEmpty();
 // test/demo hook: #load=<same-origin zip url>
 if (location.hash.startsWith('#load=')) {
