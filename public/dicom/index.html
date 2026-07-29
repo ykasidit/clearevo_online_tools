@@ -187,7 +187,7 @@ import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
 const APP_NAME = 'DICOM Viewer by ClearEvo.com';
-const APP_VERSION = '1.6.4';
+const APP_VERSION = '1.6.5';
 const APP_TITLE = `${APP_NAME} v${APP_VERSION}`;
 $('titleText').textContent = APP_TITLE;
 $('aboutVer').textContent = `v${APP_VERSION}`;
@@ -200,7 +200,7 @@ const I18N = {
     pngPrompt: 'File name for the PNG:', pngSaved: 'saved - check your Downloads folder', pngFail: 'could not save: ',
     demoDl: 'Demo download started (check your Downloads). When it finishes, press the blinking "Open file" and pick the zip.',
     loadingPreviews: 'Loading series previews…', ready: 'Ready', startReached: 'Start of series', endReached: 'End of series', frame: 'frame', frames: 'frames',
-    demoSmall: '▶ Try a small demo scan (37 MB)', demoCT: '⬇ Full CT demo CD (1.2 GB)', demoMRI: '⬇ Full MRI demo CD (870 MB)',
+    demoSmall: '▶ Try a demo scan (150 MB) - a real SCDS ear CT', demoCT: '⬇ Full CT demo CD (1.2 GB)', demoMRI: '⬇ Full MRI demo CD (870 MB)',
     share: '📤 Share this tool', shareCopied: 'Link copied - paste it anywhere',
     browse: 'Browse', wl: 'W/L', pan: 'Pan', zoom: 'Zoom', measure: 'Measure', undoPt: 'Undo pt', reset: 'Reset', invert: 'Invert', tags: 'Tags',
     wlSimple: 'Brightness', playSimple: 'Play', captureSimple: 'Save image',
@@ -214,7 +214,7 @@ const I18N = {
     gZoom: 'Drag up = zoom in, down = zoom out (pinch or Ctrl +/- too)',
     gMeasure: 'Tap two points - length in mm. Undo pt removes the last point',
     browseHint: 'drag / swipe to scroll through slices; pinch or Zoom tool to zoom; double-tap to zoom',
-    emptyHint: 'Open your MRI, CT or ultrasound scan CD (.zip or .tar) or its folder - images stay on your device, nothing is uploaded. No scan file yet? Download a demo below, then press "Open file" and pick the zip.',
+    emptyHint: 'Open your MRI, CT or ultrasound scan CD (.zip or .tar) or its folder - images stay on your device. No scan file yet? Download a demo below, then press "Open file" and pick the zip.',
     sourceLocal: 'local', sourceOnDevice: 'on your device', sourceRemote: 'streaming - nothing downloaded whole',
     downloadFull: 'download the full CD (GPL)', fastest: 'For fastest scrolling,', andOpenLocally: 'and open it locally.',
     loadingIndex: 'Reading scan index', parsing: 'Parsing index...', connecting: 'Connecting...',
@@ -225,7 +225,7 @@ const I18N = {
     pngPrompt: 'ตั้งชื่อไฟล์ PNG:', pngSaved: 'บันทึกแล้ว - ดูในโฟลเดอร์ดาวน์โหลด (Downloads)', pngFail: 'บันทึกไม่สำเร็จ: ',
     demoDl: 'เริ่มดาวน์โหลดสแกนตัวอย่างแล้ว (ดูในโฟลเดอร์ดาวน์โหลด) พอเสร็จ กดปุ่ม "เปิดไฟล์" ที่กะพริบ แล้วเลือกไฟล์ zip',
     loadingPreviews: 'กำลังโหลดตัวอย่างซีรีส์…', ready: 'พร้อมแล้ว', startReached: 'ต้นซีรีส์แล้ว', endReached: 'ท้ายซีรีส์แล้ว', frame: 'ภาพ', frames: 'ภาพ',
-    demoSmall: '▶ ลองสแกนตัวอย่างขนาดเล็ก (37 MB)', demoCT: '⬇ แผ่น CT ตัวอย่างเต็มแผ่น (1.2 GB)', demoMRI: '⬇ แผ่น MRI ตัวอย่างเต็มแผ่น (870 MB)',
+    demoSmall: '▶ ลองสแกนตัวอย่าง (150 MB) - CT หูที่เป็น SCDS จริง', demoCT: '⬇ แผ่น CT ตัวอย่างเต็มแผ่น (1.2 GB)', demoMRI: '⬇ แผ่น MRI ตัวอย่างเต็มแผ่น (870 MB)',
     share: '📤 แชร์เครื่องมือนี้', shareCopied: 'คัดลอกลิงก์แล้ว - วางส่งต่อได้เลย',
     browse: 'ดูภาพ', wl: 'W/L', pan: 'เลื่อนภาพ', zoom: 'Zoom', measure: 'วัดระยะ', undoPt: 'ลบจุด', reset: 'รีเซ็ต', invert: 'สลับขาว-ดำ', tags: 'Tags',
     wlSimple: 'ปรับแสง', playSimple: 'เล่น', captureSimple: 'บันทึกภาพ',
@@ -239,7 +239,7 @@ const I18N = {
     gZoom: 'ลากขึ้น = ซูมเข้า, ลง = ซูมออก (สองนิ้วหุบ-ถ่าง หรือ Ctrl +/- ก็ได้)',
     gMeasure: 'แตะสองจุด = ระยะเป็น mm ปุ่มลบจุดจะลบจุดล่าสุด',
     browseHint: 'ลาก / ปัดเพื่อไล่ดู slice; ใช้สองนิ้วหุบ-ถ่าง หรือเครื่องมือ Zoom เพื่อซูม; แตะสองครั้งเพื่อซูม',
-    emptyHint: 'เปิดแผ่น CD สแกน MRI, CT หรืออัลตราซาวด์ (.zip หรือ .tar) หรือโฟลเดอร์ของแผ่น - ภาพอยู่ในเครื่องคุณ ไม่มีการอัปโหลดใด ๆ ยังไม่มีไฟล์สแกน? ดาวน์โหลดตัวอย่างด้านล่าง เสร็จแล้วกด "เปิดไฟล์" แล้วเลือกไฟล์ zip',
+    emptyHint: 'เปิดแผ่น CD สแกน MRI, CT หรืออัลตราซาวด์ (.zip หรือ .tar) หรือโฟลเดอร์ของแผ่น - ภาพอยู่ในเครื่องคุณ ยังไม่มีไฟล์สแกน? ดาวน์โหลดตัวอย่างด้านล่าง เสร็จแล้วกด "เปิดไฟล์" แล้วเลือกไฟล์ zip',
     sourceLocal: 'local', sourceOnDevice: 'อยู่ในเครื่องคุณ', sourceRemote: 'สตรีม - ไม่ได้ดาวน์โหลดทั้งไฟล์',
     downloadFull: 'ดาวน์โหลดทั้งแผ่น (GPL)', fastest: 'ถ้าอยากให้ไล่ดูภาพลื่นที่สุด', andOpenLocally: 'แล้วเปิดจากในเครื่อง',
     loadingIndex: 'กำลังอ่านรายการภาพสแกน', parsing: 'กำลังแปลงรายการภาพ...', connecting: 'กำลังเชื่อมต่อ...',
@@ -497,7 +497,7 @@ async function scan() {
   await Promise.all([worker(), worker(), worker(), worker()]);
   if (!metas.length) { stat('no DICOM images found - is this a DICOM CD zip/folder?'); return; }
   series = groupSeries(metas);
-  stat(`${series.length} series, ${metas.length} images - nothing was uploaded`);
+  stat(`${series.length} series, ${metas.length} images`);
   patientBanner(metas[0]);
   renderSeriesList();
   selectSeries(biggestSeries());   // skip 1-frame localizers/topograms - land on the real stack
