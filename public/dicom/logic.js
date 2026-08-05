@@ -286,3 +286,19 @@ export function localScale(rect, clientW) { return rect.width ? clientW / rect.w
 export function clampLabel(x, y, w, h, tw = 80, th = 14) {
   return { x: Math.max(2, Math.min(x, w - tw)), y: Math.max(th, Math.min(y, h - 4)) };
 }
+
+// image px -> screen/canvas px through a pan/zoom/rotate/flip transform
+// t: { base, cx, cy, rot, flipH, cols, rows }
+export function imgToScreen(p, t) {
+  let x = (p.x - t.cols / 2) * t.base, y = (p.y - t.rows / 2) * t.base;
+  if (t.flipH) { x = -x; }
+  for (let i = 0; i < t.rot; i++) { const nx = -y; y = x; x = nx; }   // 90 deg CW per turn
+  return [t.cx + x, t.cy + y];
+}
+
+// transform for a native-resolution PNG export: same rot/flip as on screen,
+// base 1, centered on a canvas sized to the rotated footprint (90/270 swap w/h)
+export function exportTransform(cols, rows, rot, flipH) {
+  const w = rot % 2 ? rows : cols, h = rot % 2 ? cols : rows;
+  return { base: 1, cx: w / 2, cy: h / 2, rot, flipH, cols, rows, w, h };
+}

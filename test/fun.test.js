@@ -535,3 +535,18 @@ test('dicom: measurement label clamped inside the canvas', () => {
   assert.deepEqual(clampLabel(100, 2, 800, 600), { x: 100, y: 14 });      // top edge pushed down
   assert.deepEqual(clampLabel(-20, 700, 800, 600), { x: 2, y: 596 });     // left/bottom corners
 });
+
+import { imgToScreen, exportTransform } from '../public/dicom/logic.js';
+test('dicom: image->screen mapping under rotate/flip', () => {
+  const t0 = { base: 1, cx: 128, cy: 128, rot: 0, flipH: false, cols: 256, rows: 256 };
+  assert.deepEqual(imgToScreen({ x: 128, y: 128 }, t0), [128, 128]);                      // center fixed
+  assert.deepEqual(imgToScreen({ x: 138, y: 128 }, t0), [138, 128]);                      // +x is right
+  assert.deepEqual(imgToScreen({ x: 138, y: 128 }, { ...t0, rot: 1 }), [128, 138]);       // 90 CW: right -> down
+  assert.deepEqual(imgToScreen({ x: 138, y: 128 }, { ...t0, flipH: true }), [118, 128]);  // mirrored
+  assert.deepEqual(imgToScreen({ x: 138, y: 128 }, { ...t0, base: 2 }), [148, 128]);      // zoom scales offsets
+});
+test('dicom: export transform matches the rotated footprint', () => {
+  assert.deepEqual(exportTransform(512, 256, 0, false), { base: 1, cx: 256, cy: 128, rot: 0, flipH: false, cols: 512, rows: 256, w: 512, h: 256 });
+  const t = exportTransform(512, 256, 1, true);   // 90 deg: export canvas swaps to 256x512
+  assert.equal(t.w, 256); assert.equal(t.h, 512); assert.equal(t.flipH, true);
+});

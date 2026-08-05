@@ -182,7 +182,7 @@ body.simple .adv{display:none!important}
 </div>
 <script src="./dicomParser.min.js"></script>
 <script type="module">
-import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle, wheelAction, strayPinchPoint, localScale, clampLabel } from './logic.js';
+import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle, wheelAction, strayPinchPoint, localScale, clampLabel, imgToScreen, exportTransform } from './logic.js';
 import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
@@ -644,13 +644,7 @@ let frame = null, wc = 0, ww = 1, invert = false, zoom = 1, panX = 0, panY = 0, 
 let rot = 0, flipH = false;                    // quarter-turns CW, mirror left-right
 let measure = [], measureKind = 'measure', lastTf = null, lastTap = 0;
 // image px <-> screen px through the current pan/zoom/rotate/flip transform
-function img2scr(p) {
-  const t = lastTf;
-  let x = (p.x - t.cols / 2) * t.base, y = (p.y - t.rows / 2) * t.base;
-  if (t.flipH) x = -x;
-  for (let i = 0; i < t.rot; i++) { const nx = -y; y = x; x = nx; }   // 90° CW per turn
-  return [t.cx + x, t.cy + y];
-}
+function img2scr(p, t = lastTf) { return imgToScreen(p, t); }
 function scr2img(sx, sy) {
   const t = lastTf;
   let x = sx - t.cx, y = sy - t.cy;
@@ -778,6 +772,33 @@ function drawEmpty() {
   $('emptyTxt').textContent = T.emptyHint;
   $('empty').style.display = 'flex';
 }
+// measure/angle markers + value label, shared by the screen render and PNG export
+function drawMeasureOverlay(g, t, w, h) {
+  if (!measure.length) { return; }
+  g.strokeStyle = '#00e5ff'; g.fillStyle = '#00e5ff'; g.lineWidth = 1.5; g.font = '12px Tahoma';
+  const P = measure.map((p) => img2scr(p, t));
+  for (const [x, y] of P) { g.beginPath(); g.arc(x, y, 3, 0, 7); g.stroke(); }
+  const sp = frame.spacing;
+  if (measureKind === 'measure' && P.length === 2) {
+    g.beginPath(); g.moveTo(P[0][0], P[0][1]); g.lineTo(P[1][0], P[1][1]); g.stroke();
+    const dxi = measure[1].x - measure[0].x, dyi = measure[1].y - measure[0].y;
+    const label = sp ? `${Math.hypot(dxi * sp.c, dyi * sp.r).toFixed(1)} mm`
+                     : `${Math.hypot(dxi, dyi).toFixed(0)} px (no pixel spacing)`;
+    const lp = clampLabel((P[0][0] + P[1][0]) / 2 + 6, (P[0][1] + P[1][1]) / 2 - 6, w, h);
+    g.fillText(label, lp.x, lp.y);
+  } else if (measureKind === 'angle' && P.length >= 2) {
+    g.beginPath(); g.moveTo(P[1][0], P[1][1]); g.lineTo(P[0][0], P[0][1]); g.stroke();
+    if (P.length === 3) {
+      g.beginPath(); g.moveTo(P[1][0], P[1][1]); g.lineTo(P[2][0], P[2][1]); g.stroke();
+      // physical angle at the middle point (pixel spacing corrects non-square pixels)
+      const v = (i) => [(measure[i].x - measure[1].x) * (sp ? sp.c : 1), (measure[i].y - measure[1].y) * (sp ? sp.r : 1)];
+      const [ax, ay] = v(0), [bx, by] = v(2);
+      const deg = Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / (Math.hypot(ax, ay) * Math.hypot(bx, by) || 1)))) * 180 / Math.PI;
+      const la = clampLabel(P[1][0] + 8, P[1][1] - 8, w, h, 50);
+      g.fillText(`${deg.toFixed(1)}°`, la.x, la.y);
+    }
+  }
+}
 function render() {
   const { w, h } = fitCanvas();
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
@@ -797,31 +818,7 @@ function render() {
   if (flipH) ctx.scale(-1, 1);
   ctx.drawImage(off, -dw / 2, -dh / 2, dw, dh);
   ctx.restore();
-  if (measure.length) {
-    ctx.strokeStyle = '#00e5ff'; ctx.fillStyle = '#00e5ff'; ctx.lineWidth = 1.5; ctx.font = '12px Tahoma';
-    const P = measure.map(img2scr);
-    for (const [x, y] of P) { ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.stroke(); }
-    const sp = frame.spacing;
-    if (measureKind === 'measure' && P.length === 2) {
-      ctx.beginPath(); ctx.moveTo(P[0][0], P[0][1]); ctx.lineTo(P[1][0], P[1][1]); ctx.stroke();
-      const dxi = measure[1].x - measure[0].x, dyi = measure[1].y - measure[0].y;
-      const label = sp ? `${Math.hypot(dxi * sp.c, dyi * sp.r).toFixed(1)} mm`
-                       : `${Math.hypot(dxi, dyi).toFixed(0)} px (no pixel spacing)`;
-      const lp = clampLabel((P[0][0] + P[1][0]) / 2 + 6, (P[0][1] + P[1][1]) / 2 - 6, w, h);
-      ctx.fillText(label, lp.x, lp.y);
-    } else if (measureKind === 'angle' && P.length >= 2) {
-      ctx.beginPath(); ctx.moveTo(P[1][0], P[1][1]); ctx.lineTo(P[0][0], P[0][1]); ctx.stroke();
-      if (P.length === 3) {
-        ctx.beginPath(); ctx.moveTo(P[1][0], P[1][1]); ctx.lineTo(P[2][0], P[2][1]); ctx.stroke();
-        // physical angle at the middle point (pixel spacing corrects non-square pixels)
-        const v = (i) => [(measure[i].x - measure[1].x) * (sp ? sp.c : 1), (measure[i].y - measure[1].y) * (sp ? sp.r : 1)];
-        const [ax, ay] = v(0), [bx, by] = v(2);
-        const deg = Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / (Math.hypot(ax, ay) * Math.hypot(bx, by) || 1)))) * 180 / Math.PI;
-        const la = clampLabel(P[1][0] + 8, P[1][1] - 8, w, h, 50);
-        ctx.fillText(`${deg.toFixed(1)}°`, la.x, la.y);
-      }
-    }
-  }
+  drawMeasureOverlay(ctx, lastTf, w, h);
   const p = bannerMeta || {};
   $('ovTL').textContent = [p.patient, p.pid && `ID: ${p.pid}`, p.dob && `DOB: ${p.dob}`, p.sex].filter(Boolean).join('\n');
   $('ovTR').textContent = [p.institution, p.study, p.studyDate].filter(Boolean).join('\n');
@@ -964,8 +961,15 @@ function defaultPngName() {
 function capturePng(name) {
   try {
     const off = frame.bitmap ?? paint(frame, wc, ww, invert);
-    const c = document.createElement('canvas'); c.width = frame.cols; c.height = frame.rows;
-    c.getContext('2d').drawImage(off, 0, 0);
+    // native resolution, but what the clinician sees: rotation/flip + measurements
+    const t = exportTransform(frame.cols, frame.rows, rot, flipH);
+    const c = document.createElement('canvas'); c.width = t.w; c.height = t.h;
+    const g = c.getContext('2d');
+    g.translate(t.cx, t.cy); g.rotate(rot * Math.PI / 2);
+    if (flipH) { g.scale(-1, 1); }
+    g.drawImage(off, -frame.cols / 2, -frame.rows / 2);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    drawMeasureOverlay(g, t, t.w, t.h);
     const fn = `${String(name).replace(/\.png$/i, '').replace(/[^\w.-]+/g, '_') || 'image'}.png`;
     const a = document.createElement('a'); a.href = c.toDataURL('image/png');
     a.download = fn; a.click();
