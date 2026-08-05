@@ -182,7 +182,7 @@ body.simple .adv{display:none!important}
 </div>
 <script src="./dicomParser.min.js"></script>
 <script type="module">
-import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle, wheelAction, strayPinchPoint } from './logic.js';
+import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle, wheelAction, strayPinchPoint, localScale } from './logic.js';
 import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
@@ -1052,7 +1052,8 @@ vp.addEventListener('pointercancel', (e) => { pts.delete(e.pointerId); browseAcc
 vp.addEventListener('pointermove', (e) => {
   const p = pts.get(e.pointerId);
   if (!p) return;
-  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  const k = localScale(vp.getBoundingClientRect(), vp.clientWidth);
+  const dx = (e.clientX - p.x) * k, dy = (e.clientY - p.y) * k;
   if (pts.size === 2) {
     const [a, b] = [...pts.values()];
     p.x = e.clientX; p.y = e.clientY;

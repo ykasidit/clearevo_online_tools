@@ -520,3 +520,10 @@ test('dicom: pinch during measure/angle pops the stray first-finger point', () =
   assert.equal(strayPinchPoint('browse', 2, 1), false);   // pinch on other tools untouched
   assert.equal(strayPinchPoint('measure', 1, 1), false);  // single finger - a real point
 });
+
+import { localScale } from '../public/dicom/logic.js';
+test('dicom: drag delta scale undoes A-/A+ body zoom', () => {
+  assert.equal(localScale({ width: 900 }, 600), 600 / 900);  // 150% zoom - drags were 1.5x too fast
+  assert.equal(localScale({ width: 600 }, 600), 1);          // 100% - identity
+  assert.equal(localScale({ width: 0 }, 600), 1);            // degenerate rect - no NaN/Infinity
+});

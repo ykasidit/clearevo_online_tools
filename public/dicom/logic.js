@@ -276,3 +276,7 @@ export function wheelAction(ctrlKey, deltaY, zoom) {
 export function strayPinchPoint(tool, ptsSize, measureLen) {
   return (tool === 'measure' || tool === 'angle') && ptsSize === 2 && measureLen > 0;
 }
+
+// visual px -> local px factor for drag deltas; same principle as clickToLocal
+// (A-/A+ body zoom scales the rect but not clientWidth). 1 when unscaled/hidden.
+export function localScale(rect, clientW) { return rect.width ? clientW / rect.width : 1; }
