@@ -182,7 +182,7 @@ body.simple .adv{display:none!important}
 </div>
 <script src="./dicomParser.min.js"></script>
 <script type="module">
-import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms } from './logic.js';
+import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle } from './logic.js';
 import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
@@ -1036,7 +1036,7 @@ vp.addEventListener('pointerdown', (e) => {
   }
   // double-tap: photo-app zoom toggle
   const now = performance.now();
-  if (pts.size === 1 && dblTapZooms(tool, now - lastTap)) { zoom = zoom > 1.05 ? 1 : 2.5; if (zoom === 1) { panX = panY = 0; } render(); }
+  if (pts.size === 1 && dblTapZooms(tool, now - lastTap)) { zoom = dblTapZoomToggle(zoom); if (zoom === 1) { panX = panY = 0; } render(); }
   lastTap = now;
 });
 vp.addEventListener('pointerup', (e) => { pts.delete(e.pointerId); browseAcc = 0; });
@@ -1069,7 +1069,6 @@ vp.addEventListener('pointermove', (e) => {
     while (browseAcc <= -step) { browseAcc += step; show(idx - 1); }
   }
 });
-vp.addEventListener('dblclick', () => { zoom = 1; panX = panY = 0; render(); });
 // keep clicks/drags on the source badge (the "download full CD" link) from being
 // captured by the viewport's pointer handlers (which would scroll instead of click)
 ['pointerdown', 'pointerup', 'pointermove', 'click'].forEach((ev) => $('srcbadge').addEventListener(ev, (e) => e.stopPropagation()));

@@ -494,3 +494,10 @@ test('dicom: double-tap zoom suppressed while placing measure/angle points', () 
   assert.equal(dblTapZooms('angle', 200), false);
   assert.equal(dblTapZooms('browse', 400), false);   // too slow - not a double-tap
 });
+
+import { dblTapZoomToggle } from '../public/dicom/logic.js';
+test('dicom: double-tap zoom toggles 1x <-> 2.5x (no separate reset handler to fight it)', () => {
+  assert.equal(dblTapZoomToggle(1), 2.5);     // zoom in
+  assert.equal(dblTapZoomToggle(2.5), 1);     // second double-tap returns to fit
+  assert.equal(dblTapZoomToggle(1.04), 2.5);  // just-off-fit still counts as fit
+});

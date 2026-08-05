@@ -258,3 +258,8 @@ export function clickToLocal(clientX, clientY, rect, clientW, clientH) {
 export function dblTapZooms(tool, msSinceLastTap) {
   return msSinceLastTap < 320 && tool !== 'measure' && tool !== 'angle';
 }
+
+// photo-app double-tap zoom toggle target. The old separate dblclick zoom-reset
+// listener is gone - it fired right after the toggle and undid it (mouse
+// double-click zoom was a no-op); this toggle alone covers both directions.
+export function dblTapZoomToggle(zoom) { return zoom > 1.05 ? 1 : 2.5; }
