@@ -182,7 +182,7 @@ body.simple .adv{display:none!important}
 </div>
 <script src="./dicomParser.min.js"></script>
 <script type="module">
-import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle, wheelAction, strayPinchPoint, localScale } from './logic.js';
+import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle, wheelAction, strayPinchPoint, localScale, clampLabel } from './logic.js';
 import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
@@ -807,7 +807,8 @@ function render() {
       const dxi = measure[1].x - measure[0].x, dyi = measure[1].y - measure[0].y;
       const label = sp ? `${Math.hypot(dxi * sp.c, dyi * sp.r).toFixed(1)} mm`
                        : `${Math.hypot(dxi, dyi).toFixed(0)} px (no pixel spacing)`;
-      ctx.fillText(label, (P[0][0] + P[1][0]) / 2 + 6, (P[0][1] + P[1][1]) / 2 - 6);
+      const lp = clampLabel((P[0][0] + P[1][0]) / 2 + 6, (P[0][1] + P[1][1]) / 2 - 6, w, h);
+      ctx.fillText(label, lp.x, lp.y);
     } else if (measureKind === 'angle' && P.length >= 2) {
       ctx.beginPath(); ctx.moveTo(P[1][0], P[1][1]); ctx.lineTo(P[0][0], P[0][1]); ctx.stroke();
       if (P.length === 3) {
@@ -816,7 +817,8 @@ function render() {
         const v = (i) => [(measure[i].x - measure[1].x) * (sp ? sp.c : 1), (measure[i].y - measure[1].y) * (sp ? sp.r : 1)];
         const [ax, ay] = v(0), [bx, by] = v(2);
         const deg = Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / (Math.hypot(ax, ay) * Math.hypot(bx, by) || 1)))) * 180 / Math.PI;
-        ctx.fillText(`${deg.toFixed(1)}°`, P[1][0] + 8, P[1][1] - 8);
+        const la = clampLabel(P[1][0] + 8, P[1][1] - 8, w, h, 50);
+        ctx.fillText(`${deg.toFixed(1)}°`, la.x, la.y);
       }
     }
   }

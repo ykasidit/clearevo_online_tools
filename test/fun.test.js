@@ -527,3 +527,11 @@ test('dicom: drag delta scale undoes A-/A+ body zoom', () => {
   assert.equal(localScale({ width: 600 }, 600), 1);          // 100% - identity
   assert.equal(localScale({ width: 0 }, 600), 1);            // degenerate rect - no NaN/Infinity
 });
+
+import { clampLabel } from '../public/dicom/logic.js';
+test('dicom: measurement label clamped inside the canvas', () => {
+  assert.deepEqual(clampLabel(100, 100, 800, 600), { x: 100, y: 100 });   // interior untouched
+  assert.deepEqual(clampLabel(790, 100, 800, 600), { x: 720, y: 100 });   // right edge pulled in
+  assert.deepEqual(clampLabel(100, 2, 800, 600), { x: 100, y: 14 });      // top edge pushed down
+  assert.deepEqual(clampLabel(-20, 700, 800, 600), { x: 2, y: 596 });     // left/bottom corners
+});

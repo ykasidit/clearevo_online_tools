@@ -280,3 +280,9 @@ export function strayPinchPoint(tool, ptsSize, measureLen) {
 // visual px -> local px factor for drag deltas; same principle as clickToLocal
 // (A-/A+ body zoom scales the rect but not clientWidth). 1 when unscaled/hidden.
 export function localScale(rect, clientW) { return rect.width ? clientW / rect.width : 1; }
+
+// keep a measurement text label inside the canvas so the value a clinician
+// measured for is never clipped at the right/bottom edge. tw ~ label width.
+export function clampLabel(x, y, w, h, tw = 80, th = 14) {
+  return { x: Math.max(2, Math.min(x, w - tw)), y: Math.max(th, Math.min(y, h - 4)) };
+}
