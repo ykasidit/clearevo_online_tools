@@ -244,3 +244,17 @@ export function rleDecodeFrame(bytes, pixelCount, bytesPerSample, samples) {
   }
   return out;
 }
+
+// ---- pointer mapping (viewer) ----
+// click -> viewport-local px. getBoundingClientRect() is in visual px, which the
+// A-/A+ body zoom scales; clientWidth/Height stay in local px. The ratio undoes
+// any such scaling - at 100% zoom it is exactly (clientX - left, clientY - top).
+export function clickToLocal(clientX, clientY, rect, clientW, clientH) {
+  return { x: (clientX - rect.left) * (clientW / rect.width), y: (clientY - rect.top) * (clientH / rect.height) };
+}
+
+// double-tap zoom must not fire while placing measure/angle points - the second
+// quick tap would zoom the image and move the just-placed markers off the clicks
+export function dblTapZooms(tool, msSinceLastTap) {
+  return msSinceLastTap < 320 && tool !== 'measure' && tool !== 'angle';
+}

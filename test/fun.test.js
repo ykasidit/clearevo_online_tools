@@ -478,3 +478,19 @@ test('dicom rle: rgb 8-bit planes interleave to RGBRGB', () => {
   const frame = Uint8Array.from([...header, ...s.flat()]);
   assert.deepEqual([...rleDecodeFrame(frame, 2, 1, 3)], [10, 20, 30, 11, 21, 31]);
 });
+
+import { clickToLocal, dblTapZooms } from '../public/dicom/logic.js';
+test('dicom: measure click maps to local px under A-/A+ body zoom', () => {
+  // 150% zoom: rect is 1.5x the local size - a click at the visual center of the
+  // viewport must map to the local center, not 1.5x past it (the reported bug)
+  const rect = { left: 300, top: 150, width: 900, height: 600 };   // visual (zoomed)
+  assert.deepEqual(clickToLocal(300 + 450, 150 + 300, rect, 600, 400), { x: 300, y: 200 });
+  // 100% zoom: identity with (clientX - left, clientY - top)
+  assert.deepEqual(clickToLocal(310, 160, { left: 300, top: 150, width: 600, height: 400 }, 600, 400), { x: 10, y: 10 });
+});
+test('dicom: double-tap zoom suppressed while placing measure/angle points', () => {
+  assert.equal(dblTapZooms('browse', 200), true);    // normal photo-app double-tap
+  assert.equal(dblTapZooms('measure', 200), false);  // two quick ruler points must not zoom
+  assert.equal(dblTapZooms('angle', 200), false);
+  assert.equal(dblTapZooms('browse', 400), false);   // too slow - not a double-tap
+});

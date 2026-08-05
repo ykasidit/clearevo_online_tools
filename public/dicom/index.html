@@ -182,12 +182,12 @@ body.simple .adv{display:none!important}
 </div>
 <script src="./dicomParser.min.js"></script>
 <script type="module">
-import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame } from './logic.js';
+import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms } from './logic.js';
 import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
 const APP_NAME = 'DICOM Viewer by ClearEvo.com';
-const APP_VERSION = '1.6.5';
+const APP_VERSION = '1.6.6';
 const APP_TITLE = `${APP_NAME} v${APP_VERSION}`;
 $('titleText').textContent = APP_TITLE;
 $('aboutVer').textContent = `v${APP_VERSION}`;
@@ -699,11 +699,13 @@ function ensurePrefetch() {
 
 async function selectSeries(s) {
   if (typeof stopCine === 'function') stopCine();
-  cur = s; idx = 0; inflight.clear(); seriesGen++; zoom = 1; panX = panY = 0; rot = 0; flipH = false; $('bFlip').classList.remove('on'); invert = false; needWL = true; lastDir = 1;
+  // land mid-stack: slice 1 of a thin-slice reformat is the edge of the volume (near-empty)
+  const start = Math.floor((s.instances.length - 1) / 2);
+  cur = s; idx = start; inflight.clear(); seriesGen++; zoom = 1; panX = panY = 0; rot = 0; flipH = false; $('bFlip').classList.remove('on'); invert = false; needWL = true; lastDir = 1;
   nameIdx = new Map(s.instances.map((it, i) => [it.name, i]));
   series.forEach((x) => x.el && x.el.classList.toggle('on', x === s));
-  $('slice').max = s.instances.length - 1; $('slice').value = 0;
-  await show(0);
+  $('slice').max = s.instances.length - 1; $('slice').value = start;
+  await show(start);
 }
 async function show(i) {
   if (!cur) return;
@@ -1029,11 +1031,12 @@ vp.addEventListener('pointerdown', (e) => {
     const cap = tool === 'angle' ? 3 : 2;
     if (measureKind !== tool || measure.length >= cap) measure = [];
     measureKind = tool;
-    measure.push(scr2img(e.clientX - r.left, e.clientY - r.top)); render();
+    const lp = clickToLocal(e.clientX, e.clientY, r, vp.clientWidth, vp.clientHeight);
+    measure.push(scr2img(lp.x, lp.y)); render();
   }
   // double-tap: photo-app zoom toggle
   const now = performance.now();
-  if (pts.size === 1 && now - lastTap < 320) { zoom = zoom > 1.05 ? 1 : 2.5; if (zoom === 1) { panX = panY = 0; } render(); }
+  if (pts.size === 1 && dblTapZooms(tool, now - lastTap)) { zoom = zoom > 1.05 ? 1 : 2.5; if (zoom === 1) { panX = panY = 0; } render(); }
   lastTap = now;
 });
 vp.addEventListener('pointerup', (e) => { pts.delete(e.pointerId); browseAcc = 0; });
