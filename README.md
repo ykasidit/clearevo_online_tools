@@ -31,6 +31,11 @@ site) hold the remaining ClearEvo online tools: [`web_gnss`](https://github.com/
 
 - `./build.sh` - content-hash build of every `public/<app>/` into `dist/<app>/`.
 - `./test.sh` - `node --test` over `test/` (pure-logic + streaming integration tests).
+- `./test/browser/run.sh` - headless-Chrome CDP harness driving the REAL pages with
+  real input: per-tool load smoke, and a 24-scenario DICOM viewer clinician suite
+  (measure landing under zoom/pan/rotate/flip/hi-DPI, cine, capture-with-overlay,
+  screenshot-verified). `BASE=https://www.clearevo.com ./test/browser/run.sh` runs
+  it against the deployed site. Needs Chrome + node >= 22 + python3/pydicom/numpy.
 - The whole site (these apps + the sibling tools + the Jekyll blog) is assembled and
   deployed to Cloudflare by `../ykasidit.github.io/deploy.sh`.
 
