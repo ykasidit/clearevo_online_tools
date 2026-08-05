@@ -270,3 +270,9 @@ export function wheelAction(ctrlKey, deltaY, zoom) {
   if (ctrlKey) { return { zoom: Math.max(0.2, Math.min(12, zoom * (deltaY < 0 ? 1.1 : 1 / 1.1))) }; }
   return { step: deltaY > 0 ? 1 : -1 };
 }
+
+// a second finger joining a measure/angle gesture means the first finger's
+// just-placed point was the start of a pinch, not a measurement - remove it
+export function strayPinchPoint(tool, ptsSize, measureLen) {
+  return (tool === 'measure' || tool === 'angle') && ptsSize === 2 && measureLen > 0;
+}

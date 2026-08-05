@@ -511,3 +511,12 @@ test('dicom: ctrl+wheel (trackpad pinch) zooms, plain wheel scrolls slices', () 
   assert.equal(wheelAction(true, -100, 12).zoom, 12);                  // clamped
   assert.equal(wheelAction(true, 100, 0.2).zoom, 0.2);
 });
+
+import { strayPinchPoint } from '../public/dicom/logic.js';
+test('dicom: pinch during measure/angle pops the stray first-finger point', () => {
+  assert.equal(strayPinchPoint('measure', 2, 1), true);   // finger 2 joins after point placed
+  assert.equal(strayPinchPoint('angle', 2, 2), true);
+  assert.equal(strayPinchPoint('measure', 2, 0), false);  // nothing placed - nothing to pop
+  assert.equal(strayPinchPoint('browse', 2, 1), false);   // pinch on other tools untouched
+  assert.equal(strayPinchPoint('measure', 1, 1), false);  // single finger - a real point
+});

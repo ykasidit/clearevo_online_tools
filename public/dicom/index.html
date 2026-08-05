@@ -182,7 +182,7 @@ body.simple .adv{display:none!important}
 </div>
 <script src="./dicomParser.min.js"></script>
 <script type="module">
-import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle, wheelAction } from './logic.js';
+import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle, wheelAction, strayPinchPoint } from './logic.js';
 import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
@@ -1030,7 +1030,10 @@ vp.addEventListener('pointerdown', (e) => {
   if (e.target.closest('button, select, a, input')) return;
   hideGesture();   // user is doing the gesture - get the demo out of the way
   vp.setPointerCapture(e.pointerId); pts.set(e.pointerId, { x: e.clientX, y: e.clientY, moved: 0 });
-  if (pts.size === 2) { const [a, b] = [...pts.values()]; pinchD = Math.hypot(a.x - b.x, a.y - b.y); }
+  if (pts.size === 2) {
+    const [a, b] = [...pts.values()]; pinchD = Math.hypot(a.x - b.x, a.y - b.y);
+    if (strayPinchPoint(tool, pts.size, measure.length)) { measure.pop(); render(); }
+  }
   if ((tool === 'measure' || tool === 'angle') && frame && lastTf && pts.size === 1) {
     const r = vp.getBoundingClientRect();
     const cap = tool === 'angle' ? 3 : 2;
