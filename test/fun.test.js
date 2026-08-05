@@ -501,3 +501,13 @@ test('dicom: double-tap zoom toggles 1x <-> 2.5x (no separate reset handler to f
   assert.equal(dblTapZoomToggle(2.5), 1);     // second double-tap returns to fit
   assert.equal(dblTapZoomToggle(1.04), 2.5);  // just-off-fit still counts as fit
 });
+
+import { wheelAction } from '../public/dicom/logic.js';
+test('dicom: ctrl+wheel (trackpad pinch) zooms, plain wheel scrolls slices', () => {
+  assert.deepEqual(wheelAction(false, 120, 1), { step: 1 });
+  assert.deepEqual(wheelAction(false, -120, 1), { step: -1 });
+  assert.ok(Math.abs(wheelAction(true, -100, 1).zoom - 1.1) < 1e-9);   // pinch out = zoom in
+  assert.ok(Math.abs(wheelAction(true, 100, 1.1).zoom - 1) < 1e-9);    // pinch in = zoom out
+  assert.equal(wheelAction(true, -100, 12).zoom, 12);                  // clamped
+  assert.equal(wheelAction(true, 100, 0.2).zoom, 0.2);
+});

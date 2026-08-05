@@ -182,7 +182,7 @@ body.simple .adv{display:none!important}
 </div>
 <script src="./dicomParser.min.js"></script>
 <script type="module">
-import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle } from './logic.js';
+import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle, wheelAction } from './logic.js';
 import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
@@ -1001,7 +1001,12 @@ $('about').onclick = (e) => { if (e.target === $('about')) $('about').style.disp
 $('bPrev').onclick = () => { if (ready) show(idx - 1); };
 $('bNext').onclick = () => { if (ready) show(idx + 1); };
 $('slice').oninput = () => { if (ready) show(+$('slice').value); };
-vp.addEventListener('wheel', (e) => { e.preventDefault(); if (ready) show(idx + (e.deltaY > 0 ? 1 : -1)); }, { passive: false });
+vp.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const a = wheelAction(e.ctrlKey, e.deltaY, zoom);
+  if (a.zoom !== undefined) { if (frame) { zoom = a.zoom; render(); } }
+  else if (ready) show(idx + a.step);
+}, { passive: false });
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { $('about').style.display = 'none'; $('tags').style.display = 'none'; }
   if (e.ctrlKey || e.metaKey) {   // Ctrl +/- zooms the image (not the browser)

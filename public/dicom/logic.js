@@ -263,3 +263,10 @@ export function dblTapZooms(tool, msSinceLastTap) {
 // listener is gone - it fired right after the toggle and undid it (mouse
 // double-click zoom was a no-op); this toggle alone covers both directions.
 export function dblTapZoomToggle(zoom) { return zoom > 1.05 ? 1 : 2.5; }
+
+// wheel gesture routing: browsers deliver trackpad pinch as ctrl+wheel - that
+// must zoom (like every image app); a plain wheel scrolls slices.
+export function wheelAction(ctrlKey, deltaY, zoom) {
+  if (ctrlKey) { return { zoom: Math.max(0.2, Math.min(12, zoom * (deltaY < 0 ? 1.1 : 1 / 1.1))) }; }
+  return { step: deltaY > 0 ? 1 : -1 };
+}
