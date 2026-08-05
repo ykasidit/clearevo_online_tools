@@ -36,6 +36,8 @@ site) hold the remaining ClearEvo online tools: [`web_gnss`](https://github.com/
   (measure landing under zoom/pan/rotate/flip/hi-DPI, cine, capture-with-overlay,
   screenshot-verified). `BASE=https://www.clearevo.com ./test/browser/run.sh` runs
   it against the deployed site. Needs Chrome + node >= 22 + python3/pydicom/numpy.
+  `clinician_real.mjs` runs the same scenarios on the real SCDS demo CD zip
+  (fetched same-origin from the live R2 demo).
 - The whole site (these apps + the sibling tools + the Jekyll blog) is assembled and
   deployed to Cloudflare by `../ykasidit.github.io/deploy.sh`.
 

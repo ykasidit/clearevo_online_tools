@@ -7,6 +7,9 @@
 #                   multi-frame US, tags, capture-with-overlay)
 #   probe.mjs     - trackpad pinch (ctrl+wheel), touch-pinch during measure, slider (diagnostic)
 #   repro.mjs     - measure landing incl. persisted A-/A+ body zoom (diagnostic)
+# clinician_real.mjs (not run here - needs the ~150MB SCDS demo download) runs the
+# data-agnostic scenarios on the REAL demo scan CD:
+#   BASE=https://www.clearevo.com node clinician_real.mjs
 #
 # Local (default, serves public/ on :8077):  ./run.sh
 # Against the deployed site:                 BASE=https://www.clearevo.com ./run.sh
