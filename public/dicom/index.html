@@ -166,7 +166,7 @@ body.simple .adv{display:none!important}
       <div><div style="font-size:17px;font-weight:700;color:#eaf4ff">DICOM Viewer by ClearEvo.com <span id="aboutVer" style="font-weight:400;font-size:13px;color:#8fb3cf"></span></div>
       <div style="color:#8fb3cf">Free, open-source DICOM viewer - runs 100% in your browser</div></div>
     </div>
-    <p id="aboutWhy">Made by Kasidit Yusuf, co-founder of <a href="https://www.clearevo.com/about" target="_blank" rel="noopener">ClearEvo</a> (safety and medical equipment as DeepSafety since 2019), as a gift to DeepSafety's customers and anyone handed a scan CD they cannot open. No ads, no sign-up, no upsell. The demo scans are his own head CT and MRI.</p>
+    <p id="aboutWhy">Written by Kasidit Yusuf, co-founder of <a href="https://www.clearevo.com/about" target="_blank" rel="noopener">ClearEvo</a>, to open his own CT scan CD on his phone - then given away free to everyone as a gift from ClearEvo. No ads, no sign-up, no upsell. The demo scans are his own head CT and MRI.</p>
     <p><b>&copy; 2026 Kasidit Yusuf.</b> Free software under the <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" target="_blank" rel="noopener">GNU General Public License, version 2</a>.</p>
     <p>Provided <b>&ldquo;as is&rdquo;, with NO WARRANTY and no support</b> - without even the implied warranty of merchantability or fitness for a particular purpose. <b>Not a medical device:</b> for personal viewing of your own scans, not for diagnosis - that belongs to your radiologist and their certified tools.</p>
     <p><b>Privacy:</b> your images are decoded on your device and are <b>never uploaded</b> (Google Analytics for visit stats only). <a href="https://www.clearevo.com/tools-privacy/" target="_blank" rel="noopener">How to verify &rarr;</a></p>
@@ -189,7 +189,7 @@ import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
 const APP_NAME = 'DICOM Viewer by ClearEvo.com';
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.7.1';
 const APP_TITLE = `${APP_NAME} v${APP_VERSION}`;
 $('titleText').textContent = APP_TITLE;
 $('aboutVer').textContent = `v${APP_VERSION}`;
@@ -217,7 +217,7 @@ const I18N = {
     gMeasure: 'Tap two points - length in mm. Undo pt removes the last point',
     browseHint: 'drag / swipe to scroll through slices; pinch or Zoom tool to zoom; double-tap to zoom',
     emptyHint: 'Open your MRI, CT or ultrasound scan CD (.zip or .tar) or its folder - images stay on your device. No scan file yet? Download a demo below, then press "Open file" and pick the zip.',
-    why: 'A gift from ClearEvo (DeepSafety) to our customers and anyone with a scan CD - free, no ads. The demo scans are the author\'s own head CT and MRI.',
+    why: 'Written to open the author\'s own CT scan on a phone, then given away free to everyone - a gift from ClearEvo, no ads. The demo scans are his own head CT and MRI.',
     sourceLocal: 'local', sourceOnDevice: 'on your device', sourceRemote: 'streaming - nothing downloaded whole',
     downloadFull: 'download the full CD (GPL)', fastest: 'For fastest scrolling,', andOpenLocally: 'and open it locally.',
     loadingIndex: 'Reading scan index', parsing: 'Parsing index...', connecting: 'Connecting...',
@@ -243,7 +243,7 @@ const I18N = {
     gMeasure: 'แตะสองจุด = ระยะเป็น mm ปุ่มลบจุดจะลบจุดล่าสุด',
     browseHint: 'ลาก / ปัดเพื่อไล่ดู slice; ใช้สองนิ้วหุบ-ถ่าง หรือเครื่องมือ Zoom เพื่อซูม; แตะสองครั้งเพื่อซูม',
     emptyHint: 'เปิดแผ่น CD สแกน MRI, CT หรืออัลตราซาวด์ (.zip หรือ .tar) หรือโฟลเดอร์ของแผ่น - ภาพอยู่ในเครื่องคุณ ยังไม่มีไฟล์สแกน? ดาวน์โหลดตัวอย่างด้านล่าง เสร็จแล้วกด "เปิดไฟล์" แล้วเลือกไฟล์ zip',
-    why: 'ของขวัญจาก ClearEvo (DeepSafety) ถึงลูกค้าของเราและทุกคนที่มีแผ่น CD สแกน - ใช้ฟรี ไม่มีโฆษณา สแกนตัวอย่างคือ CT และ MRI ศีรษะของผู้พัฒนาเอง',
+    why: 'เขียนขึ้นเพื่อเปิดดูสแกน CT ของผู้พัฒนาเองบนมือถือ แล้วเปิดให้ทุกคนใช้ฟรีเป็นของขวัญจาก ClearEvo ไม่มีโฆษณา สแกนตัวอย่างคือ CT และ MRI ศีรษะของผู้พัฒนาเอง',
     sourceLocal: 'local', sourceOnDevice: 'อยู่ในเครื่องคุณ', sourceRemote: 'สตรีม - ไม่ได้ดาวน์โหลดทั้งไฟล์',
     downloadFull: 'ดาวน์โหลดทั้งแผ่น (GPL)', fastest: 'ถ้าอยากให้ไล่ดูภาพลื่นที่สุด', andOpenLocally: 'แล้วเปิดจากในเครื่อง',
     loadingIndex: 'กำลังอ่านรายการภาพสแกน', parsing: 'กำลังแปลงรายการภาพ...', connecting: 'กำลังเชื่อมต่อ...',
