@@ -132,6 +132,7 @@ body.simple .adv{display:none!important}
       <div id="empty" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#9fb3c8;gap:14px;padding:24px;pointer-events:none">
         <div style="width:88px;height:88px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.5))"><svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect width="64" height="64" rx="13" fill="#0c2035"/><ellipse cx="32" cy="33" rx="18" ry="21" fill="#1c5680" stroke="#5bb6e6" stroke-width="3"/><g fill="none" stroke="#0a2338" stroke-width="2.4" stroke-linecap="round"><path d="M32 14 V27 M32 39 V52"/><path d="M26 19 C21 27, 22 39, 27 47"/><path d="M38 19 C43 27, 42 39, 37 47"/><path d="M22 26 C19 32, 20 40, 24 45"/><path d="M42 26 C45 32, 44 40, 40 45"/></g><g fill="#cdefff"><path d="M30.6 31 C28 33, 27.4 36, 29 39 C30 36, 30 34, 30.6 32Z"/><path d="M33.4 31 C36 33, 36.6 36, 35 39 C34 36, 34 34, 33.4 32Z"/></g></svg></div>
         <div id="emptyTxt" style="font:14px Tahoma,'Segoe UI',sans-serif;max-width:520px;line-height:1.5"></div>
+        <div id="emptyWhy" style="font:12px Tahoma,'Segoe UI',sans-serif;max-width:520px;line-height:1.5;color:#7f97ad"></div>
         <div style="display:flex;flex-direction:column;gap:10px;align-items:center;pointer-events:auto;margin-top:4px">
           <button id="demoSmallBtn" class="demobtn"></button>
           <div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center">
@@ -156,7 +157,7 @@ body.simple .adv{display:none!important}
     <span id="sliceLbl">-/-</span>
   </div>
   </div>
-  <div class="status-bar"><p class="status-bar-field"><span id="sbPrivacy">100% in-browser - your medical images are NEVER uploaded</span> (Google Analytics: visit stats only - <a href="/tools-privacy/" target="_blank" rel="noopener">verify</a>) - <a href="/blog/2026/07/22/how_to_view_ct_mri_dicom_cd_in_your_browser/" target="_blank" rel="noopener">how to use</a> - <a href="/tools/" target="_blank" rel="noopener">more tools</a> - <a href="https://www.clearevo.com/">clearevo</a> - © 2026 Kasidit Yusuf, GPL v2 - <span id="sbNotDevice">not a medical device: for personal viewing, not diagnosis</span></p></div>
+  <div class="status-bar"><p class="status-bar-field"><span id="sbPrivacy">100% in-browser - your medical images are NEVER uploaded</span> (Google Analytics: visit stats only - <a href="/tools-privacy/" target="_blank" rel="noopener">verify</a>) - <a href="/blog/2026/07/22/how_to_view_ct_mri_dicom_cd_in_your_browser/" target="_blank" rel="noopener">how to use</a> - <a href="/tools/" target="_blank" rel="noopener">why this exists</a> - <a href="https://www.clearevo.com/">clearevo</a> - © 2026 Kasidit Yusuf, GPL v2 - <span id="sbNotDevice">not a medical device: for personal viewing, not diagnosis</span></p></div>
 </div>
 <div id="about" style="position:fixed;inset:0;z-index:2000;display:none;align-items:center;justify-content:center;background:rgba(3,10,18,.72);padding:16px">
   <div style="background:#0d1f33;border:1px solid #2f6a8f;border-radius:12px;max-width:560px;width:100%;max-height:88vh;overflow:auto;padding:22px 24px;box-shadow:0 8px 40px rgba(0,0,0,.6);color:#cdd9e5;font:13px/1.6 'Segoe UI',Tahoma,'DejaVu Sans',sans-serif">
@@ -165,6 +166,7 @@ body.simple .adv{display:none!important}
       <div><div style="font-size:17px;font-weight:700;color:#eaf4ff">DICOM Viewer by ClearEvo.com <span id="aboutVer" style="font-weight:400;font-size:13px;color:#8fb3cf"></span></div>
       <div style="color:#8fb3cf">Free, open-source DICOM viewer - runs 100% in your browser</div></div>
     </div>
+    <p id="aboutWhy">Made by Kasidit Yusuf, co-founder of <a href="https://www.clearevo.com/about" target="_blank" rel="noopener">ClearEvo</a> (safety and medical equipment as DeepSafety since 2019), as a gift to DeepSafety's customers and anyone handed a scan CD they cannot open. No ads, no sign-up, no upsell. The demo scans are his own head CT and MRI.</p>
     <p><b>&copy; 2026 Kasidit Yusuf.</b> Free software under the <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" target="_blank" rel="noopener">GNU General Public License, version 2</a>.</p>
     <p>Provided <b>&ldquo;as is&rdquo;, with NO WARRANTY and no support</b> - without even the implied warranty of merchantability or fitness for a particular purpose. <b>Not a medical device:</b> for personal viewing of your own scans, not for diagnosis - that belongs to your radiologist and their certified tools.</p>
     <p><b>Privacy:</b> your images are decoded on your device and are <b>never uploaded</b> (Google Analytics for visit stats only). <a href="https://www.clearevo.com/tools-privacy/" target="_blank" rel="noopener">How to verify &rarr;</a></p>
@@ -182,12 +184,12 @@ body.simple .adv{display:none!important}
 </div>
 <script src="./dicomParser.min.js"></script>
 <script type="module">
-import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, evictKeys, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle, wheelAction, strayPinchPoint, localScale, clampLabel, imgToScreen, exportTransform } from './logic.js';
+import { zipEntries, zipData, tarEntries, JUNK_RE, looksDicom, groupSeries, CT_PRESETS, firstNum, makeLut, normKey, seriesFromDicomdirRecords, makeResolver, edgeOrientations, makeLatestGate, rleDecodeFrame, clickToLocal, dblTapZooms, dblTapZoomToggle, wheelAction, strayPinchPoint, localScale, clampLabel, imgToScreen, exportTransform, cacheByteBudget, evictKeysByBytes, prefetchDepth } from './logic.js';
 import * as jpegLossless from './lossless-min.js';
 const $ = (id) => document.getElementById(id);
 // App identity - the <title> is version-free (stable SERP snippet); bump APP_VERSION alone.
 const APP_NAME = 'DICOM Viewer by ClearEvo.com';
-const APP_VERSION = '1.6.9';
+const APP_VERSION = '1.7.0';
 const APP_TITLE = `${APP_NAME} v${APP_VERSION}`;
 $('titleText').textContent = APP_TITLE;
 $('aboutVer').textContent = `v${APP_VERSION}`;
@@ -215,6 +217,7 @@ const I18N = {
     gMeasure: 'Tap two points - length in mm. Undo pt removes the last point',
     browseHint: 'drag / swipe to scroll through slices; pinch or Zoom tool to zoom; double-tap to zoom',
     emptyHint: 'Open your MRI, CT or ultrasound scan CD (.zip or .tar) or its folder - images stay on your device. No scan file yet? Download a demo below, then press "Open file" and pick the zip.',
+    why: 'A gift from ClearEvo (DeepSafety) to our customers and anyone with a scan CD - free, no ads. The demo scans are the author\'s own head CT and MRI.',
     sourceLocal: 'local', sourceOnDevice: 'on your device', sourceRemote: 'streaming - nothing downloaded whole',
     downloadFull: 'download the full CD (GPL)', fastest: 'For fastest scrolling,', andOpenLocally: 'and open it locally.',
     loadingIndex: 'Reading scan index', parsing: 'Parsing index...', connecting: 'Connecting...',
@@ -240,6 +243,7 @@ const I18N = {
     gMeasure: 'แตะสองจุด = ระยะเป็น mm ปุ่มลบจุดจะลบจุดล่าสุด',
     browseHint: 'ลาก / ปัดเพื่อไล่ดู slice; ใช้สองนิ้วหุบ-ถ่าง หรือเครื่องมือ Zoom เพื่อซูม; แตะสองครั้งเพื่อซูม',
     emptyHint: 'เปิดแผ่น CD สแกน MRI, CT หรืออัลตราซาวด์ (.zip หรือ .tar) หรือโฟลเดอร์ของแผ่น - ภาพอยู่ในเครื่องคุณ ยังไม่มีไฟล์สแกน? ดาวน์โหลดตัวอย่างด้านล่าง เสร็จแล้วกด "เปิดไฟล์" แล้วเลือกไฟล์ zip',
+    why: 'ของขวัญจาก ClearEvo (DeepSafety) ถึงลูกค้าของเราและทุกคนที่มีแผ่น CD สแกน - ใช้ฟรี ไม่มีโฆษณา สแกนตัวอย่างคือ CT และ MRI ศีรษะของผู้พัฒนาเอง',
     sourceLocal: 'local', sourceOnDevice: 'อยู่ในเครื่องคุณ', sourceRemote: 'สตรีม - ไม่ได้ดาวน์โหลดทั้งไฟล์',
     downloadFull: 'ดาวน์โหลดทั้งแผ่น (GPL)', fastest: 'ถ้าอยากให้ไล่ดูภาพลื่นที่สุด', andOpenLocally: 'แล้วเปิดจากในเครื่อง',
     loadingIndex: 'กำลังอ่านรายการภาพสแกน', parsing: 'กำลังแปลงรายการภาพ...', connecting: 'กำลังเชื่อมต่อ...',
@@ -602,7 +606,7 @@ async function decodeInstance(inst) {
     // ultrasound & co: standard JPEG inside - the browser decodes it natively
     const frame = encapFrame(ds, el, f, nframes, true);
     const bmp = await createImageBitmap(new Blob([frame], { type: 'image/jpeg' }));
-    return { bitmap: bmp, rows: bmp.height, cols: bmp.width, samples, photo, slope: 1, icept: 0, wc0: 128, ww0: 256, ts, ds, spacing: spacingOf(ds), nframes, frameTime };
+    return { bitmap: bmp, rows: bmp.height, cols: bmp.width, samples, photo, slope: 1, icept: 0, wc0: 128, ww0: 256, ts, ds, iop: ds.string('x00200037') || null, spacing: spacingOf(ds), nframes, frameTime };
   } else {
     throw new Error(`transfer syntax ${ts} not supported yet - tell me in the blog comments`);
   }
@@ -614,7 +618,7 @@ async function decodeInstance(inst) {
     for (let i = 0; i < px.length; i += 7) { const v = px[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
     wc = ((mn + mx) / 2) * slope + icept; ww = Math.max(1, (mx - mn)) * slope;
   }
-  return { px, rows, cols, samples, photo, slope, icept, wc0: wc, ww0: ww, ts, ds, spacing: spacingOf(ds), nframes, frameTime };
+  return { px, rows, cols, samples, photo, slope, icept, wc0: wc, ww0: ww, ts, ds, iop: ds.string('x00200037') || null, spacing: spacingOf(ds), nframes, frameTime };
 }
 function spacingOf(ds) {
   const v = ds.string('x00280030') || ds.string('x00181164'); // PixelSpacing, else ImagerPixelSpacing
@@ -659,16 +663,23 @@ function scr2img(sx, sy) {
 // blocking one Range request per frame.
 const cache = new Map();       // UNIQUE image id (file name) -> frame
 const inflight = new Set();    // image ids currently decoding
-const prefetchN = 50;   // decode-ahead depth; was user-tunable when demos streamed remotely
+const prefetchN = prefetchDepth(navigator.deviceMemory);   // decode-ahead depth by device class
 let lastDir = 1, seriesGen = 0;
 const showGate = makeLatestGate();   // latest show() call wins - guards against stale-frame paints
 let nameIdx = new Map();       // image id -> index in the CURRENT series
 const DL_CONCURRENCY = 3;   // parallel range downloads - shared by prefetch buffer + series previews
-function cacheCap() { return Math.max(24, prefetchN * 2 + 4); }
+// cache is byte-budgeted by device class - a 1.2GB CT CD must not OOM a phone
+// renderer ("Aw, Snap"). Cached neighbours keep pixels + precomputed meta only;
+// the full dataset (whole file bytes) stays only on the displayed slice (Tags).
+const CACHE_BUDGET = cacheByteBudget(navigator.deviceMemory);
+function frameBytes(f) { return (f.px ? f.px.byteLength : f.cols * f.rows * 4) + 65536; }
 function cachePut(name, v) {
   cache.set(name, v);
-  if (cache.size > cacheCap()) {
-    for (const k of evictKeys([...cache.keys()], (k) => (nameIdx.has(k) ? nameIdx.get(k) : null), idx, cacheCap())) cache.delete(k);
+  for (const f of cache.values()) { if (f !== frame && f.ds) { delete f.ds; } }
+  const sizeOf = (k) => { const f = cache.get(k); return f ? frameBytes(f) : 0; };
+  for (const k of evictKeysByBytes([...cache.keys()], (k) => (nameIdx.has(k) ? nameIdx.get(k) : null), idx, sizeOf, CACHE_BUDGET)) {
+    const f = cache.get(k);
+    if (f !== frame) { if (f && f.bitmap) { f.bitmap.close(); } cache.delete(k); }
   }
   drawBufBar();
 }
@@ -770,6 +781,7 @@ function drawEmpty() {
   const { w, h } = fitCanvas();
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
   $('emptyTxt').textContent = T.emptyHint;
+  $('emptyWhy').textContent = T.why;
   $('empty').style.display = 'flex';
 }
 // measure/angle markers + value label, shared by the screen render and PNG export
@@ -828,7 +840,7 @@ function render() {
   $('wlz').textContent = (frame.bitmap ? `zoom ${(zoom * 100).toFixed(0)}%` : `WL ${Math.round(wc)} · WW ${Math.round(ww)} · zoom ${(zoom * 100).toFixed(0)}%`) + rotTxt;
   let eo = null;
   // anatomical edge markers are only valid unrotated/unmirrored - hide rather than mislabel
-  if (!rot && !flipH) try { const iop = frame.ds && frame.ds.string('x00200037'); if (iop) eo = edgeOrientations(iop.split('\\').map(parseFloat)); } catch {}
+  if (!rot && !flipH) try { if (frame.iop) eo = edgeOrientations(frame.iop.split('\\').map(parseFloat)); } catch {}
   $('edgeT').textContent = eo ? eo.top : ''; $('edgeB').textContent = eo ? eo.bottom : '';
   $('edgeL').textContent = eo ? eo.left : ''; $('edgeR').textContent = eo ? eo.right : '';
   drawBufBar();
@@ -935,15 +947,18 @@ for (const [id, t] of TOOLS) {
   $(id).onclick = () => { tool = t; for (const [id2, t2] of TOOLS) $(id2).classList.toggle('on', t2 === tool); showGesture(t); };
 }
 $('bMUndo').onclick = () => { if (measure.length) { measure.pop(); render(); } };
-$('bTags').onclick = () => {
+$('bTags').onclick = async () => {
   const el = $('tags');
   if (el.style.display === 'block') { el.style.display = 'none'; return; }
-  if (!frame || !frame.ds) return;
+  if (!frame || !cur) return;
+  // cached slices are stripped of their dataset (memory) - re-decode on demand
+  let ds = frame.ds;
+  if (!ds) { try { ds = (await decodeInstance(cur.instances[idx])).ds; } catch { return; } }
   const rows = [];
-  for (const k of Object.keys(frame.ds.elements).sort()) {
-    const e = frame.ds.elements[k];
+  for (const k of Object.keys(ds.elements).sort()) {
+    const e = ds.elements[k];
     let v = '';
-    if (e.length < 200 && !e.items && k !== 'x7fe00010') { try { v = frame.ds.string(k) ?? ''; } catch {} }
+    if (e.length < 200 && !e.items && k !== 'x7fe00010') { try { v = ds.string(k) ?? ''; } catch {} }
     rows.push(`(${k.slice(1, 5)},${k.slice(5)}) ${e.vr || '  '} len=${String(e.length).padStart(7)}  ${v}`);
   }
   el.textContent = rows.join('\n');

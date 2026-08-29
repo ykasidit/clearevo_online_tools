@@ -550,3 +550,26 @@ test('dicom: export transform matches the rotated footprint', () => {
   const t = exportTransform(512, 256, 1, true);   // 90 deg: export canvas swaps to 256x512
   assert.equal(t.w, 256); assert.equal(t.h, 512); assert.equal(t.flipH, true);
 });
+
+import { cacheByteBudget, evictKeysByBytes } from '../public/dicom/logic.js';
+test('dicom: cache byte budget scales with device memory', () => {
+  assert.equal(cacheByteBudget(8), 300 * 1048576);
+  assert.equal(cacheByteBudget(4), 150 * 1048576);
+  assert.equal(cacheByteBudget(2), 75 * 1048576);   // phones: small cache, no OOM
+  assert.equal(cacheByteBudget(undefined), 150 * 1048576);
+});
+test('dicom: byte eviction drops farthest slices first, never the displayed one', () => {
+  const sizes = { a: 40, b: 40, c: 40, x: 40 };
+  const idxOf = (k) => ({ a: 10, b: 11, c: 14 })[k] ?? null;   // x: other series
+  assert.deepEqual(evictKeysByBytes(['a', 'b', 'c', 'x'], idxOf, 10, (k) => sizes[k], 200), []);
+  assert.deepEqual(evictKeysByBytes(['a', 'b', 'c', 'x'], idxOf, 10, (k) => sizes[k], 100), ['x', 'c']);
+  assert.deepEqual(evictKeysByBytes(['a'], idxOf, 10, () => 9999, 100), []);  // displayed survives any budget
+});
+
+import { prefetchDepth } from '../public/dicom/logic.js';
+test('dicom: prefetch depth scales with device memory', () => {
+  assert.equal(prefetchDepth(8), 50);
+  assert.equal(prefetchDepth(4), 24);
+  assert.equal(prefetchDepth(2), 12);
+  assert.equal(prefetchDepth(undefined), 24);
+});

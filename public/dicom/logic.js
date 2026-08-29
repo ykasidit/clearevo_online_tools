@@ -302,3 +302,36 @@ export function exportTransform(cols, rows, rot, flipH) {
   const w = rot % 2 ? rows : cols, h = rot % 2 ? cols : rows;
   return { base: 1, cx: w / 2, cy: h / 2, rot, flipH, cols, rows, w, h };
 }
+
+// slice-cache byte budget by device class (navigator.deviceMemory GB, spec caps
+// reporting at 8). Phones get a small cache so a big CD can't OOM the renderer
+// ("Aw, Snap"): a 1.2GB 12-series CT drove the cache-held renderer to ~570MB
+// RSS, which the kernel OOM-killed under a 450MB limit.
+export function cacheByteBudget(deviceMemGb) {
+  const g = deviceMemGb || 4;
+  return (g >= 8 ? 300 : g >= 4 ? 150 : 75) * 1048576;
+}
+
+// like evictKeys but by total bytes: evict farthest-first until under budget.
+// d == 0 (the displayed slice) is never evicted.
+export function evictKeysByBytes(keys, indexOf, curIdx, sizeOf, budget) {
+  let total = 0;
+  for (const k of keys) { total += sizeOf(k); }
+  if (total <= budget) { return []; }
+  const scored = keys.map((k) => { const i = indexOf(k); return { k, d: i == null ? Infinity : Math.abs(i - curIdx) }; })
+    .sort((a, b) => b.d - a.d);
+  const out = [];
+  for (const s of scored) {
+    if (total <= budget || s.d === 0) { break; }
+    total -= sizeOf(s.k);
+    out.push(s.k);
+  }
+  return out;
+}
+
+// decode-ahead depth by device class - deep prefetch is a desktop luxury; on
+// phones the in-flight decode buffers are transient RSS spikes the OOM killer sees
+export function prefetchDepth(deviceMemGb) {
+  const g = deviceMemGb || 4;
+  return g >= 8 ? 50 : g >= 4 ? 24 : 12;
+}
