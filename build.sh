@@ -13,12 +13,12 @@
 set -e
 cd "$(dirname "$0")"
 rm -rf dist
-for dir in public/*/; do node --check "${dir}logic.js"; done
+for f in public/*/*.js; do case "$f" in *.min.js) ;; *) node --check "$f";; esac; done
 python3 - <<'PY'
 import hashlib, re, shutil, sys
 from pathlib import Path
 
-KEEP = re.compile(r'^(index\.html|manifest\.json|README.*|icon-.*|clinic.*)$')
+KEEP = re.compile(r'^(index\.html|manifest\.json|README.*|icon-.*|clinic.*|sw\.js)$')   # sw.js: a service worker URL must stay stable
 TEXT = ('.js', '.css', '.html')
 def anchored(name):   # match the filename only at a path/quote boundary
     return re.compile(r'(?<![\w.\-])' + re.escape(name) + r'(?![\w\-])')

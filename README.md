@@ -4,6 +4,7 @@ Free, privacy-respecting tools that run **100% in your browser** - nothing is up
 Live at **https://www.clearevo.com/tools/**
 
 Copyright (C) 2026 Kasidit Yusuf. Free software under the **GNU GPL v2** (see [`LICENSE`](LICENSE)).
+Every first-party source file (each `index.html` head comment and every `.js` we wrote) carries the GPL notice, so the licence ships with the code to every browser. Vendored third-party files (xp.css, dicomParser, OpenJPEG, ffmpeg.wasm, gdal3, qrcode) keep their own licences and headers.
 
 ## Structure - one app per subdirectory
 
@@ -14,6 +15,7 @@ a per-app `README.md` carrying the copyright/licence notice:
 | App | Path | What it is |
 |-----|------|-----------|
 | 🩻 ClearEvo.com DICOM Viewer | [`public/dicom`](public/dicom) | Open/stream a DICOM CT/MRI scan CD in the browser |
+| 🔋 BatRay by ClearEvo.com | [`public/batray`](public/batray) | JK BMS battery monitor over Web Bluetooth, share live, alerts |
 | 🔢 ClearEvo.com Hex Editor | [`public/hex`](public/hex) | Hex view/edit + hex/text/number/bit search |
 | 🌍 ClearEvo.com GIS Converter | [`public/geo`](public/geo) | GDAL `ogr2ogr` (WebAssembly) format converter |
 | 🔳 ClearEvo.com QR Code Generator | [`public/qr`](public/qr) | Static QR that never expires, 12 languages |

@@ -1,0 +1,105 @@
+// BatRay by ClearEvo.com - Share live pure logic: keys, links, envelopes, encryption, path tiers (tested)
+// Copyright (C) 2026 Kasidit Yusuf
+//
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of the GNU General Public License as published by the Free
+// Software Foundation; either version 2 of the License, or (at your option)
+// any later version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+// FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+// more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+// Source: https://github.com/ykasidit/clearevo_online_tools
+
+// Pure helpers for BatRay live share: share links, end-to-end encryption of
+// frames, the wire envelope, and the "which path" label. No DOM, no WebRTC,
+// so node --test covers it. Uses WebCrypto (globalThis.crypto).
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+export function toB64url(bytes) {
+  let s = '', acc = 0, bits = 0;
+  for (const b of bytes) { acc = (acc << 8) | b; bits += 8; while (bits >= 6) { bits -= 6; s += B64[(acc >> bits) & 63]; } }
+  if (bits > 0) s += B64[(acc << (6 - bits)) & 63];
+  return s;
+}
+export function fromB64url(s) {
+  const out = []; let acc = 0, bits = 0;
+  for (const ch of s) { const v = B64.indexOf(ch); if (v < 0) throw new Error('bad base64url'); acc = (acc << 6) | v; bits += 6; if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 255); } }
+  return new Uint8Array(out);
+}
+
+/** 128-bit random key, base64url (22 chars). Lives only in the share link fragment. */
+export function makeKeyB64() {
+  const b = new Uint8Array(16); globalThis.crypto.getRandomValues(b); return toB64url(b);
+}
+export const validKey = (s) => typeof s === 'string' && /^[A-Za-z0-9_-]{22}$/.test(s);
+export const validRoom = validKey;
+
+/** Viewer link. The key rides in the fragment, which browsers never send to any server. */
+export function shareLink(origin, room, keyB64) {
+  return `${origin}/batray/?view=${room}#k=${keyB64}`;
+}
+/** Parse a viewer link (or the current location) into { room, key } or null. */
+export function parseShare(href) {
+  try {
+    const u = new URL(href);
+    const room = u.searchParams.get('view');
+    const key = new URLSearchParams(u.hash.replace(/^#/, '')).get('k');
+    return validRoom(room) && validKey(key) ? { room, key } : null;
+  } catch { return null; }
+}
+
+export async function importKey(keyB64) {
+  return globalThis.crypto.subtle.importKey('raw', fromB64url(keyB64), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+const te = new TextEncoder(), td = new TextDecoder();
+/** AES-GCM: 12-byte IV || ciphertext, as one Uint8Array (sent as a binary message). */
+export async function encrypt(key, obj) {
+  const iv = new Uint8Array(12); globalThis.crypto.getRandomValues(iv);
+  const ct = new Uint8Array(await globalThis.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, te.encode(JSON.stringify(obj))));
+  const out = new Uint8Array(12 + ct.length); out.set(iv, 0); out.set(ct, 12); return out;
+}
+export async function decrypt(key, bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (b.length < 13) throw new Error('short message');
+  const pt = await globalThis.crypto.subtle.decrypt({ name: 'AES-GCM', iv: b.slice(0, 12) }, key, b.slice(12));
+  return JSON.parse(td.decode(pt));
+}
+
+/** Wire envelope: kind = data | info | settings | packs | hello; pack = { id, name }. */
+export function envelope(kind, pack, v) {
+  return { k: kind, p: { id: pack.id, name: pack.name }, v, t: Date.now() };
+}
+export function validEnvelope(m) {
+  return !!m && typeof m === 'object' && ['data', 'info', 'settings', 'packs', 'hello'].includes(m.k)
+    && m.p && typeof m.p.id === 'string' && m.p.id.length <= 64 && typeof m.t === 'number';
+}
+
+/**
+ * Label for the ICE path a PeerConnection ended up on, from its selected
+ * candidate pair. With an SFU every path ends at Cloudflare; what differs is
+ * whether UDP got through or a TURN relay had to carry it, and over what.
+ */
+export function classifyPath(local) {
+  if (!local) return { tier: 'unknown', label: 'connecting' };
+  if (local.candidateType === 'relay') {
+    const p = (local.relayProtocol || local.protocol || '').toLowerCase();
+    if (p === 'tls') return { tier: 'relay-tls', label: 'TURN relay over TLS 443' };
+    if (p === 'tcp') return { tier: 'relay-tcp', label: 'TURN relay over TCP' };
+    return { tier: 'relay-udp', label: 'TURN relay over UDP' };
+  }
+  if ((local.protocol || '').toLowerCase() === 'tcp') return { tier: 'tcp', label: 'direct TCP to Cloudflare' };
+  return { tier: 'udp', label: 'direct UDP to Cloudflare' };
+}
+
+/** Pick the selected local candidate out of a getStats() report (Map-like). */
+export function selectedLocalCandidate(stats) {
+  const byId = new Map(); let pairId = null;
+  stats.forEach((s) => { byId.set(s.id, s); if (s.type === 'transport' && s.selectedCandidatePairId) pairId = s.selectedCandidatePairId; });
+  let pair = pairId ? byId.get(pairId) : null;
+  if (!pair) stats.forEach((s) => { if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated) pair = s; });
+  if (!pair) return null;
+  const l = byId.get(pair.localCandidateId) || null;
+  return l ? { ...l, rttMs: pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null } : null;
+}
