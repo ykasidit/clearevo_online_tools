@@ -19,6 +19,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCommand, decodeCellInfo, decodeDeviceInfo, decodeSettings, errorLabels, feedFrames, swMajor, JkBms,
+  isStale, STALE_MS, queuedAfterGap, linkGone,
 } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -364,4 +365,48 @@ test('an unknown frame type with a valid checksum is skipped', () => {
   const r = feedFrames(new Uint8Array(0), odd);
   assert.equal(r.frames.length, 0);
   assert.ok(r.notes.some((n) => /unknown frame type 0x7/.test(n)));
+});
+
+// ---- link freshness (Android freezes a backgrounded tab: the BLE stack
+// queues notifications for an hour and flushes them all on resume) ----
+test('isStale: silence beyond the limit, nothing read yet is not stale', () => {
+  assert.equal(isStale(null, 10_000_000), false, 'never read: new, not stale');
+  assert.equal(isStale(1_000_000, 1_003_000), false, 'a 3 s poll gap is normal');
+  assert.equal(isStale(1_000_000, 1_000_000 + STALE_MS), false, 'exactly at the limit still counts as live');
+  assert.equal(isStale(1_000_000, 1_000_000 + STALE_MS + 1), true);
+  assert.equal(isStale(1_000_000, 1_000_000 + 3_600_000), true, 'an hour asleep');
+});
+
+test('queuedAfterGap: a chunk after a long silence is a flush of stale data', () => {
+  assert.equal(queuedAfterGap(null, 5_000_000), false, 'first chunk of a fresh link');
+  assert.equal(queuedAfterGap(1_000_000, 1_002_500), false);
+  assert.equal(queuedAfterGap(1_000_000, 1_000_000 + STALE_MS + 1), true);
+});
+
+test('drop(): voids the link so queued notifications are ignored and the UI hears about it', () => {
+  const b = new JkBms();
+  const seen = [];
+  b.addEventListener('disconnected', () => seen.push('disconnected'));
+  b.device = { gatt: { connected: false } };          // link already gone: nothing to disconnect
+  b.buf = new Uint8Array([1, 2, 3]);
+  b.lastRxAt = 1_000_000;
+  const before = b._attempt || 0;
+  b.drop('test');
+  assert.deepEqual(seen, ['disconnected'], 'emits disconnected when GATT is already down');
+  assert.equal(b.buf.length, 0, 'reassembly buffer cleared');
+  assert.equal(b.lastRxAt, null);
+  assert.ok((b._attempt || 0) > before, 'attempt token bumped, so late notifications are no-ops');
+  const frames = [];
+  b.addEventListener('frame', () => frames.push(1));
+  b._onNotify(new Uint8Array([0x55, 0xAA, 0xEB, 0x90]), before);   // flushed from the dead link
+  assert.deepEqual(frames, [], 'notifications from the superseded link are dropped');
+});
+
+test('linkGone: also catches a link that connected but never answered', () => {
+  const t = 5_000_000;
+  assert.equal(linkGone(null, null, t), false, 'not connected yet');
+  assert.equal(linkGone(null, t - 5_000, t), false, 'just connected, give it time to answer');
+  assert.equal(linkGone(null, t - 25_000, t), true, 'connected 25 s ago and never sent a frame');
+  assert.equal(linkGone(t - 3_000, t - 600_000, t), false, 'answering every 3 s: healthy however old the link is');
+  assert.equal(linkGone(t - 60_000, t - 600_000, t), true, 'was answering, now silent a minute');
 });

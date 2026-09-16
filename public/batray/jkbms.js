@@ -380,6 +380,30 @@ export function feedFrames(buf, chunk) {
   return { buf, frames, notes };
 }
 
+// A JK BMS answers every poll, so silence means the link is gone even while
+// the GATT flag still says connected. Pure so both rules stay under test.
+export const STALE_MS = 12000;
+
+/** Has this link gone quiet for longer than a working link ever does? */
+export function isStale(lastFrameAt, now = Date.now(), limitMs = STALE_MS) {
+  if (!lastFrameAt) return false;              // nothing read yet: not stale, just new
+  return now - lastFrameAt > limitMs;
+}
+
+/** Is this link gone? Silence past the limit once data has flowed, or a
+ *  connection that never answered at all within `startupMs`. */
+export function linkGone(lastFrameAt, connectedAt, now = Date.now(), limitMs = STALE_MS, startupMs = 20000) {
+  if (lastFrameAt) return isStale(lastFrameAt, now, limitMs);
+  if (connectedAt) return now - connectedAt > startupMs;
+  return false;
+}
+
+/** True when a chunk arrives after a gap no live link would produce - i.e.
+ *  it was queued while the tab was frozen and is being flushed now. */
+export function queuedAfterGap(lastRxAt, now = Date.now(), limitMs = STALE_MS) {
+  return !!lastRxAt && now - lastRxAt > limitMs;
+}
+
 export class JkBms extends EventTarget {
   constructor() {
     super();
@@ -396,6 +420,27 @@ export class JkBms extends EventTarget {
 
   get connected() {
     return !!(this.device && this.device.gatt && this.device.gatt.connected);
+  }
+
+  /**
+   * Void this link: anything the BLE stack still has queued for it is history.
+   * Bumping the attempt token makes late notifications no-ops. Emits
+   * 'disconnected' itself when the GATT link is already down, so the UI never
+   * sits on a dead "connected".
+   */
+  drop(reason) {
+    this._attempt = (this._attempt || 0) + 1;
+    this._stopPolling();
+    this.buf = new Uint8Array(0);
+    this.lastRxAt = null;
+    const dev = this.device;
+    this._log(`dropping link: ${reason}`);
+    if (dev && dev.gatt && dev.gatt.connected) {
+      this.char = null;
+      try { dev.gatt.disconnect(); return; } catch { /* fall through to the manual emit */ }
+    }
+    this.char = null;
+    this._emit('disconnected');
   }
 
   _emit(type, detail) {
@@ -426,6 +471,7 @@ export class JkBms extends EventTarget {
     this.info = null;
     this.settings = null;
     this.buf = new Uint8Array(0);
+    this.lastRxAt = null;
     if (this._listened !== device) {
       // reconnecting to the same device must not stack listeners
       device.addEventListener('gattserverdisconnected', () => {
@@ -452,7 +498,7 @@ export class JkBms extends EventTarget {
       this.char = await service.getCharacteristic(JK_CHAR);
       if (stale()) throw new Error('superseded');
       this.char.addEventListener('characteristicvaluechanged', (e) =>
-        this._onNotify(new Uint8Array(e.target.value.buffer))
+        this._onNotify(new Uint8Array(e.target.value.buffer), token)
       );
       await this.char.startNotifications();
       if (stale()) throw new Error('superseded');
@@ -507,7 +553,20 @@ export class JkBms extends EventTarget {
     this.pollTimer = null;
   }
 
-  _onNotify(chunk) {
+  _onNotify(chunk, token) {
+    if (token !== undefined && token !== this._attempt) return;   // a superseded link
+    const now = Date.now();
+    // Android freezes a backgrounded tab: the BLE stack keeps queueing
+    // notifications and flushes them all when the tab wakes. Replaying them
+    // would paint an hour-old battery as live, so a long gap voids the link
+    // and the app reconnects for fresh readings.
+    if (queuedAfterGap(this.lastRxAt, now)) {
+      const gap = Math.round((now - this.lastRxAt) / 1000);
+      this.lastRxAt = null;
+      this.drop(`${gap} s without data - queued readings dropped`);
+      return;
+    }
+    this.lastRxAt = now;
     const { buf, frames, notes } = feedFrames(this.buf, chunk);
     this.buf = buf;
     for (const n of notes) this._log(n);

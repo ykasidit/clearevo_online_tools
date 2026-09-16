@@ -12,14 +12,14 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
-import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO } from './jkbms.js';
+import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
 import { startDemo } from './demo.js';
 import { I18N, detectLang } from './i18n.js';
 import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 
-export const APP_VERSION = '0.9.4';
+export const APP_VERSION = '0.9.5';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -82,6 +82,7 @@ class Pack {
     this.device = null; this.info = null; this.settings = null; this.data = null; this.lastFrameAt = null;
     this.demo = null; this.userDisconnect = false; this.reTimer = null; this.reconnecting = false; this.connectPending = false;
     this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.reNow = false; this.reForce = false; this.dumped = false;
+    this.stalled = false; this.stalledAge = 0; this.connectedAt = null;   // link reported connected but gone quiet
     this.remoteLive = false;
     if (this.bms) this.wire();
   }
@@ -94,7 +95,7 @@ class Pack {
     const b = this.bms;
     b.addEventListener('log', (e) => this.plog(e.detail));
     b.addEventListener('connected', (e) => {
-      this.device = e.detail; this.userDisconnect = false; this.connectPending = false;
+      this.device = e.detail; this.userDisconnect = false; this.connectPending = false; this.stalled = false; this.connectedAt = Date.now();
       showReconnectIdle(this);
       this.loadThunk = () => T.loading(this.label);
       if (this.isActive) { setStatus(() => T.connectedTo(this.label), 'good'); $('oneApp').hidden = false; }
@@ -103,8 +104,9 @@ class Pack {
     b.addEventListener('disconnected', () => {
       this.plog('gatt disconnected');
       this.offlineThunk = () => T.offlineDrop(this.label);
-      if (this.isActive) { setStatus(() => T.disconnectedFrom(this.label), 'bad'); $('oneApp').hidden = true; }
-      if ($('autoRe').checked && this.device && !this.userDisconnect) { if (!this.reTimer) startReconnectCountdown(this); }
+      // a link that went quiet says so, instead of a bare "disconnected"
+      if (this.isActive) { setStatus(() => (this.stalled ? T.stalled(this.label, this.stalledAge) : T.disconnectedFrom(this.label)), 'bad'); $('oneApp').hidden = true; }
+      if ($('autoRe').checked && this.device && !this.userDisconnect) { if (!this.reTimer) startReconnectCountdown(this, this.stalled ? 3 : 10); }
       else showReconnectIdle(this);
       this.userDisconnect = false;
       refreshCard(); renderPackBar(); syncWake();
@@ -126,10 +128,16 @@ class Pack {
     });
   }
   onData(d) {
+    const first = !this.lastFrameAt;
     this.data = d; this.lastFrameAt = Date.now();
-    if (this.isActive) render(d);
-    renderPackBar();
+    if (this.isActive) scheduleRender(this);
+    schedulePackBar();
     if (publisher) publisher.publish(envelope('data', this, d));
+    if (this.stalled) {              // back after a gap: say so instead of staying amber
+      this.stalled = false;
+      if (this.isActive) setStatus(() => T.connectedTo(this.label), 'good');
+    }
+    if (first) syncWake();
   }
   onInfo(i) { this.info = i; if (this.isActive) renderDevice(i); if (publisher) publisher.publish(envelope('info', this, i)); }
   onSettings(s) { this.settings = s; if (this.isActive) renderSettings(s); if (publisher) publisher.publish(envelope('settings', this, s)); }
@@ -354,6 +362,43 @@ function renderSettings(s) {
   ]);
   els.settingsCard.hidden = false;
 }
+// A burst of frames (a resumed tab flushing, or a fast unit) paints once.
+let renderQueued = null, packBarQueued = false;
+function scheduleRender(p) {
+  renderQueued = p;
+  if (scheduleRender.pending) return;
+  scheduleRender.pending = true;
+  requestAnimationFrame(() => {
+    scheduleRender.pending = false;
+    const q = renderQueued; renderQueued = null;
+    if (q && q.isActive && q.data) render(q.data);
+  });
+}
+function schedulePackBar() {
+  if (packBarQueued) return;
+  packBarQueued = true;
+  requestAnimationFrame(() => { packBarQueued = false; renderPackBar(); });
+}
+
+// Link watchdog: a JK BMS answers every 3 s poll, so silence means the link is
+// gone even while Chrome still reports the GATT connection up (seen after an
+// hour with the phone locked: "connected", then an hour of queued readings
+// replayed, then a disconnect two minutes later). Freshness decides instead.
+function watchLinks(why) {
+  for (const p of packs.values()) {
+    if (p.demo || p.remote || !p.bms || !p.bms.connected) continue;
+    if (!linkGone(p.lastFrameAt, p.connectedAt)) continue;
+    const age = Math.round((Date.now() - (p.lastFrameAt || p.connectedAt)) / 1000);
+    p.stalled = true; p.stalledAge = age;
+    p.plog(`no data for ${age} s (${why}) - dropping the link and reconnecting`);
+    p.connectedAt = null;
+    if (p.isActive) setStatus(() => T.stalled(p.label, age), 'bad');
+    p.bms.drop(`no data for ${age} s`);
+  }
+}
+setInterval(() => watchLinks('watchdog'), 4000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') watchLinks('tab resumed'); });
+
 function tickAge() {
   if (!active || !active.lastFrameAt) { els.updated.textContent = T.noData; return; }
   const age = Math.round((Date.now() - active.lastFrameAt) / 1000);
@@ -707,7 +752,10 @@ $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('ab
 })();
 
 if (navigator.bluetooth) {
-  log(`web bluetooth features: watchAdvertisements=${'watchAdvertisements' in BluetoothDevice.prototype ? 'yes' : 'no'} getDevices=${navigator.bluetooth.getDevices ? 'yes' : 'no'} getAvailability=${navigator.bluetooth.getAvailability ? 'yes' : 'no'} wakeLock=${'wakeLock' in navigator ? 'yes' : 'no'}`);
+  // typeof-guarded: a browser can expose navigator.bluetooth without the
+  // BluetoothDevice global, and a throw here would abort the rest of startup
+  const hasAdv = typeof BluetoothDevice !== 'undefined' && 'watchAdvertisements' in BluetoothDevice.prototype;
+  log(`web bluetooth features: watchAdvertisements=${hasAdv ? 'yes' : 'no'} getDevices=${navigator.bluetooth.getDevices ? 'yes' : 'no'} getAvailability=${navigator.bluetooth.getAvailability ? 'yes' : 'no'} wakeLock=${'wakeLock' in navigator ? 'yes' : 'no'}`);
 }
 $('lang').innerHTML = Object.keys(I18N).map((k) => `<option value="${k}">${I18N[k].langName}</option>`).join('');
 $('lang').addEventListener('change', () => { try { localStorage.setItem('batray_lang', $('lang').value); } catch {} applyLang($('lang').value); });

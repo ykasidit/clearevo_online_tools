@@ -2,6 +2,8 @@
 # Browser test harness for the fun tools - drives REAL pages in headless Chrome
 # via CDP (real mouse/touch/wheel input, screenshot-verified drawing):
 #   smoke.mjs     - every tool page loads with no console errors / failed requests
+#   batray_freeze.mjs - BatRay over a fake BLE device: a frozen tab must not
+#                   replay queued readings or sit on a dead "connected"
 #   clinician.mjs - 24-scenario DICOM viewer suite (measure landing under
 #                   zoom/pan/rotate/flip/hi-DPI, wheel/keys/slider, cine,
 #                   multi-frame US, tags, capture-with-overlay)
@@ -34,6 +36,7 @@ sleep 3
 rc=0
 node smoke.mjs || rc=1
 node clinician.mjs || rc=1
+node batray_freeze.mjs || rc=1
 node probe.mjs
 node repro.mjs
 [ $rc -eq 0 ] && echo 'browser tests ok' || echo 'BROWSER TESTS FAILED'
