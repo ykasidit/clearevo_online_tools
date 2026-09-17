@@ -20,7 +20,7 @@ import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { timeToGo, splitHours, Ema, Trend } from './trend.js';
 
-export const APP_VERSION = '0.9.9';
+export const APP_VERSION = '0.9.10';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -270,8 +270,50 @@ async function syncWake() {
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && wakeWanted) syncWake(); });
 
+// ---- flow picture layout: landscape on wide screens, portrait on phones and
+// in full screen when the viewport is taller than wide (owner ask 2026-09-17:
+// the picture is the thing people look at - give it half the screen) ----
+const FLOW = {
+  landscape: { vb: '0 0 640 170', batt: 'translate(30,35)', sys: 'translate(448,35)', line: 'M196 85 H444', dash: 52,
+    out: 'M262 71 L276 85 L262 99 M312 71 L326 85 L312 99 M362 71 L376 85 L362 99', in: 'M278 71 L264 85 L278 99 M328 71 L314 85 L328 99 M378 71 L364 85 L378 99',
+    power: [320, 62], amps: [320, 122], eta: [320, 158], upd: [6, 14] },
+  portrait: { vb: '0 0 340 485', batt: 'translate(89,22)', sys: 'translate(90,352)', line: 'M170 152 V204 M170 292 V346', dash: 52,   // gap behind the text block
+    // two chevrons, above and below the text block, so no arrow crosses a number
+    out: 'M156 172 L170 186 L184 172 M156 308 L170 322 L184 308', in: 'M156 186 L170 172 L184 186 M156 322 L170 308 L184 322',
+    power: [170, 224], amps: [170, 252], eta: [170, 278], upd: [6, 14] },
+};
+let flowMode = '';
+function layoutFlow() {
+  const card = $('flowCard'), full = card.classList.contains('full') || document.fullscreenElement === card;
+  const w = full ? window.innerWidth : card.clientWidth, h = full ? window.innerHeight : 0;
+  const mode = full ? (h > w ? 'portrait' : 'landscape') : (w > 0 && w < 520 ? 'portrait' : 'landscape');
+  if (mode === flowMode) return;
+  flowMode = mode;
+  const L = FLOW[mode], svg = $('flow');
+  svg.setAttribute('viewBox', L.vb); svg.classList.toggle('portrait', mode === 'portrait');
+  $('gBatt').setAttribute('transform', L.batt); $('gSys').setAttribute('transform', L.sys);
+  $('fLine').setAttribute('d', L.line); $('fDash').setAttribute('d', L.line);
+  $('fArrOut').firstElementChild.setAttribute('d', L.out); $('fArrIn').firstElementChild.setAttribute('d', L.in);
+  for (const [id, xy] of [['fPower', L.power], ['fAmps', L.amps], ['fEta', L.eta], ['updated', L.upd]]) { $(id).setAttribute('x', xy[0]); $(id).setAttribute('y', xy[1]); }
+}
+layoutFlow();
+window.addEventListener('resize', layoutFlow);
+(function () {
+  const card = $('flowCard'), btn = $('flowFull');
+  const sync = () => { const on = document.fullscreenElement === card || card.classList.contains('full'); btn.textContent = on ? '✕' : '⛶'; btn.setAttribute('aria-label', on ? T.exitFull : T.fullScreen); btn.title = btn.getAttribute('aria-label'); layoutFlow(); if (active && active.data) renderFlow(active.data); };
+  btn.addEventListener('click', async () => {
+    if (document.fullscreenElement === card) { try { await document.exitFullscreen(); } catch {} card.classList.remove('full'); sync(); return; }
+    if (card.classList.contains('full')) { card.classList.remove('full'); sync(); return; }
+    if (card.requestFullscreen) { try { await card.requestFullscreen(); sync(); return; } catch { /* fall through to the overlay */ } }
+    card.classList.add('full'); sync();
+  });
+  document.addEventListener('fullscreenchange', sync);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && card.classList.contains('full')) { card.classList.remove('full'); sync(); } });
+})();
+
 // ---- rendering (active pack) ----
 function renderFlow(d) {
+  layoutFlow();                                   // the card has a width only once readouts are shown
   const soc = d.soc === null || d.soc === undefined ? null : d.soc;
   const segs = $('fSeg').querySelectorAll('rect');
   const lit = soc === null ? 0 : Math.min(5, Math.floor(soc / 20));
@@ -519,7 +561,7 @@ function tickAge() {
   if (!active || !active.lastFrameAt) { els.updated.textContent = T.noData; return; }
   const age = Math.round((Date.now() - active.lastFrameAt) / 1000);
   els.updated.textContent = age < 2 ? T.justNow : T.agoS(age);
-  els.updated.style.color = age > 15 ? '#ffd24a' : '';
+  els.updated.setAttribute('fill', age > 15 ? '#ffd24a' : '#6f8aa6');
 }
 setInterval(tickAge, 1000);
 

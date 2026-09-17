@@ -41,8 +41,16 @@ button,select,input{font-family:inherit}
 #stat.good{color:#5fd39a}#stat.bad{color:#ff8a80}#stat.demo{color:#ffd24a}
 #main{flex:1;overflow:auto;min-height:0;padding:12px 14px 20px}
 .panel{max-width:1100px;margin:0 auto}
-#flowCard{padding:8px 12px 4px}
+#flowCard{padding:8px 12px 4px;position:relative}
 #flow{display:block;width:100%;max-width:640px;height:auto;margin:0 auto}
+#flow.portrait{max-width:none;max-height:62vh;margin:0 auto}
+#flowFull{position:absolute;top:2px;right:6px;z-index:2;text-decoration:none;font-size:18px;color:#7fb0d8;line-height:1;padding:4px 6px}
+/* full screen: the picture and its chips fill the viewport (Fullscreen API where it exists, fixed overlay otherwise) */
+#flowCard.full,#flowCard:fullscreen{position:fixed;inset:0;z-index:60;margin:0;border:none;border-radius:0;background:#0a1626;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:8px}
+#flowCard.full #flow,#flowCard:fullscreen #flow{width:100%;max-width:none;max-height:calc(100vh - 90px);flex:0 1 auto}
+#flowCard.full .chips,#flowCard:fullscreen .chips{justify-content:center}
+#flowCard.full #flowFull,#flowCard:fullscreen #flowFull{top:auto;bottom:10px;right:12px;font-size:24px;color:#cdd9e5;border:1px solid #26476a;border-radius:8px;padding:6px 12px;background:#12283f}
+#notesCard .check{margin-top:6px}#notesCard .check:first-of-type{margin-top:0}
 #fSeg rect{fill:#12283f;stroke:#26476a;stroke-width:1.5;transition:fill .4s}
 #fSeg rect.on{fill:#2aa9e0;stroke:#5bb6e6}
 #fSeg rect.on.low{fill:#ffb74d;stroke:#ffd24a}
@@ -215,40 +223,37 @@ body.view #empty,body.view #oneApp{display:none}
       </div>
       <div id="readouts" hidden>
         <div class="card" id="flowCard">
+          <button id="flowFull" type="button" class="linkbtn" aria-label="full screen" title="full screen">⛶</button>
+          <!-- Battery and system are drawn once each at their own origin; app.js
+               lays them out landscape (wide screens) or portrait (phones, full
+               screen) by setting the group transforms, line path and text positions. -->
           <svg id="flow" viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="energy flow between battery and system">
-            <!-- battery: body, terminal, 5 charge segments -->
-            <g id="fBatt">
-              <rect x="30" y="35" width="150" height="100" rx="12" fill="#0d1f33" stroke="#5bb6e6" stroke-width="4"/>
-              <rect x="180" y="65" width="12" height="40" rx="3" fill="#5bb6e6"/>
+            <text id="updated" x="6" y="14" font-size="11" fill="#6f8aa6" font-family="'DejaVu Sans Mono',Consolas,monospace" data-i18n="noData">no data yet</text>
+            <g id="gBatt">
+              <rect x="0" y="0" width="150" height="100" rx="12" fill="#0d1f33" stroke="#5bb6e6" stroke-width="4"/>
+              <rect x="150" y="30" width="12" height="40" rx="3" fill="#5bb6e6"/>
               <g id="fSeg">
-                <rect x="42" y="47" width="22" height="76" rx="3"/><rect x="69" y="47" width="22" height="76" rx="3"/><rect x="96" y="47" width="22" height="76" rx="3"/><rect x="123" y="47" width="22" height="76" rx="3"/><rect x="150" y="47" width="22" height="76" rx="3"/>
+                <rect x="12" y="12" width="22" height="76" rx="3"/><rect x="39" y="12" width="22" height="76" rx="3"/><rect x="66" y="12" width="22" height="76" rx="3"/><rect x="93" y="12" width="22" height="76" rx="3"/><rect x="120" y="12" width="22" height="76" rx="3"/>
               </g>
-              <text id="fSoc" x="105" y="98" text-anchor="middle" font-size="34" font-weight="700" fill="#eaf4ff" style="paint-order:stroke;stroke:#0a1626;stroke-width:6px;stroke-linejoin:round">-</text>
-              <text id="fSoh" x="105" y="158" text-anchor="middle" font-size="14" fill="#7fb0d8" font-family="'DejaVu Sans Mono',Consolas,monospace">-</text>
+              <text id="fSoc" x="75" y="63" text-anchor="middle" font-size="34" font-weight="700" fill="#eaf4ff" style="paint-order:stroke;stroke:#0a1626;stroke-width:6px;stroke-linejoin:round">-</text>
+              <text id="fSoh" x="75" y="123" text-anchor="middle" font-size="14" fill="#7fb0d8" font-family="'DejaVu Sans Mono',Consolas,monospace">-</text>
             </g>
-            <!-- flow line battery <-> system -->
+            <!-- flow line battery <-> system, chevrons: > discharge (to the system), < charge (into the battery) -->
             <path id="fLine" d="M196 85 H444" fill="none" stroke="#26476a" stroke-width="3" stroke-linecap="round"/>
             <path id="fDash" d="M196 85 H444" fill="none" stroke="#26476a" stroke-width="3" stroke-linecap="round" stroke-dasharray="14 12"/>
-            <!-- direction chevrons: > for discharge (to the system), < for charge (into the battery) -->
             <g id="fArrOut" class="arr"><path d="M262 71 L276 85 L262 99 M312 71 L326 85 L312 99 M362 71 L376 85 L362 99"/></g>
             <g id="fArrIn" class="arr"><path d="M278 71 L264 85 L278 99 M328 71 L314 85 L328 99 M378 71 L364 85 L378 99"/></g>
-            <text id="fPower" x="320" y="62" text-anchor="middle" font-size="24" font-weight="700" fill="#eaf4ff" font-family="'DejaVu Sans Mono',Consolas,monospace">-</text>
-            <text id="fAmps" x="320" y="122" text-anchor="middle" font-size="15" fill="#a7bccf" font-family="'DejaVu Sans Mono',Consolas,monospace">-</text>
-            <!-- system / load / charger node -->
-            <g id="fSys">
-              <rect x="448" y="35" width="160" height="100" rx="12" fill="#0d1f33" stroke="#5bb6e6" stroke-width="4"/>
-              <path d="M528 55 l-22 34 h18 l-6 30 l30 -40 h-18 z" fill="#8fe3ff"/>
-              <text id="fSysLbl" x="528" y="158" text-anchor="middle" font-size="13" fill="#7fb0d8">SYSTEM</text>
+            <text id="fPower" x="320" y="62" text-anchor="middle" font-size="24" font-weight="700" fill="#eaf4ff" font-family="'DejaVu Sans Mono',Consolas,monospace" style="paint-order:stroke;stroke:#0d1f33;stroke-width:8px;stroke-linejoin:round">-</text>
+            <text id="fAmps" x="320" y="122" text-anchor="middle" font-size="15" fill="#a7bccf" font-family="'DejaVu Sans Mono',Consolas,monospace" style="paint-order:stroke;stroke:#0d1f33;stroke-width:6px;stroke-linejoin:round">-</text>
+            <text id="fEta" x="320" y="158" text-anchor="middle" font-size="13" fill="#a7bccf" font-family="'DejaVu Sans Mono',Consolas,monospace" style="paint-order:stroke;stroke:#0d1f33;stroke-width:6px;stroke-linejoin:round"></text>
+            <g id="gSys">
+              <rect x="0" y="0" width="160" height="100" rx="12" fill="#0d1f33" stroke="#5bb6e6" stroke-width="4"/>
+              <path d="M80 20 l-22 34 h18 l-6 30 l30 -40 h-18 z" fill="#8fe3ff"/>
+              <text id="fSysLbl" x="80" y="123" text-anchor="middle" font-size="13" fill="#7fb0d8">SYSTEM</text>
             </g>
-            <text id="fEta" x="320" y="158" text-anchor="middle" font-size="13" fill="#a7bccf" font-family="'DejaVu Sans Mono',Consolas,monospace"></text>
           </svg>
           <div class="chips" id="strip"></div>
         </div>
-        <div class="check" id="etaLine"><span id="cutoffPre" data-i18n="cutoffPre">Time to empty counts down to your inverter's low-battery cut-off at</span> <input id="cutoff" type="number" min="0" max="95" step="1" value="10" size="3" aria-label="inverter cut-off, percent of capacity"> % <span id="cutoffPost" data-i18n="cutoffPost">of capacity (default 10 %, set your inverter's value). Straight-line from the smoothed current; charging slows near full, so time to full is optimistic.</span></div>
-        <div class="check"><span id="updated" data-i18n="noData">no data yet</span></div>
-        <div class="check"><span id="layout"></span></div>
-        <div class="check" id="device" hidden></div>
-        <div class="check" id="oneApp" hidden data-i18n-html="oneApp">A JK BMS accepts one app at a time - to use the JK app again, press <b>Disconnect</b> here first.</div>
         <div class="check warn" id="btNote" hidden data-i18n="btKeepOn">Keep Bluetooth on while BatRay is open: on this Chrome version, reconnecting with Bluetooth off can close the tab.</div>
         <div class="card">
           <h2><span data-i18n="cellsH">Cell voltages</span> <span class="note" id="cellsNote" data-i18n="cellsNote">bar height exaggerates the spread: scale runs from the lowest cell - 50 mV to the highest + 50 mV</span></h2>
@@ -268,6 +273,13 @@ body.view #empty,body.view #oneApp{display:none}
         <div class="card" id="settingsCard" hidden>
           <h2><span data-i18n="settingsH">BMS settings</span> <span class="note" data-i18n="settingsNote">as configured in the BMS (read-only here)</span></h2>
           <div class="grid" id="settings"></div>
+        </div>
+        <div class="card" id="notesCard">
+          <h2><span data-i18n="notesH">Notes</span></h2>
+          <div class="check" id="etaLine"><span id="cutoffPre" data-i18n="cutoffPre">Time to empty counts down to your inverter's low-battery cut-off at</span> <input id="cutoff" type="number" min="0" max="95" step="1" value="10" size="3" aria-label="inverter cut-off, percent of capacity"> % <span id="cutoffPost" data-i18n="cutoffPost">of capacity (default 10 %, set your inverter's value). Straight-line from the smoothed current; charging slows near full, so time to full is optimistic.</span></div>
+          <div class="check"><span id="layout"></span></div>
+          <div class="check" id="device" hidden></div>
+          <div class="check" id="oneApp" hidden data-i18n-html="oneApp">A JK BMS accepts one app at a time - to use the JK app again, press <b>Disconnect</b> here first.</div>
         </div>
       </div>
       <details class="card" id="alertsCard">
