@@ -22,7 +22,7 @@ import { timeToGo, splitHours, Ema, Trend } from './trend.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.13';
+export const APP_VERSION = '0.9.14';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -906,7 +906,11 @@ function renderTv(s) {
   if (!tv || !s.live) return;
   $('tvLink').textContent = s.url;
   const v = $('tvVideo');
-  if (s.segs >= 2 && !v.getAttribute('src')) { v.src = s.url; v.play().catch(() => {}); watchCast(v); }
+  // Chrome on Android plays HLS itself (and casts it); desktop Chrome does not,
+  // so there the preview and the Cast button stay hidden and the link/QR is the way.
+  const canHls = !!v.canPlayType('application/vnd.apple.mpegurl');
+  $('tvPreviewRow').hidden = !canHls; $('tvCastRow').hidden = !canHls; $('tvNoPreview').hidden = canHls;
+  if (canHls && s.segs >= 2 && !v.getAttribute('src')) { v.src = s.url; v.play().catch(() => {}); watchCast(v); }
   const pull = s.pullAgeS === null || s.pullAgeS === undefined ? T.tvNotPulled : T.tvPulled(s.pullAgeS);
   $('tvStat').textContent = (s.error ? T.tvErr(s.error) + ' · ' : '') + T.tvStat(s.segs, Math.round(s.bytes / 1024), pull) + (s.segs < 2 ? ' · ' + T.tvStarting : '');
 }

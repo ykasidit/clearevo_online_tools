@@ -88,8 +88,8 @@ const ups = await evalJs(`window.__tvUploads.map((u) => ({ path: u.path, dur: u.
 check('an init segment and at least three media segments were uploaded within 9.5 s', ups[0] && ups[0].path === 'init.mp4' && ups.filter((u) => u.path.startsWith('seg/')).length >= 3, ups);
 check('media segments carry their duration and are numbered from 0', ups.filter((u) => u.path.startsWith('seg/')).every((u, i) => u.path === `seg/${i}` && Math.abs(+u.dur - 2) < 0.6), ups);
 check('the state counts segments and shows the fake TV pull', s.live && s.segs >= 3 && s.codec === 'vp09.00.10.08' && s.hits === 3 && s.pullAgeS === 2 && !s.error, s);
-const ui = await evalJs(`({ stat: document.getElementById('tvStat').textContent, note: !document.getElementById('tvNote').hidden, link: document.getElementById('tvLink').textContent, videoSrc: document.getElementById('tvVideo').getAttribute('src') })`);
-check('status line, status-bar note and video source are set', /segments/.test(ui.stat) && ui.note && ui.link === url && ui.videoSrc === url, ui);
+const ui = await evalJs(`({ stat: document.getElementById('tvStat').textContent, note: !document.getElementById('tvNote').hidden, link: document.getElementById('tvLink').textContent, videoSrc: document.getElementById('tvVideo').getAttribute('src'), canHls: !!document.getElementById('tvVideo').canPlayType('application/vnd.apple.mpegurl'), noPreview: !document.getElementById('tvNoPreview').hidden, castRow: !document.getElementById('tvCastRow').hidden })`);
+check('status line, status-bar note and link are set; preview and Cast follow the browser\'s own HLS support', /segments/.test(ui.stat) && ui.note && ui.link === url && (ui.canHls ? ui.videoSrc === url && ui.castRow && !ui.noPreview : ui.videoSrc === null && !ui.castRow && ui.noPreview), ui);
 
 // stop: the last fragment is flushed and the relay is told
 await evalJs(`window.__batrayTest.stopTv()`);
