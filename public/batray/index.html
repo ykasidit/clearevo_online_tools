@@ -44,6 +44,10 @@ button,select,input{font-family:inherit}
 #flowCard{padding:8px 12px 4px;position:relative}
 #flow{display:block;width:100%;max-width:640px;height:auto;margin:0 auto}
 #flow.portrait{max-width:none;max-height:62vh;margin:0 auto}
+/* portrait / full screen: the picture is big, so are its numbers */
+#flow.portrait #fSoc{font-size:44px}#flow.portrait #fSoh,#flow.portrait #fSysLbl{font-size:17px}#flow.portrait #fPower{font-size:30px}#flow.portrait #fAmps{font-size:18px}#flow.portrait #fEta{font-size:17px}#flow.portrait #updated{font-size:13px}
+#flowCard.full .chip,#flowCard:fullscreen .chip{font-size:14px;padding:4px 12px}
+@media (max-width:700px){.chip{font-size:12px;padding:3px 10px}}
 #flowFull{position:absolute;top:2px;right:6px;z-index:2;text-decoration:none;font-size:18px;color:#7fb0d8;line-height:1;padding:4px 6px}
 /* full screen: the picture and its chips fill the viewport (Fullscreen API where it exists, fixed overlay otherwise) */
 #flowCard.full,#flowCard:fullscreen{position:fixed;inset:0;z-index:60;margin:0;border:none;border-radius:0;background:#0a1626;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:8px}
@@ -254,7 +258,7 @@ body.view #empty,body.view #oneApp{display:none}
           </svg>
           <div class="chips" id="strip"></div>
         </div>
-        <div class="check warn" id="btNote" hidden data-i18n="btKeepOn">Keep Bluetooth on while BatRay is open: on this Chrome version, reconnecting with Bluetooth off can close the tab.</div>
+        <div class="check warn" id="btNote" hidden data-i18n="btKeepOn">Keep Bluetooth on: with it off, a reconnect on this Chrome version can close the tab.</div>
         <div class="card">
           <h2><span data-i18n="cellsH">Cell voltages</span> <span class="note" id="cellsNote" data-i18n="cellsNote">bar height exaggerates the spread: scale runs from the lowest cell - 50 mV to the highest + 50 mV</span></h2>
           <div class="check" id="cellsStat"></div>

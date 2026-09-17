@@ -20,7 +20,7 @@ import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { timeToGo, splitHours, Ema, Trend } from './trend.js';
 
-export const APP_VERSION = '0.9.10';
+export const APP_VERSION = '0.9.11';
 
 const $ = (id) => document.getElementById(id);
 const els = {
