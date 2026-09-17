@@ -126,6 +126,10 @@ body.demo #demoBadge{display:block}
 .chipbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;background:#0e2438;border-bottom:1px solid #1c3550;padding:5px 12px;font:12px 'Segoe UI',Tahoma,sans-serif;color:#cdd9e5}
 .chipbar .dot{width:9px;height:9px;border-radius:50%;background:#ff4d4d;box-shadow:0 0 6px #ff4d4d;animation:blink 1.4s infinite}
 @keyframes blink{50%{opacity:.35}}
+/* Motion is decoration here, never a gate: readings paint on the first frame
+   and nothing waits for an animation to finish (owner rule 2026-09-17, after a
+   JK app update put a gauge animation in front of the first SOC read). */
+@media (prefers-reduced-motion:reduce){#fDash.chg,#fDash.dis,.chipbar .dot,#loading .bar{animation:none}.cell .bar,#fSeg rect{transition:none}}
 #shareLink{flex:1 1 220px;min-width:160px;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:5px;padding:3px 6px;font:11px monospace}
 #packBar{display:flex;flex-wrap:wrap;gap:6px;padding:6px 12px;background:#0b1a2b;border-bottom:1px solid #1c3550}
 .pchip{background:#12283f;border:1px solid #26476a;color:#cdd9e5;border-radius:16px;padding:4px 11px;font:12px 'Segoe UI',Tahoma,sans-serif;cursor:pointer;display:inline-flex;gap:7px;align-items:center}
