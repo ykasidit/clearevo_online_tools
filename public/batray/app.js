@@ -12,14 +12,14 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
-import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
+import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone, reconnectAllowed } from './jkbms.js';
 import { startDemo } from './demo.js';
 import { I18N, detectLang } from './i18n.js';
 import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 
-export const APP_VERSION = '0.9.5';
+export const APP_VERSION = '0.9.6';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -106,7 +106,7 @@ class Pack {
       this.offlineThunk = () => T.offlineDrop(this.label);
       // a link that went quiet says so, instead of a bare "disconnected"
       if (this.isActive) { setStatus(() => (this.stalled ? T.stalled(this.label, this.stalledAge) : T.disconnectedFrom(this.label)), 'bad'); $('oneApp').hidden = true; }
-      if ($('autoRe').checked && this.device && !this.userDisconnect) { if (!this.reTimer) startReconnectCountdown(this, this.stalled ? 3 : 10); }
+      if ($('autoRe').checked && this.device && !this.userDisconnect) startReconnectCountdown(this, this.stalled ? 3 : 10);
       else showReconnectIdle(this);
       this.userDisconnect = false;
       refreshCard(); renderPackBar(); syncWake();
@@ -170,7 +170,7 @@ function setActive(pack) {
   if (pack.data) render(pack.data, true); else clearReadouts();
   $('oneApp').hidden = !(pack.bms && pack.bms.connected);
   if (pack.demo) setStatus(() => T.demoStatus, 'demo');
-  else if (pack.remote) setStatus(() => (pack.remoteLive ? T.viewingPack(pack.label) : T.viewOfflineShort), pack.remoteLive ? 'good' : 'bad');
+  else if (pack.remote) setStatus(() => (pack.remoteLive ? T.viewingPack(pack.label) : (readerGone() ? T.viewOfflineShort : T.viewReconnecting)), pack.remoteLive ? 'good' : 'bad');
   else if (pack.bms.connected) setStatus(() => T.connectedTo(pack.label), 'good');
   else setStatus(() => T.disconnectedFrom(pack.label), 'bad');
   refreshCard(); tickAge(); renderPackBar();
@@ -188,7 +188,7 @@ function refreshCard() {
   if (!p) return;
   const body = document.body.classList;
   els.disconnect.disabled = !(p.bms && p.bms.connected);
-  if (p.remote) { body.toggle('offline', !p.remoteLive); body.remove('loading'); $('reState').hidden = true; $('reIdle').hidden = true; $('offlineTxt').textContent = T.viewOffline; return; }
+  if (p.remote) { body.toggle('offline', !p.remoteLive); body.remove('loading'); $('reState').hidden = true; $('reIdle').hidden = true; $('offlineTxt').textContent = readerGone() ? T.viewOffline : T.viewReconnectingLong; return; }
   if (p.demo) { body.remove('offline', 'loading'); return; }
   if (p.bms.connected) {
     body.remove('offline');
@@ -397,7 +397,12 @@ function watchLinks(why) {
   }
 }
 setInterval(() => watchLinks('watchdog'), 4000);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') watchLinks('tab resumed'); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  watchLinks('tab resumed');
+  if (viewer) viewer.nudge();
+  if (publisher) publisher.nudge();
+});
 
 function tickAge() {
   if (!active || !active.lastFrameAt) { els.updated.textContent = T.noData; return; }
@@ -438,6 +443,10 @@ function showReconnectIdle(p) {
 function setCount(p, thunk) { p.countThunk = thunk; p.reNow = false; p.reForce = false; if (p.isActive) refreshCard(); }
 
 function startReconnectCountdown(p, seconds = 10) {
+  // One attempt at a time. A manual tap while a countdown was pending used to
+  // race it: two connects in parallel superseded each other and the pack was
+  // "connected" for seconds, then dropped (live, 2026-09-17).
+  if (!reconnectAllowed({ connectPending: p.connectPending, connected: p.connected, countdownRunning: !!p.reTimer })) { p.plog('reconnect countdown not started: an attempt is already in progress'); return; }
   p.reconnecting = true; syncWake();
   let left = seconds;
   setCount(p, () => T.reIn(p.label, left));
@@ -446,6 +455,7 @@ function startReconnectCountdown(p, seconds = 10) {
     left -= 1;
     if (left > 0) { setCount(p, () => T.reIn(p.label, left)); return; }
     clearInterval(p.reTimer); p.reTimer = null;
+    if (p.connectPending || p.connected) { p.plog('reconnect countdown ended: a connect is already in flight'); return; }
     try {
       p.device = await freshHandle(p.device);
       setCount(p, () => T.listening(p.label));
@@ -480,6 +490,8 @@ function startReconnectCountdown(p, seconds = 10) {
 
 $('reNow').addEventListener('click', async () => {
   const p = active; if (!p || p.remote) return;
+  if (p.connectPending) return;                                        // double tap
+  if (p.reTimer) { clearInterval(p.reTimer); p.reTimer = null; }       // the tap replaces any pending countdown
   p.reNow = false; refreshCard();
   try { p.reconnecting = true; syncWake(); await connectTo(p, p.device); } catch (err) {
     p.plog(`reconnect failed: ${err.message}`);
@@ -541,7 +553,7 @@ if (navigator.bluetooth && navigator.bluetooth.addEventListener) {
   navigator.bluetooth.addEventListener('availabilitychanged', (e) => {
     log(`bluetooth adapter ${e.value ? 'available' : 'unavailable'}`);
     if (!e.value) setStatus(() => T.btOff, 'bad');
-    else for (const p of packs.values()) if (p.reconnecting) startReconnectCountdown(p, 3);
+    else for (const p of packs.values()) if (p.reconnecting && !p.connectPending && !p.reTimer) startReconnectCountdown(p, 3);
   });
 }
 
@@ -587,7 +599,7 @@ function liveText(s, fmtChip) {
   if (s.reader === false) return T.readerOffline + srv;   // viewer only: server says the reader is not there
   if (s.retryIn !== null && s.retryIn !== undefined) return `${s.error ? T.liveError(s.error) + ' · ' : ''}${T.retryIn(s.retryIn)}${srv}`;
   if (!s.live) return (s.error ? T.liveError(s.error) : T.liveConnecting) + srv;
-  const path = T.path[s.path.tier] || s.path.label;
+  const path = (T.path[s.path.tier] || s.path.label) + (s.path.sub && T.pathSub[s.path.sub] ? ` · ${T.pathSub[s.path.sub]}` : '');
   const extra = [];
   if (s.p2p) extra.push(T.p2pCount(s.p2p));
   return fmtChip(s.viewers, path) + (extra.length ? ' · ' + extra.join(' · ') : '') + srv;
@@ -604,6 +616,27 @@ async function copyShareLink() {
   try { await navigator.clipboard.writeText(link); toast(T.linkCopied, 7000); }
   catch { els.shareLink.hidden = false; els.shareLink.select(); toast(T.linkCopyManual, 9000); }
 }
+// The share link as a QR code, so the other phone just points its camera at
+// this screen. Big and open by default; the user can hide it. The QR holds the
+// whole link, key included - anyone who scans it can watch, like the link.
+function renderQr(text) {
+  const c = $('qrCanvas');
+  if (typeof qrcode !== 'function' || !c) return false;
+  const qr = qrcode(0, 'M'); qr.addData(text, 'Byte'); qr.make();
+  const n = qr.getModuleCount(), scale = 6, quiet = 4, px = (n + quiet * 2) * scale;
+  c.width = px; c.height = px;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, px, px); ctx.fillStyle = '#000';
+  for (let r = 0; r < n; r++) for (let col = 0; col < n; col++) if (qr.isDark(r, col)) ctx.fillRect((col + quiet) * scale, (r + quiet) * scale, scale, scale);
+  return true;
+}
+function showQr(show) {
+  const ok = show && publisher && renderQr(publisher.link);
+  $('qrPanel').hidden = !ok;
+  $('qrShow').hidden = !publisher || ok;
+  $('qrLink').textContent = publisher ? publisher.link : '';
+}
+if (new URLSearchParams(location.search).has('test')) window.__batrayTest = { renderQr };
 async function startShare() {
   if (publisher) { copyShareLink(); return; }
   els.share.disabled = true;
@@ -618,6 +651,7 @@ async function startShare() {
   renderLiveChip();
   try {
     await publisher.start();
+    showQr(true);
     copyShareLink();
     // late viewers need the pack list plus info/settings: resend every 10 s
     publisher.snapshotTimer = setInterval(sendSnapshots, 10000);
@@ -642,6 +676,7 @@ async function stopShare() {
   if (!publisher) return;
   clearInterval(publisher.snapshotTimer);
   await publisher.stop(); publisher = null;
+  showQr(false);
   renderLiveChip(); syncWake();
   toast(T.shareStopped, 5000);
 }
@@ -649,6 +684,9 @@ els.share.addEventListener('click', startShare);
 $('viewStop').addEventListener('click', () => { if (viewer) { viewer.stop(); setStatus(() => T.viewStopped, 'bad'); $('viewStop').hidden = true; els.viewTxt.textContent = T.viewStopped; } });
 els.liveStop.addEventListener('click', stopShare);
 $('shareCopy').addEventListener('click', copyShareLink);
+$('qrCopy').addEventListener('click', copyShareLink);
+$('qrHide').addEventListener('click', () => showQr(false));
+$('qrShow').addEventListener('click', () => showQr(true));
 
 // ---- Viewer mode ----
 function renderViewChip() {
@@ -659,6 +697,8 @@ function renderViewChip() {
   $('viewStop').hidden = !(s.retryIn !== null && s.retryIn !== undefined);
 }
 let readerLive = false, readerSeen = false;
+// only the server's word counts as "reader offline"; our own socket being down is "reconnecting"
+function readerGone() { return !!(viewer && viewer.state.sig && viewer.state.reader === false); }
 // Internet / server reachability of THIS device, same on both sides. A state
 // must hold 10 s before it is announced, so a socket reopen is not an outage.
 let reach = 'ok', reachTimer = null;
@@ -693,7 +733,7 @@ function startView() {
       // not), judged only while our own socket is up - our internet dropping
       // is reported as that, never as the reader vanishing
       if (s.sig && s.reader !== null && s.reader !== readerLive) { readerLive = s.reader; if (readerSeen && alerts) alerts.notify('reader', readerLive ? T.evReaderOn : T.evReaderOff, readerLive ? T.evReaderOnBody : T.evReaderOffBody); if (readerLive) readerSeen = true; }
-      if (active) { if (!s.live) setStatus(() => T.viewOfflineShort, 'bad'); else setStatus(() => T.viewingPack(active.label), 'good'); }
+      if (active) { if (!s.live) setStatus(() => (s.reader === false ? T.viewOfflineShort : T.viewReconnecting), 'bad'); else setStatus(() => T.viewingPack(active.label), 'good'); }
       refreshCard(); renderPackBar(); syncWake();
     },
     onEnvelope: (env) => {

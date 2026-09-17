@@ -13,7 +13,6 @@
 <title>BatRay by ClearEvo.com - JK BMS battery monitor over Bluetooth, in Chrome</title>
 <meta name="description" content="Read your JiKong (JK) BMS from Chrome over Web Bluetooth: pack voltage, state of charge, current, power, per-cell voltages, temperatures, capacity, cycles and the configured protection settings. Nothing to install, nothing uploaded; frame layout chosen from the firmware version and cross-checked against the cell sum.">
 <link rel="icon" href="data:image/svg+xml,<svg viewBox='0 0 64 64' xmlns='http://www.w3.org/2000/svg'><rect width='64' height='64' rx='13' fill='%230c2035'/><path d='M32 14 C24 14 12 20 5 29 C15 29 23 34 28 41 L32 46 L36 41 C41 34 49 29 59 29 C52 20 40 14 32 14 Z' fill='%231c5680' stroke='%235bb6e6' stroke-width='3' stroke-linejoin='round'/><path d='M32 46 C33.5 51 30.5 55 33 60' fill='none' stroke='%235bb6e6' stroke-width='3' stroke-linecap='round'/><path d='M27 15 C25 12.5 24 10 25.5 7.5 M37 15 C39 12.5 40 10 38.5 7.5' fill='none' stroke='%235bb6e6' stroke-width='3' stroke-linecap='round'/><g fill='%23cdefff'><circle cx='27.5' cy='21' r='2'/><circle cx='36.5' cy='21' r='2'/></g><path d='M23 28 H29 M35 28 H41 M25 32 H29 M35 32 H39' stroke='%230a2338' stroke-width='2' stroke-linecap='round'/></svg>">
-<link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0c2035">
 <!-- Google tag (gtag.js) -->
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-H457QK43L6"></script>
@@ -124,7 +123,12 @@ body.loading .meter .v{color:#4f6f8f}
 body.demo #demoBadge{display:block}
 #demoBadge button{margin-left:12px;background:transparent;border:1px solid #ffd24a;color:#ffd24a;border-radius:5px;padding:2px 9px;font:600 11px Tahoma,sans-serif;cursor:pointer;vertical-align:middle}
 #demoBadge button:hover{background:#ffd24a;color:#1a1200}
-.chipbar[hidden],#packBar[hidden],#shareLink[hidden]{display:none!important}
+.chipbar[hidden],#packBar[hidden],#shareLink[hidden],#qrPanel[hidden],#qrShow[hidden]{display:none!important}
+.qrpanel{display:flex;flex-direction:column;align-items:center;gap:6px;background:#fff;color:#123;padding:12px 12px 10px;border-bottom:1px solid #1c3550;font:12px 'Segoe UI',Tahoma,sans-serif}
+.qrpanel canvas{width:min(78vw,340px);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}
+.qrpanel .qrhint{font-size:13px;color:#123;text-align:center;max-width:340px}
+.qrpanel .qrlink{font:10px monospace;color:#567;word-break:break-all;max-width:340px;text-align:center}
+.qrpanel .linkbtn{color:#1c5680;font-size:13px}
 .chipbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;background:#0e2438;border-bottom:1px solid #1c3550;padding:5px 12px;font:12px 'Segoe UI',Tahoma,sans-serif;color:#cdd9e5}
 .chipbar .dot{width:9px;height:9px;border-radius:50%;background:#ff4d4d;box-shadow:0 0 6px #ff4d4d;animation:blink 1.4s infinite}
 @keyframes blink{50%{opacity:.35}}
@@ -180,7 +184,13 @@ body.view #empty,body.view #oneApp{display:none}
     <span title="language" style="align-self:center;font-size:14px;padding-left:6px">🌐</span><select id="lang" title="language" style="align-self:center;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:5px;padding:3px 6px;font-size:11px;margin-left:4px"></select>
     <span id="stat">ready</span>
   </div>
-  <div id="liveChip" class="chipbar" hidden><span class="dot"></span><span id="liveTxt"></span><button id="shareCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button><input id="shareLink" readonly hidden><button id="liveStop" type="button" class="linkbtn" data-i18n="shareStop">stop sharing</button></div>
+  <div id="liveChip" class="chipbar" hidden><span class="dot"></span><span id="liveTxt"></span><button id="shareCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button><button id="qrShow" type="button" class="linkbtn" hidden data-i18n="qrShow">show QR</button><input id="shareLink" readonly hidden><button id="liveStop" type="button" class="linkbtn" data-i18n="shareStop">stop sharing</button></div>
+  <div id="qrPanel" class="qrpanel" hidden>
+    <canvas id="qrCanvas" width="10" height="10" aria-label="QR code of the share link"></canvas>
+    <div class="qrhint" data-i18n="qrHint">Point the other phone's camera at this code to open the live view</div>
+    <div class="qrlink" id="qrLink"></div>
+    <div class="qrrow"><button id="qrCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button> · <button id="qrHide" type="button" class="linkbtn" data-i18n="qrHide">hide QR</button></div>
+  </div>
   <div id="viewChip" class="chipbar" hidden><span class="dot"></span><span id="viewTxt"></span><button id="viewStop" type="button" class="linkbtn" hidden data-i18n="cancel">Cancel</button></div>
   <div id="packBar" hidden></div>
   <div id="main">
@@ -287,6 +297,7 @@ body.view #empty,body.view #oneApp{display:none}
     <div style="display:flex;justify-content:flex-end;margin-top:18px"><button id="aboutClose" class="demobtn" style="padding:8px 18px" data-i18n="close">Close</button></div>
   </div>
 </div>
+<script src="qrcode.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

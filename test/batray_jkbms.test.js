@@ -19,7 +19,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCommand, decodeCellInfo, decodeDeviceInfo, decodeSettings, errorLabels, feedFrames, swMajor, JkBms,
-  isStale, STALE_MS, queuedAfterGap, linkGone,
+  isStale, STALE_MS, queuedAfterGap, linkGone, reconnectAllowed,
 } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -409,4 +409,19 @@ test('linkGone: also catches a link that connected but never answered', () => {
   assert.equal(linkGone(null, t - 25_000, t), true, 'connected 25 s ago and never sent a frame');
   assert.equal(linkGone(t - 3_000, t - 600_000, t), false, 'answering every 3 s: healthy however old the link is');
   assert.equal(linkGone(t - 60_000, t - 600_000, t), true, 'was answering, now silent a minute');
+});
+
+test('linkGone: a frame from before this link\'s connect does not count against the fresh link', () => {
+  const t = 9_000_000;
+  // reconnected 2 s ago, last frame is from the old link an hour back: startup grace, not stale
+  assert.equal(linkGone(t - 3_600_000, t - 2_000, t), false, 'fresh reconnect must survive until its own first frame (live bug 2026-09-17)');
+  assert.equal(linkGone(t - 3_600_000, t - 25_000, t), true, 'reconnected 25 s ago and still no frame of its own');
+  assert.equal(linkGone(t - 1_000, t - 5_000, t), false, 'a frame after the connect is this link\'s own');
+});
+
+test('reconnectAllowed: one attempt at a time', () => {
+  assert.equal(reconnectAllowed({ connectPending: false, connected: false, countdownRunning: false }), true);
+  assert.equal(reconnectAllowed({ connectPending: true, connected: false, countdownRunning: false }), false, 'a connect is in flight (manual tap)');
+  assert.equal(reconnectAllowed({ connectPending: false, connected: true, countdownRunning: false }), false, 'already connected');
+  assert.equal(reconnectAllowed({ connectPending: false, connected: false, countdownRunning: true }), false, 'a countdown is already running');
 });

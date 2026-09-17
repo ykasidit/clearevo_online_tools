@@ -393,9 +393,21 @@ export function isStale(lastFrameAt, now = Date.now(), limitMs = STALE_MS) {
 /** Is this link gone? Silence past the limit once data has flowed, or a
  *  connection that never answered at all within `startupMs`. */
 export function linkGone(lastFrameAt, connectedAt, now = Date.now(), limitMs = STALE_MS, startupMs = 20000) {
-  if (lastFrameAt) return isStale(lastFrameAt, now, limitMs);
+  // A frame older than this link's own connect belongs to the previous link:
+  // right after a reconnect the fresh link gets the startup grace, or the
+  // watchdog kills it before its first frame (live bug, 2026-09-17).
+  const ownFrame = lastFrameAt && (!connectedAt || lastFrameAt >= connectedAt) ? lastFrameAt : null;
+  if (ownFrame) return isStale(ownFrame, now, limitMs);
   if (connectedAt) return now - connectedAt > startupMs;
   return false;
+}
+
+/** May a new reconnect attempt start now? One attempt at a time: a connect in
+ *  flight (manual tap or countdown), a live link, or a countdown already
+ *  running all say no - two attempts in parallel supersede each other and the
+ *  pack ends up connected for seconds, then dropped. */
+export function reconnectAllowed({ connectPending, connected, countdownRunning }) {
+  return !connectPending && !connected && !countdownRunning;
 }
 
 /** True when a chunk arrives after a gap no live link would produce - i.e.

@@ -22,7 +22,7 @@
 // share link's URL fragment, whichever path carries it. The relay Worker at
 // /batray/api/ holds the SFU secret, routes signalling, and counts how many
 // sockets are on an SFU/TURN path against the free cap.
-import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, classifyPath, selectedLocalCandidate } from './live-logic.js';
+import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect } from './live-logic.js';
 
 const API = '/batray/api';
 const P2P_WAIT_MS = 7000;      // viewer waits this long for a direct offer/connection before using the SFU
@@ -67,6 +67,7 @@ function waitOpen(dc, ms) {
   });
 }
 async function pathOf(pc) { try { return classifyPath(selectedLocalCandidate(await pc.getStats())); } catch { return classifyPath(null); } }
+async function directPathOf(pc) { try { const pr = selectedPair(await pc.getStats()); return classifyDirect(pr && pr.local, pr && pr.remote); } catch { return { tier: 'p2p', sub: null, label: 'direct' }; } }
 
 // Transport to the SFU: one silent audio track carries the offer/answer, the
 // DataChannel rides the same bundle.
@@ -105,6 +106,8 @@ class Signal {
   on(h) { this.handlers.add(h); }
   send(obj) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); }
   reportPath(tier) { this.lastPath = tier; this.send({ type: 'path', path: tier }); }
+  /** Reopen now instead of after the 4 s delay (tab resumed). */
+  nudge() { if (this.closed || (this.ws && this.ws.readyState <= 1)) return; clearTimeout(this.timer); this.timer = null; this.open(); }
   close() { this.closed = true; clearTimeout(this.timer); try { this.ws.close(1000, 'bye'); } catch { /* */ } }
 }
 
@@ -171,7 +174,7 @@ export class Publisher {
     const peer = { pc, dc, open: false };
     this.peers.set(viewerId, peer);
     pc.onicecandidate = (e) => { if (e.candidate) this.sig.send({ type: 'ice', to: viewerId, cand: e.candidate.toJSON() }); };
-    dc.onopen = () => { peer.open = true; this.state.p2p = [...this.peers.values()].filter((p) => p.open).length; this.log(`p2p: viewer ${viewerId.slice(0, 6)} connected over Wi-Fi`); this.emit(); this.resendSnapshot && this.resendSnapshot(); };
+    dc.onopen = async () => { peer.open = true; this.state.p2p = [...this.peers.values()].filter((p) => p.open).length; const d = await directPathOf(pc); this.log(`p2p: viewer ${viewerId.slice(0, 6)} connected - ${d.label}`); this.emit(); this.resendSnapshot && this.resendSnapshot(); };
     dc.onclose = () => { if (this.peers.get(viewerId) === peer) this.dropPeer(viewerId); };
     pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && this.peers.get(viewerId) === peer) this.dropPeer(viewerId); };
     const offer = await pc.createOffer();
@@ -228,8 +231,14 @@ export class Publisher {
     if (this.cancelRetry) this.cancelRetry();
     this.cancelRetry = countdown(seconds, (left) => { this.state.retryIn = left; this.emit(); }, () => { this.cancelRetry = null; this.connectSfu(); });
   }
+  /** The tab just came back: reopen the socket and retry the transport now. */
+  nudge() {
+    if (this.stopped) return;
+    if (this.sig) this.sig.nudge();
+    if (this.cancelRetry) { this.log('live: tab resumed, retrying now'); this.connectSfu(); }
+  }
 
-  /** Encrypt once, send to the SFU and to every direct Wi-Fi peer. */
+  /** Encrypt once, send to the SFU and to every direct peer. */
   async publish(env) {
     const bytes = await encrypt(this.key, env);
     let sent = 0;
@@ -314,8 +323,9 @@ export class Viewer {
       p.dc = e.channel; p.dc.binaryType = 'arraybuffer';
       p.dc.onmessage = (ev) => this.onBytes(ev.data);
       p.dc.onopen = async () => {
-        p.open = true; this.log('p2p: direct Wi-Fi link to the publisher');
-        this.state.live = true; this.state.error = null; this.state.path = { tier: 'p2p', label: 'direct Wi-Fi' }; this.sig.reportPath('p2p');
+        p.open = true;
+        this.state.live = true; this.state.error = null; this.state.path = await directPathOf(pc); this.sig.reportPath('p2p');
+        this.log(`p2p: ${this.state.path.label} (no server)`);
         this.clearRetry(); this.teardownSfu(); this.emit();
       };
       p.dc.onclose = () => { if (this.p2p === p) { this.log('p2p: direct link closed'); this.dropP2P(); if (this.pubSession && !this.stopped) this.subscribe(); } };
@@ -391,6 +401,12 @@ export class Viewer {
     this.cancelRetry = countdown(seconds, (left) => { this.state.retryIn = left; this.emit(); }, () => { this.cancelRetry = null; this.state.retryIn = null; this.subscribe(); });
   }
   clearRetry() { if (this.cancelRetry) { this.cancelRetry(); this.cancelRetry = null; } this.state.retryIn = null; }
+  /** The tab just came back: do not sit out a retry countdown or the socket reopen delay. */
+  nudge() {
+    if (this.stopped) return;
+    if (this.sig) this.sig.nudge();
+    if (this.cancelRetry) { this.log('live: tab resumed, retrying now'); this.clearRetry(); this.subscribe(); }
+  }
   teardownSfu() {
     clearInterval(this.pathTimer); this.pathTimer = null;
     const s = this.sfu; if (!s) return; this.sfu = null;

@@ -93,6 +93,35 @@ export function classifyPath(local) {
   return { tier: 'udp', label: 'direct UDP to Cloudflare' };
 }
 
+/** Private / link-local / mDNS addresses: reachable only on the same network.
+ *  Anything else on a direct link means a public route - IPv6 peer to peer
+ *  across the internet (seen on a phone on 5G reaching a home Wi-Fi reader). */
+export function isPrivateAddress(a) {
+  if (!a) return false;
+  const s = String(a).toLowerCase();
+  if (s.endsWith('.local')) return true;                              // mDNS name: only resolves on the LAN
+  if (/^(10\.|127\.|169\.254\.|192\.168\.)/.test(s)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(s)) return true;
+  if (s === '::1' || s.startsWith('fe80:') || /^f[cd][0-9a-f]{2}:/.test(s)) return true;   // loopback, link-local, ULA
+  return false;
+}
+
+/** Classify a direct (no server) link from its selected candidate pair. */
+export function classifyDirect(local, remote) {
+  const lan = !!local && !!remote && isPrivateAddress(local.address || local.ip) && isPrivateAddress(remote.address || remote.ip);
+  return lan ? { tier: 'p2p', sub: 'lan', label: 'direct, same network' } : { tier: 'p2p', sub: 'inet', label: 'direct, over the internet' };
+}
+
+/** Selected candidate pair {local, remote, rttMs} from a getStats() report. */
+export function selectedPair(stats) {
+  const byId = new Map(); let pairId = null;
+  stats.forEach((s) => { byId.set(s.id, s); if (s.type === 'transport' && s.selectedCandidatePairId) pairId = s.selectedCandidatePairId; });
+  let pair = pairId ? byId.get(pairId) : null;
+  if (!pair) stats.forEach((s) => { if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated) pair = s; });
+  if (!pair) return null;
+  return { local: byId.get(pair.localCandidateId) || null, remote: byId.get(pair.remoteCandidateId) || null, rttMs: pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null };
+}
+
 /** Pick the selected local candidate out of a getStats() report (Map-like). */
 export function selectedLocalCandidate(stats) {
   const byId = new Map(); let pairId = null;
