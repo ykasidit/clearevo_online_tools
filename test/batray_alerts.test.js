@@ -118,3 +118,20 @@ test('formatEvent and ntfy validation', () => {
   assert.ok(!ntfyOk({ server: 'ntfy.sh', topic: 'x' }));
   assert.ok(!ntfyOk({ server: 'https://ntfy.sh', topic: 'bad topic' }));
 });
+
+test('bmsAlarm: a protection bit fires after 10 s, recovers, and is off for a clean pack', () => {
+  const ev = new Evaluator(defaultSettings());
+  const clean = { soc: 80, current: -2, cellDelta: 0.01, ageS: 3, connected: true, alarm: '' };
+  const tripped = { ...clean, alarm: 'Cell overvoltage protection' };
+  let t = 1_000_000;
+  assert.deepEqual(ev.tick('p', 'n11', tripped, t).filter((e) => e.rule === 'bmsAlarm'), []);
+  t += 11000;
+  const fired = ev.tick('p', 'n11', tripped, t).filter((e) => e.rule === 'bmsAlarm');
+  assert.equal(fired.length, 1); assert.equal(fired[0].event, 'fire'); assert.equal(fired[0].priority, 5);
+  const msg = formatEvent(fired[0], { title: (p) => p, recoveredTitle: (p) => p, recovered: (x) => x, bmsAlarm: (e) => `BMS alarm: ${e.alarm}` });
+  assert.equal(msg.body, 'BMS alarm: Cell overvoltage protection');
+  t += 5000;
+  const rec = ev.tick('p', 'n11', clean, t).filter((e) => e.rule === 'bmsAlarm');
+  assert.equal(rec.length, 1); assert.equal(rec[0].event, 'recover');
+  assert.deepEqual(ev.tick('p', 'n11', clean, t + 60000).filter((e) => e.rule === 'bmsAlarm'), []);
+});

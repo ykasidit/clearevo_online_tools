@@ -19,6 +19,7 @@
 // on so that turning a channel on is the only step.
 import { RULES, defaultSettings, loadSettings, Evaluator, formatEvent, ntfyOk } from './alerts-logic.js';
 import { makeKeyB64 } from './live-logic.js';
+import { errorLabels } from './jkbms.js';
 
 const API = '/batray/api';
 const STORE = 'batray_alerts';
@@ -79,6 +80,7 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus }) {
     const d = p.data;
     return {
       soc: d ? d.soc : null, current: d ? d.current : null, cellDelta: d ? d.cellDelta : null,
+      alarm: d && d.errors ? errorLabels(d.errors).join(', ') : '',
       ageS: p.lastFrameAt ? (Date.now() - p.lastFrameAt) / 1000 : null, connected: !!p.connected,
     };
   }
@@ -136,6 +138,7 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus }) {
       </div>
       <div class="agrp"><b>${A.rulesH}</b> <span class="note">${A.rulesNote}</span>
         ${RULES.map((r) => { const c = settings.rules[r.id]; const secs = r.unit === 's';   // the "silent" rule: shown in minutes, no separate hold
+          if (r.kind === 'alarm') return `<label class="chk arule"><input type="checkbox" data-rule="${r.id}" ${c.on ? 'checked' : ''}> <span class="rl">${A.rules[r.id]}</span></label>`;
           return `<label class="chk arule"><input type="checkbox" data-rule="${r.id}" ${c.on ? 'checked' : ''}> <span class="rl">${A.rules[r.id]}</span> <input type="number" step="any" data-val="${r.id}" value="${secs ? Math.round(c.value / 60) : c.value}" size="5"> ${secs ? A.min : r.unit}${secs ? '' : ` · ${A.holdFor} <input type="number" data-hold="${r.id}" value="${Math.round(c.holdS / 60)}" size="3"> ${A.min}`}</label>`; }).join('')}
       </div>
       <div class="agrp"><b>${A.eventsH}</b>

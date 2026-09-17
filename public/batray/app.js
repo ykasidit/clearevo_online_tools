@@ -18,8 +18,9 @@ import { I18N, detectLang } from './i18n.js';
 import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
+import { timeToGo, splitHours, Ema, Trend } from './trend.js';
 
-export const APP_VERSION = '0.9.7';
+export const APP_VERSION = '0.9.8';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -83,6 +84,7 @@ class Pack {
     this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.reNow = false; this.dumped = false;
     this.stalled = false; this.stalledAge = 0; this.connectedAt = null;   // link reported connected but gone quiet
     this.remoteLive = false;
+    this.trend = new Trend(); this.iEma = new Ema(60);   // session trend + smoothed current for the time-to-go
     if (this.bms) this.wire();
   }
   get connected() { return this.remote ? this.remoteLive : (!!this.demo || (this.bms && this.bms.connected)); }
@@ -129,9 +131,14 @@ class Pack {
       }
     });
   }
+  take(d) {
+    this.data = d; this.lastFrameAt = Date.now();
+    this.iEma.push(d.current, this.lastFrameAt);
+    this.trend.push({ t: this.lastFrameAt, soc: d.soc, power: d.power });
+  }
   onData(d) {
     const first = !this.lastFrameAt;
-    this.data = d; this.lastFrameAt = Date.now();
+    this.take(d);
     if (this.isActive) scheduleRender(this);
     schedulePackBar();
     if (publisher) publisher.publish(envelope('data', this, d));
@@ -179,9 +186,10 @@ function setActive(pack) {
 }
 
 function clearReadouts() {
-  els.layout.innerHTML = ''; els.secondary.innerHTML = ''; els.cells.innerHTML = '';
+  els.layout.innerHTML = ''; els.secondary.innerHTML = ''; els.cells.innerHTML = ''; $('strip').innerHTML = ''; $('cellsStat').textContent = '';
   for (const id of ['fSoc', 'fPower', 'fAmps']) $(id).textContent = '-';
-  $('fSoh').textContent = T.battLbl(null, null);
+  $('fEta').textContent = ''; $('fSoh').textContent = T.battLbl(null, null);
+  $('trendCard').hidden = true;
 }
 
 // The offline / loading / reconnect card reflects the ACTIVE pack only.
@@ -302,12 +310,116 @@ function renderCells(cells) {
 
 const kv = (rows) => rows.map(([k, v]) => `<div class="kv"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');
 
+// ---- time to go, status chips, cell line, session trend (benchmark 2026-09-17:
+// Victron/Enphase/EcoFlow show a runtime, every BMS app shows MOS + alarm state
+// on its first screen, every commercial monitor has a history curve) ----
+let cutoffPct = 10;
+try { const v = +localStorage.getItem('batray_cutoff_pct'); if (Number.isFinite(v) && localStorage.getItem('batray_cutoff_pct') !== null) cutoffPct = Math.max(0, Math.min(95, v)); } catch {}
+$('cutoff').value = cutoffPct;
+$('cutoff').addEventListener('change', () => {
+  const v = +$('cutoff').value;
+  if (Number.isFinite(v)) cutoffPct = Math.max(0, Math.min(95, Math.round(v)));
+  $('cutoff').value = cutoffPct;
+  try { localStorage.setItem('batray_cutoff_pct', cutoffPct); } catch {}
+  if (active && active.data) render(active.data, true);
+});
+
+function fmtSpan(hours) {
+  const x = splitHours(hours);
+  if (!x) return '-';
+  if (x.capped) return T.etaCapped;
+  return x.d ? T.dh(x.d, x.h) : x.h ? T.hm(x.h, x.m) : T.mOnly(x.m);
+}
+
+function renderEta(p, d) {
+  const I = p && p.iEma.v !== null ? p.iEma.v : d.current;
+  const r = timeToGo({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: I, cutoffPct });
+  const el = $('fEta');
+  el.textContent = r.kind === 'empty' ? T.etaEmpty(fmtSpan(r.hours), cutoffPct)
+    : r.kind === 'full' ? T.etaFull(fmtSpan(r.hours))
+    : r.kind === 'atCutoff' ? T.etaAtCutoff : '';
+  el.setAttribute('fill', r.kind === 'atCutoff' ? '#ff8a80' : '#a7bccf');
+  $('etaLine').hidden = r.kind === 'unknown';
+}
+
+function renderStrip(d) {
+  const R = T.r;
+  const t = (v) => (v === null || v === undefined ? '-' : fmt(v, 0, '°'));
+  const chip = (cls, txt) => `<span class="chip${cls ? ` ${cls}` : ''}">${txt}</span>`;
+  const bits = [];
+  if (d.chgMos !== undefined) bits.push(chip(d.chgMos ? 'ok' : 'bad', T.chipChg(!!d.chgMos)));
+  if (d.dsgMos !== undefined) bits.push(chip(d.dsgMos ? 'ok' : 'bad', T.chipDsg(!!d.dsgMos)));
+  if (d.balancing !== undefined && d.balancing !== null) bits.push(chip(d.balancing ? 'warn' : '', T.chipBal(!!d.balancing)));
+  if (d.tempMos !== undefined || d.temp1 !== undefined) bits.push(chip('', T.chipTemp(t(d.tempMos), t(d.temp1), t(d.temp2))));
+  if (d.heating) bits.push(chip('warn', `${R.heating} ${R.on}`));
+  const labels = d.errors ? errorLabels(d.errors) : [];
+  bits.push(labels.length ? chip('bad', T.chipAlarm(labels.length, labels.join(', '))) : chip('ok', T.chipAlarmNone));
+  $('strip').innerHTML = bits.join('');
+}
+
+function renderCellsStat(d) {
+  const cells = d.cells || [];
+  if (cells.length < 2) { $('cellsStat').textContent = ''; return; }
+  let lo = cells[0], hi = cells[0];
+  for (const c of cells) { if (c.v < lo.v) lo = c; if (c.v > hi.v) hi = c; }
+  $('cellsStat').textContent = T.cellsStat(Math.round((hi.v - lo.v) * 1000), lo.v.toFixed(3), lo.n, hi.v.toFixed(3), hi.n);
+}
+
+function fmtWh(wh) { return wh >= 1000 ? `${(wh / 1000).toFixed(2)} kWh` : `${Math.round(wh)} Wh`; }
+
+function renderTrend(p) {
+  const card = $('trendCard');
+  if (!p || p.trend.spanMs < 30000) { card.hidden = true; return; }
+  card.hidden = false;
+  const tr = p.trend;
+  $('trendEnergy').textContent = T.trendEnergy(fmtSpan(tr.spanMs / 3600000), fmtWh(tr.chargedWh), fmtWh(tr.dischargedWh));
+  const cv = $('trend');
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.max(200, cv.clientWidth), H = 130;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const L = 44, Rm = 34, Tm = 8, Bm = 18, pw = W - L - Rm, ph = H - Tm - Bm;
+  const sm = tr.samples, t0 = sm[0].t, t1 = sm[sm.length - 1].t, span = Math.max(1, t1 - t0);
+  let pmax = 100;
+  for (const x of sm) if (x.power !== null) pmax = Math.max(pmax, Math.abs(x.power));
+  pmax = Math.ceil(pmax / 100) * 100;
+  const X = (t) => L + (t - t0) / span * pw, Yp = (w) => Tm + ph / 2 - (w / pmax) * ph / 2, Ys = (soc) => Tm + ph - (soc / 100) * ph;
+  g.font = '10px DejaVu Sans Mono, monospace'; g.textBaseline = 'middle';
+  g.strokeStyle = '#1c3550'; g.lineWidth = 1;
+  for (const w of [pmax, pmax / 2, 0, -pmax / 2, -pmax]) { g.beginPath(); g.moveTo(L, Yp(w)); g.lineTo(L + pw, Yp(w)); g.stroke(); g.fillStyle = '#7fb0d8'; g.textAlign = 'right'; g.fillText(`${w} W`, L - 4, Yp(w)); }
+  g.textAlign = 'left';
+  for (const pct of [0, 50, 100]) { g.fillStyle = '#4aa9e0'; g.fillText(`${pct}%`, L + pw + 4, Ys(pct)); }
+  const step = span > 4 * 3600000 ? 3600000 : span > 1.5 * 3600000 ? 1800000 : span > 20 * 60000 ? 600000 : 60000;
+  g.fillStyle = '#7fb0d8'; g.textAlign = 'center';
+  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) { if (X(t) < L + 18 || X(t) > L + pw - 18) continue; const dt = new Date(t); g.fillText(`${dt.getHours().toString().padStart(2, '0')}:${dt.getMinutes().toString().padStart(2, '0')}`, X(t), H - Bm / 2); }
+  // power: filled area above/below the zero line
+  const area = (sign, color) => {
+    g.beginPath(); let open = false;
+    for (const x of sm) {
+      const w = x.power === null ? 0 : Math.max(0, sign * x.power) * sign;
+      if (!open) { g.moveTo(X(x.t), Yp(0)); open = true; }
+      g.lineTo(X(x.t), Yp(w));
+    }
+    g.lineTo(X(t1), Yp(0)); g.closePath(); g.fillStyle = color; g.fill();
+  };
+  area(1, 'rgba(95,211,154,.55)'); area(-1, 'rgba(255,183,77,.55)');
+  // battery %
+  g.beginPath(); let started = false;
+  for (const x of sm) { if (x.soc === null) continue; if (!started) { g.moveTo(X(x.t), Ys(x.soc)); started = true; } else g.lineTo(X(x.t), Ys(x.soc)); }
+  g.strokeStyle = '#4aa9e0'; g.lineWidth = 2; g.stroke();
+  if (cutoffPct > 0) { g.setLineDash([4, 4]); g.strokeStyle = '#ff8a80'; g.lineWidth = 1; g.beginPath(); g.moveTo(L, Ys(cutoffPct)); g.lineTo(L + pw, Ys(cutoffPct)); g.stroke(); g.setLineDash([]); }
+}
+window.addEventListener('resize', () => { if (active && active.data) renderTrend(active); });
+
 function render(d, relabelOnly = false) {
   if (!relabelOnly) {
     els.empty.hidden = true; els.readouts.hidden = false;
     document.body.classList.remove('offline', 'loading');
   }
   renderFlow(d);
+  renderEta(active, d); renderStrip(d); renderCellsStat(d); renderTrend(active);
   const charging = d.current > 0.05, discharging = d.current < -0.05;
   const flowTxt = charging ? T.charging : discharging ? T.discharging : T.idle;
   const src = d.layoutSource === 'firmware' ? T.srcFw : d.layoutSource === 'float-cells' ? T.srcFloat : T.srcSum;
@@ -714,7 +826,7 @@ function startView() {
       p.remoteLive = true; readerSeen = true;
       if (env.k === 'info') { p.info = env.v; if (p.isActive) renderDevice(env.v); }
       else if (env.k === 'settings') { p.settings = env.v; if (p.isActive) renderSettings(env.v); }
-      else if (env.k === 'data') { p.data = env.v; p.lastFrameAt = Date.now(); if (p.isActive) { render(env.v); refreshCard(); } renderPackBar(); }
+      else if (env.k === 'data') { p.take(env.v); if (p.isActive) { render(env.v); refreshCard(); } renderPackBar(); }
     },
   });
   renderViewChip();

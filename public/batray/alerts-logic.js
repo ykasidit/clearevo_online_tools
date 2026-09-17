@@ -24,6 +24,9 @@ export const RULES = [
   { id: 'noCharge',    on: true, value: 1,    holdS: 1800, priority: 4, unit: 'A',  kind: 'noChargeDaylight', tag: 'sunny' },
   { id: 'cellDelta',   on: true, value: 0.10, holdS: 600,  priority: 3, unit: 'V',  kind: 'above', tag: 'warning' },
   { id: 'silent',      on: true, value: 300,  holdS: 0,    priority: 4, unit: 's',  kind: 'silent', tag: 'no_entry' },
+  // every BMS app (JK, Daly, JBD) puts the fault line on its first screen; a
+  // protection that trips deserves a notification too (benchmark 2026-09-17)
+  { id: 'bmsAlarm',    on: true, value: 0,    holdS: 10,   priority: 5, unit: '',   kind: 'alarm', tag: 'rotating_light' },
 ];
 export const REPEAT_S = 1800;
 export const DAYLIGHT = { fromH: 9, toH: 15 }; // local hours during which "no charge" is suspicious
@@ -58,7 +61,7 @@ export function loadSettings(stored) {
   return s;
 }
 
-/** Is the condition of `rule` true for this pack sample? sample: { soc, current, cellDelta, ageS, connected }, at: Date */
+/** Is the condition of `rule` true for this pack sample? sample: { soc, current, cellDelta, ageS, connected, alarm }, at: Date */
 export function conditionHolds(rule, cfg, sample, at) {
   switch (rule.kind) {
     case 'below': return sample.soc !== null && sample.soc !== undefined && sample.soc < cfg.value;
@@ -71,6 +74,7 @@ export function conditionHolds(rule, cfg, sample, at) {
     // Age of the last frame only: a Bluetooth drop that reconnects within the
     // window must not alert, and a pack that never sent a frame has no age.
     case 'silent': return sample.ageS !== null && sample.ageS !== undefined && sample.ageS > cfg.value;
+    case 'alarm': return !!sample.alarm;
     default: return false;
   }
 }
@@ -120,7 +124,8 @@ export function formatEvent(ev, A) {
   const dv = s.cellDelta === null || s.cellDelta === undefined ? '-' : `${Math.round(s.cellDelta * 1000)} mV`;
   const f = A[ev.rule] || ((e) => `${e.rule}`);
   const title = ev.event === 'recover' ? A.recoveredTitle(ev.packName) : A.title(ev.packName);
-  const body = ev.event === 'recover' ? A.recovered(f({ ...ev, soc, cur, dv })) : f({ ...ev, soc, cur, dv });
+  const alarm = s.alarm || '-';
+  const body = ev.event === 'recover' ? A.recovered(f({ ...ev, soc, cur, dv, alarm })) : f({ ...ev, soc, cur, dv, alarm });
   return { title, body };
 }
 

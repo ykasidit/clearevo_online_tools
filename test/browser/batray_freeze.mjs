@@ -83,6 +83,9 @@ check('a connected pack shows readings', s.gatt === true && s.soc !== '-' && /n1
 // no adapter-state probe any more (2026-09-17): the app warns once to keep
 // Bluetooth on (toast) and keeps a line under the readings while connected
 const bt = await evalJs(`({ toast: document.getElementById('toast').textContent, toastShown: !document.getElementById('toast').hidden, note: !document.getElementById('btNote').hidden, meters: document.querySelectorAll('.meter').length, packV: document.getElementById('fSoh').textContent, rows: document.getElementById('secondary').textContent })`);
+const ui = await evalJs(`({ eta: document.getElementById('fEta').textContent, chips: [...document.querySelectorAll('#strip .chip')].map((c) => c.className + ':' + c.textContent), cellsStat: document.getElementById('cellsStat').textContent, etaLineShown: !document.getElementById('etaLine').hidden })`);
+check('benchmark items after connecting: time-to-go on the picture, MOS/temp/alarm chips, cell delta line',
+  /≈ .* (to 10 % cut-off|to full)|below the cut-off/.test(ui.eta) && ui.etaLineShown && ui.chips.some((c) => /charge (allowed|blocked)/.test(c)) && ui.chips.some((c) => /MOS .* T1/.test(c)) && ui.chips.some((c) => /alarm/.test(c)) && /Δ \d+ mV · lowest 3\.\d{3} V \(cell \d+\)/.test(ui.cellsStat), ui);
 check('after connecting: keep-Bluetooth-on toast + line, no big meter cards, values in the details grid',
   bt.toastShown && /Bluetooth on/.test(bt.toast) && bt.note && bt.meters === 0 && /\d V · SOH/.test(bt.packV) && /Pack voltage/.test(bt.rows) && /State of charge/.test(bt.rows) && /Power/.test(bt.rows), bt);
 
@@ -135,6 +138,9 @@ await notify(OWNER_32S_CELL);
 await sleep(5000);
 s = await state();
 check('...and stays up once its first frame arrives', s.gatt === true && /^connected/i.test(s.stat), s);
+// the session trend appears once the pack has been read for 30 s (frames above span more than that)
+const tr = await evalJs(`({ shown: !document.getElementById('trendCard').hidden, energy: document.getElementById('trendEnergy').textContent, w: document.getElementById('trend').width })`);
+check('the session trend card shows with an energy line once 30 s of readings exist', tr.shown && /charged .* · discharged/.test(tr.energy) && tr.w > 100, tr);
 
 // --- share link as a QR code: the other phone just scans the screen ---
 const qr = await evalJs(`(() => {

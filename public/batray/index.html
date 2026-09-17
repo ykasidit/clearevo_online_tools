@@ -65,6 +65,12 @@ body.offline #offline{display:block}
 .demobtn .bt{width:20px;height:20px;vertical-align:-4px;margin-right:8px}
 body.offline #readouts{filter:grayscale(1);opacity:.45}
 body.offline #fDash{animation:none}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 4px 2px;font:11px 'DejaVu Sans Mono',monospace}
+.chip{border:1px solid #1c3550;border-radius:12px;padding:2px 9px;color:#a7bccf;background:#0a1626;white-space:nowrap}
+.chip.ok{color:#5fd39a;border-color:#2b5a45}.chip.bad{color:#ff8a80;border-color:#7a2f2a;font-weight:700}.chip.warn{color:#ffd24a;border-color:#6b5a1a}
+#etaLine{display:block;line-height:1.8}
+#etaLine input{width:52px;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:4px;padding:1px 4px;font:inherit}
+#trend{width:100%;height:130px;display:block;background:#0a1626;border:1px solid #1c3550;border-radius:6px}
 .check{margin:10px 0 0;font:11px 'DejaVu Sans Mono',monospace;color:#6f8aa6;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
 .check .ok{color:#5fd39a}.check .warn{color:#ffd24a}
 .card{background:#0a1626;border:1px solid #1c3550;border-radius:8px;margin-top:10px;padding:10px 12px}
@@ -230,8 +236,11 @@ body.view #empty,body.view #oneApp{display:none}
               <path d="M528 55 l-22 34 h18 l-6 30 l30 -40 h-18 z" fill="#8fe3ff"/>
               <text id="fSysLbl" x="528" y="158" text-anchor="middle" font-size="13" fill="#7fb0d8">SYSTEM</text>
             </g>
+            <text id="fEta" x="320" y="158" text-anchor="middle" font-size="13" fill="#a7bccf" font-family="'DejaVu Sans Mono',Consolas,monospace"></text>
           </svg>
+          <div class="chips" id="strip"></div>
         </div>
+        <div class="check" id="etaLine"><span id="cutoffPre" data-i18n="cutoffPre">Time to empty counts down to your inverter's low-battery cut-off at</span> <input id="cutoff" type="number" min="0" max="95" step="1" value="10" size="3" aria-label="inverter cut-off, percent of capacity"> % <span id="cutoffPost" data-i18n="cutoffPost">of capacity (default 10 %, set your inverter's value). Straight-line from the smoothed current; charging slows near full, so time to full is optimistic.</span></div>
         <div class="check"><span id="updated" data-i18n="noData">no data yet</span></div>
         <div class="check"><span id="layout"></span></div>
         <div class="check" id="device" hidden></div>
@@ -239,7 +248,14 @@ body.view #empty,body.view #oneApp{display:none}
         <div class="check warn" id="btNote" hidden data-i18n="btKeepOn">Keep Bluetooth on while BatRay is open: on this Chrome version, reconnecting with Bluetooth off can close the tab.</div>
         <div class="card">
           <h2><span data-i18n="cellsH">Cell voltages</span> <span class="note" id="cellsNote" data-i18n="cellsNote">bar height exaggerates the spread: scale runs from the lowest cell - 50 mV to the highest + 50 mV</span></h2>
+          <div class="check" id="cellsStat"></div>
           <div id="cellsWrap"><div id="cells"></div></div>
+        </div>
+        <div class="card" id="trendCard" hidden>
+          <h2><span data-i18n="trendH">Trend</span> <span class="note" data-i18n="trendNote">since this tab opened - kept in memory only, nothing stored or sent</span></h2>
+          <div class="check" id="trendEnergy"></div>
+          <canvas id="trend" height="130" aria-label="power and battery percent since this tab opened"></canvas>
+          <div class="check" data-i18n="trendLegend">power: green charge, amber discharge · battery %: blue line, right axis</div>
         </div>
         <div class="card">
           <h2><span data-i18n="moreH">More</span> <span class="note" data-i18n="moreNote">same frame as the meters, not covered by the cell-sum check; offsets verified against captured frames from 24-cell, 32-cell and JK-PB firmware (see how to use)</span></h2>
