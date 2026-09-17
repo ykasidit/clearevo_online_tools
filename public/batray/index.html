@@ -130,6 +130,11 @@ body.demo #demoBadge{display:block}
 #demoBadge button{margin-left:12px;background:transparent;border:1px solid #ffd24a;color:#ffd24a;border-radius:5px;padding:2px 9px;font:600 11px Tahoma,sans-serif;cursor:pointer;vertical-align:middle}
 #demoBadge button:hover{background:#ffd24a;color:#1a1200}
 .chipbar[hidden],#packBar[hidden],#shareLink[hidden],#qrPanel[hidden],#qrShow[hidden]{display:none!important}
+.tvpanel{background:#0d1f33;border-bottom:1px solid #1c3550;padding:10px 12px;font:12px 'Segoe UI',Tahoma,sans-serif;color:#cdd9e5;display:flex;flex-direction:column;gap:8px}
+.tvpanel[hidden]{display:none}.tvnote{color:#a7bccf;line-height:1.5}.tvnote.warn{color:#ffd24a}.tvrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+#tvVideo{width:min(100%,360px);aspect-ratio:16/9;background:#000;border:1px solid #1c3550;border-radius:6px}#tvQr{background:#fff;padding:8px;border-radius:6px;width:min(100%,260px);height:auto}
+.tvpanel select{background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:4px;padding:2px 6px;font:inherit}
+.tvpanel .qrlink{font:11px 'DejaVu Sans Mono',monospace;word-break:break-all;color:#7fb0d8}
 .qrpanel{display:flex;flex-direction:column;align-items:center;gap:6px;background:#fff;color:#123;padding:12px 12px 10px;border-bottom:1px solid #1c3550;font:12px 'Segoe UI',Tahoma,sans-serif}
 .qrpanel canvas{width:min(78vw,340px);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}
 .qrpanel .qrhint{font-size:13px;color:#123;text-align:center;max-width:340px}
@@ -187,6 +192,7 @@ body.view #empty,body.view #oneApp{display:none}
     <label class="chk" title="after a drop, reconnect to the last BMS automatically after a 10 s countdown"><input type="checkbox" id="autoRe" checked> <span data-i18n="autoRe">auto reconnect</span></label>
     <div class="tsep" id="tsep"></div>
     <button class="tbtn" id="share" title="share a live link: readings are encrypted on this device, the key exists only in the link"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg><span class="lbl" data-i18n="share">Share live</span></button>
+    <button class="tbtn" id="tv" title="show this picture on a TV (Chromecast, Google TV, TV browser, VLC)"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span class="lbl" data-i18n="tv">Show on TV</span></button>
     <button class="tbtn" id="copy" title="copy the raw-frame log to the clipboard"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></svg><span class="lbl" data-i18n="copyLog">Copy log</span></button>
     <span title="language" style="align-self:center;font-size:14px;padding-left:6px">🌐</span><select id="lang" title="language" style="align-self:center;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:5px;padding:3px 6px;font-size:11px;margin-left:4px"></select>
     <span id="stat">ready</span>
@@ -197,6 +203,21 @@ body.view #empty,body.view #oneApp{display:none}
     <div class="qrhint" data-i18n="qrHint">Point the other phone's camera at this code to open the live view</div>
     <div class="qrlink" id="qrLink"></div>
     <div class="qrrow"><button id="qrCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button> · <button id="qrHide" type="button" class="linkbtn" data-i18n="qrHide">hide QR</button></div>
+  </div>
+  <div id="tvPanel" class="tvpanel" hidden>
+    <div class="tvrow"><b data-i18n="tvH">Show on TV</b> <button id="tvClose" type="button" class="linkbtn" data-i18n="close">Close</button></div>
+    <div class="tvnote" data-i18n="tvIntro">Turns this picture into a small video a TV can play, about 15 s behind: press Cast for a Chromecast or Google TV on this Wi-Fi, or open the link in a TV browser or a player such as VLC.</div>
+    <div class="tvnote warn" data-i18n="tvPrivacy">Not encrypted, unlike Share live: clearevo.com holds the last few seconds of the picture so the TV can fetch it, and anyone with the link can watch. Stop it when you are done.</div>
+    <div class="tvrow"><label><span data-i18n="tvRes">resolution</span> <select id="tvRes"><option value="1280x720">720p</option><option value="1920x1080" selected>1080p</option></select></label> <button id="tvStart" type="button" class="demobtn" style="padding:6px 16px" data-i18n="tvStart">Start TV stream</button> <button id="tvStop" type="button" class="linkbtn" hidden data-i18n="tvStop">stop TV stream</button></div>
+    <div id="tvLive" hidden>
+      <div class="tvnote" id="tvStat"></div>
+      <div class="tvrow"><video id="tvVideo" playsinline muted controls></video></div>
+      <div class="tvrow"><button id="tvCast" type="button" class="demobtn" style="padding:6px 16px" data-i18n="tvCast" disabled>Cast to TV</button> <span class="tvnote" id="tvCastHint"></span></div>
+      <div class="tvnote" data-i18n="tvOpenHint">TV browser or a player such as VLC: open this link</div>
+      <div class="qrlink" id="tvLink"></div>
+      <div class="tvrow"><button id="tvCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button> · <button id="tvQrBtn" type="button" class="linkbtn" data-i18n="qrShow">show QR</button></div>
+      <canvas id="tvQr" width="10" height="10" hidden aria-label="QR code of the TV stream link"></canvas>
+    </div>
   </div>
   <div id="viewChip" class="chipbar" hidden><span class="dot"></span><span id="viewTxt"></span><button id="viewStop" type="button" class="linkbtn" hidden data-i18n="cancel">Cancel</button></div>
   <div id="packBar" hidden></div>
@@ -297,7 +318,7 @@ body.view #empty,body.view #oneApp{display:none}
       </details>
     </div>
   </div>
-  <div class="status-bar"><p><span data-i18n="privacy">Runs in your browser - battery data stays on this device unless you turn on Share live</span> (Google Analytics: visit stats only - <a href="/tools-privacy/" target="_blank" rel="noopener" data-i18n="verify">verify</a>) - <a href="/blog/2026/09/11/how_to_monitor_your_jk_bms_battery_in_your_browser/" target="_blank" rel="noopener" data-i18n="howto">how to use</a> - <a href="/tools/" target="_blank" rel="noopener" data-i18n="tools">tools</a> - <a href="https://www.clearevo.com/">clearevo</a> - © 2026 Kasidit Yusuf, GPL v2 - <span id="sbVer"></span><span id="wake" hidden> - ☀ <span data-i18n="wakeOn">screen kept awake while connected</span></span><span id="alertNote" hidden> - 🔔 <span id="alertTxt"></span></span><span id="liveNote" hidden> - 🔒 <span data-i18n="liveNote">sharing live: readings are encrypted on this device with a key that exists only in the share link</span></span></p></div>
+  <div class="status-bar"><p><span data-i18n="privacy">Runs in your browser - battery data stays on this device unless you turn on Share live or Show on TV</span> (Google Analytics: visit stats only - <a href="/tools-privacy/" target="_blank" rel="noopener" data-i18n="verify">verify</a>) - <a href="/blog/2026/09/11/how_to_monitor_your_jk_bms_battery_in_your_browser/" target="_blank" rel="noopener" data-i18n="howto">how to use</a> - <a href="/tools/" target="_blank" rel="noopener" data-i18n="tools">tools</a> - <a href="https://www.clearevo.com/">clearevo</a> - © 2026 Kasidit Yusuf, GPL v2 - <span id="sbVer"></span><span id="wake" hidden> - ☀ <span data-i18n="wakeOn">screen kept awake while connected</span></span><span id="alertNote" hidden> - 🔔 <span id="alertTxt"></span></span><span id="tvNote" hidden> - 📺 <span data-i18n="tvNote">showing on TV: the picture goes through clearevo.com unencrypted</span></span><span id="liveNote" hidden> - 🔒 <span data-i18n="liveNote">sharing live: readings are encrypted on this device with a key that exists only in the share link</span></span></p></div>
 </div>
 <div id="toast" hidden></div>
 <div id="about">

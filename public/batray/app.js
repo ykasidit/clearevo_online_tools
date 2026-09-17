@@ -19,8 +19,10 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { timeToGo, splitHours, Ema, Trend } from './trend.js';
+import { TvStream } from './tv.js';
+import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.12';
+export const APP_VERSION = '0.9.13';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -155,7 +157,7 @@ class Pack {
 const packs = new Map();
 let active = null;
 let packSeq = 0;
-let publisher = null, viewer = null;
+let publisher = null, viewer = null, tv = null;
 
 function addPack(pack) { packs.set(pack.id, pack); if (!active) setActive(pack); renderPackBar(); return pack; }
 function removePack(pack) {
@@ -253,7 +255,7 @@ function applyLang(code) {
 // ---- wake lock: any wanted session keeps the screen (and BLE) awake ----
 let wakeLock = null, wakeWanted = false;
 async function syncWake() {
-  wakeWanted = [...packs.values()].some((p) => p.connected || p.reconnecting || !!p.reTimer) || !!publisher || !!(viewer && viewer.state.live);
+  wakeWanted = [...packs.values()].some((p) => p.connected || p.reconnecting || !!p.reTimer) || !!publisher || !!(viewer && viewer.state.live) || !!(tv && tv.state.live);
   const el = $('wake');
   if (!('wakeLock' in navigator)) { el.hidden = true; return; }
   if (wakeWanted && !wakeLock && document.visibilityState === 'visible') {
@@ -384,19 +386,21 @@ function renderEta(p, d) {
   $('etaLine').hidden = r.kind === 'unknown';
 }
 
-function renderStrip(d) {
+function chipList(d) {
   const R = T.r;
   const t = (v) => (v === null || v === undefined ? '-' : fmt(v, 0, '°'));
-  const chip = (cls, txt) => `<span class="chip${cls ? ` ${cls}` : ''}">${txt}</span>`;
   const bits = [];
-  if (d.chgMos !== undefined) bits.push(chip(d.chgMos ? 'ok' : 'bad', T.chipChg(!!d.chgMos)));
-  if (d.dsgMos !== undefined) bits.push(chip(d.dsgMos ? 'ok' : 'bad', T.chipDsg(!!d.dsgMos)));
-  if (d.balancing !== undefined && d.balancing !== null) bits.push(chip(d.balancing ? 'warn' : '', T.chipBal(!!d.balancing)));
-  if (d.tempMos !== undefined || d.temp1 !== undefined) bits.push(chip('', T.chipTemp(t(d.tempMos), t(d.temp1), t(d.temp2))));
-  if (d.heating) bits.push(chip('warn', `${R.heating} ${R.on}`));
+  if (d.chgMos !== undefined) bits.push({ cls: d.chgMos ? 'ok' : 'bad', txt: T.chipChg(!!d.chgMos) });
+  if (d.dsgMos !== undefined) bits.push({ cls: d.dsgMos ? 'ok' : 'bad', txt: T.chipDsg(!!d.dsgMos) });
+  if (d.balancing !== undefined && d.balancing !== null) bits.push({ cls: d.balancing ? 'warn' : '', txt: T.chipBal(!!d.balancing) });
+  if (d.tempMos !== undefined || d.temp1 !== undefined) bits.push({ cls: '', txt: T.chipTemp(t(d.tempMos), t(d.temp1), t(d.temp2)) });
+  if (d.heating) bits.push({ cls: 'warn', txt: `${R.heating} ${R.on}` });
   const labels = d.errors ? errorLabels(d.errors) : [];
-  bits.push(labels.length ? chip('bad', T.chipAlarm(labels.length, labels.join(', '))) : chip('ok', T.chipAlarmNone));
-  $('strip').innerHTML = bits.join('');
+  bits.push(labels.length ? { cls: 'bad', txt: T.chipAlarm(labels.length, labels.join(', ')) } : { cls: 'ok', txt: T.chipAlarmNone });
+  return bits;
+}
+function renderStrip(d) {
+  $('strip').innerHTML = chipList(d).map((c) => `<span class="chip${c.cls ? ` ${c.cls}` : ''}">${c.txt}</span>`).join('');
 }
 
 function renderCellsStat(d) {
@@ -739,8 +743,7 @@ async function copyShareLink() {
 // The share link as a QR code, so the other phone just points its camera at
 // this screen. Big and open by default; the user can hide it. The QR holds the
 // whole link, key included - anyone who scans it can watch, like the link.
-function renderQr(text) {
-  const c = $('qrCanvas');
+function renderQr(text, c = $('qrCanvas')) {
   if (typeof qrcode !== 'function' || !c) return false;
   const qr = qrcode(0, 'M'); qr.addData(text, 'Byte'); qr.make();
   const n = qr.getModuleCount(), scale = 6, quiet = 4, px = (n + quiet * 2) * scale;
@@ -874,6 +877,85 @@ function startView() {
   renderViewChip();
   viewer.start().catch((e) => { log('view failed: ' + e.message); setStatus(e.message, 'bad'); });
 }
+
+// ---- Show on TV: the picture as a small HLS video the TV pulls (tv.js) ----
+// Not encrypted on this path (a TV cannot hold the link key): the panel and the
+// status bar say so while it runs.
+function tvModel() {
+  const p = active, d = p && p.data;
+  const clock = new Date().toTimeString().slice(0, 8);
+  const base = { label: p ? p.label : '', clock, brand: 'BatRay by ClearEvo.com', footer: p && p.demo ? T.demoBadge : '' };
+  if (!d) return { ...base, waiting: true, waitingTxt: T.tvWaiting, updatedTxt: T.noData };
+  const age = p.lastFrameAt ? Math.round((Date.now() - p.lastFrameAt) / 1000) : null;
+  const I = p.iEma.v !== null ? p.iEma.v : d.current;
+  const charging = d.current > 0.05, discharging = d.current < -0.05;
+  const r = timeToGo({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: I, cutoffPct });
+  const st = p.settings, maxA = charging ? (st && st.maxChargeA) || 100 : (st && st.maxDischargeA) || 100;
+  return {
+    ...base, soc: d.soc === undefined ? null : d.soc,
+    battLine: T.battLbl(d.packV === null || d.packV === undefined ? null : fmt(d.packV, 2), d.soh === undefined || d.soh === null ? null : d.soh),
+    dir: charging ? 'chg' : discharging ? 'dis' : 'idle',
+    powerTxt: d.power === null ? '-' : `${charging ? T.flowCharge : discharging ? T.flowDischarge : T.flowIdle} ${fmt(Math.abs(d.power), 0)} W`,
+    ampsTxt: d.current === null ? T.noCurrent : T.ofMax(fmt(Math.abs(d.current), 2), fmt(maxA, 0)),
+    etaTxt: r.kind === 'empty' ? T.etaEmpty(fmtSpan(r.hours), cutoffPct) : r.kind === 'full' ? T.etaFull(fmtSpan(r.hours)) : r.kind === 'atCutoff' ? T.etaAtCutoff : '',
+    etaBad: r.kind === 'atCutoff', sysLbl: charging ? T.charger : discharging ? T.load : T.system, chips: chipList(d),
+    updatedTxt: age === null ? T.noData : age < 2 ? T.justNow : T.agoS(age), stale: age !== null && age > 15,
+  };
+}
+function renderTv(s) {
+  if (!tv || !s.live) return;
+  $('tvLink').textContent = s.url;
+  const v = $('tvVideo');
+  if (s.segs >= 2 && !v.getAttribute('src')) { v.src = s.url; v.play().catch(() => {}); watchCast(v); }
+  const pull = s.pullAgeS === null || s.pullAgeS === undefined ? T.tvNotPulled : T.tvPulled(s.pullAgeS);
+  $('tvStat').textContent = (s.error ? T.tvErr(s.error) + ' · ' : '') + T.tvStat(s.segs, Math.round(s.bytes / 1024), pull) + (s.segs < 2 ? ' · ' + T.tvStarting : '');
+}
+function watchCast(v) {
+  if (!v.remote || !v.remote.watchAvailability) { $('tvCastHint').textContent = T.tvCastUnsup; return; }
+  v.remote.watchAvailability((avail) => { $('tvCast').disabled = !avail; $('tvCastHint').textContent = avail ? T.tvCastReady : T.tvCastNone; })
+    .catch(() => { $('tvCast').disabled = false; $('tvCastHint').textContent = ''; });   // availability unknown: let the user try
+}
+async function startTv(opts = {}) {
+  if (tv) return tv.state.url;
+  const [w, h] = (opts.res || $('tvRes').value).split('x').map(Number);
+  try { localStorage.setItem('batray_tv_res', $('tvRes').value); } catch {}
+  $('tvStart').disabled = true;
+  const t = new TvStream({ width: w, height: h, model: tvModel, log, onState: renderTv, ...opts });
+  tv = t;
+  try {
+    const url = await t.start();
+    $('tvStop').hidden = false; $('tvStart').hidden = true; $('tvRes').disabled = true; $('tvLive').hidden = false; $('tvNote').hidden = false; renderTv(t.state); syncWake();
+    toast(T.tvStarting, 9000);
+    return url;
+  } catch (e) {
+    log(`tv failed: ${e.message}`); toast(e.code === 'nocodec' ? T.tvNoCodec : T.tvFailed(e.message), 9000);
+    tv = null; try { await t.stop(); } catch {}
+    throw e;
+  } finally { $('tvStart').disabled = false; }
+}
+async function stopTv() {
+  if (!tv) return;
+  const t = tv; tv = null;
+  await t.stop();
+  const v = $('tvVideo'); v.removeAttribute('src'); v.load();
+  $('tvStop').hidden = true; $('tvStart').hidden = false; $('tvRes').disabled = false; $('tvLive').hidden = true; $('tvNote').hidden = true; $('tvQr').hidden = true;
+  syncWake(); toast(T.tvStopped, 5000);
+}
+(function () {
+  try { const r = localStorage.getItem('batray_tv_res'); if (r && [...$('tvRes').options].some((o) => o.value === r)) $('tvRes').value = r; } catch {}
+  $('tv').addEventListener('click', () => { const p = $('tvPanel'); p.hidden = !p.hidden; if (!p.hidden) showQr(false); });
+  $('tvClose').addEventListener('click', () => { $('tvPanel').hidden = true; });
+  $('tvStart').addEventListener('click', () => startTv().catch(() => {}));
+  $('tvStop').addEventListener('click', stopTv);
+  $('tvCast').addEventListener('click', () => { const v = $('tvVideo'); if (v.remote) v.remote.prompt().catch((e) => toast(T.tvFailed(e.message), 8000)); });
+  $('tvCopy').addEventListener('click', async () => { if (!tv) return; try { await navigator.clipboard.writeText(tv.state.url); toast(T.linkCopied, 6000); } catch { toast(T.linkCopyManual, 8000); } });
+  $('tvQrBtn').addEventListener('click', () => { const c = $('tvQr'); if (!tv) return; if (c.hidden) { renderQr(tv.state.url, c); c.hidden = false; } else c.hidden = true; });
+  window.addEventListener('pagehide', () => { if (tv) { const t = tv; tv = null; t.stop(); } });
+})();
+if (window.__batrayTest) Object.assign(window.__batrayTest, {
+  startTv, stopTv, tvState: () => (tv ? tv.state : null),
+  tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
+});
 
 // ---- misc UI ----
 async function copyLog(btn) {
