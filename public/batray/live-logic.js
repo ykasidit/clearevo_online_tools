@@ -132,3 +132,28 @@ export function selectedLocalCandidate(stats) {
   const l = byId.get(pair.localCandidateId) || null;
   return l ? { ...l, rttMs: pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null } : null;
 }
+
+// ---- reader presence (viewer side) ----
+// The relay wipes the room's session the moment the reader's presence socket
+// closes, even for a 4 s blink, and tells every viewer "no reader". Meanwhile
+// the direct link (or the SFU stream) keeps delivering readings. Seen live on
+// 2026-09-17: "reader offline" over a screen that was updating every 3 s.
+// Rule, same as for the Bluetooth link: freshness decides. Data that arrived
+// within FRESH_MS proves the reader is there whatever the server says.
+export const FRESH_MS = 15000;          // a JK BMS is read every 3 s; five misses is a real gap
+
+/** Has a reading arrived recently enough to prove the reader is alive? */
+export function dataFlowing(lastRxAt, now = Date.now(), freshMs = FRESH_MS) {
+  return lastRxAt !== null && lastRxAt !== undefined && now - lastRxAt < freshMs;
+}
+
+/**
+ * The reader presence to show: null = not known yet, true = present, false =
+ * gone. serverLive is the relay's word (session registered); it is overridden
+ * by fresh data, never the other way round.
+ */
+export function readerPresent({ serverLive, lastRxAt, now = Date.now(), freshMs = FRESH_MS }) {
+  if (dataFlowing(lastRxAt, now, freshMs)) return true;
+  if (serverLive === null || serverLive === undefined) return null;
+  return !!serverLive;
+}

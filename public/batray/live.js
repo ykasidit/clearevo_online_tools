@@ -22,7 +22,7 @@
 // share link's URL fragment, whichever path carries it. The relay Worker at
 // /batray/api/ holds the SFU secret, routes signalling, and counts how many
 // sockets are on an SFU/TURN path against the free cap.
-import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect } from './live-logic.js';
+import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect, readerPresent, FRESH_MS } from './live-logic.js';
 
 const API = '/batray/api';
 const P2P_WAIT_MS = 7000;      // viewer waits this long for a direct offer/connection before using the SFU
@@ -148,14 +148,35 @@ export class Publisher {
     this.log(`live share room ${room} created`);
     this.sig = new Signal(room, 'pub', pub, this.log);
     this.sig.on((m) => this.onSignal(m));
-    this.sig.onConn = (up) => { this.state.sig = up; this.emit(); };
+    this.sig.onConn = (up) => this.onSigConn(up);
     watchNet(this);
     await this.connectSfu();
     return this.link;
   }
 
+  onSigConn(up) {
+    this.state.sig = up; this.emit();
+    // The relay forgets the session when this socket closes - even a 4 s blink
+    // - and viewers are told "no reader" while the stream is fine. Register it
+    // again on every reopen (2026-09-17).
+    if (up && this.sid && this.state.live) this.registerSession('socket reopened');
+  }
+  async registerSession(why) {
+    if (!this.sid || !this.room) return;
+    try {
+      await j(`room/${this.room}/session?token=${this.pubToken}`, { method: 'PUT', body: JSON.stringify({ session: this.sid }) });
+      this.log(`live: session re-registered (${why})`);
+    } catch (e) { this.log(`live: session re-register failed: ${e.message}`); }
+  }
+
   onSignal(m) {
-    if (m.type === 'status') { this.state.viewers = m.viewers; this.state.server = m.server || this.state.server; this.emit(); return; }
+    if (m.type === 'status') {
+      this.state.viewers = m.viewers; this.state.server = m.server || this.state.server; this.emit();
+      if (!m.live && this.sid && this.state.live && !this.registering) {   // the room lost our session while we are still publishing
+        this.registering = true; this.registerSession('room reported no session').finally(() => { this.registering = false; });
+      }
+      return;
+    }
     if (m.type === 'join') { this.offerP2P(m.from).catch((e) => this.log(`p2p offer to ${m.from.slice(0, 6)} failed: ${e.message}`)); return; }
     if (m.type === 'leave') { this.dropPeer(m.from); return; }
     const peer = this.peers.get(m.from);
@@ -276,6 +297,7 @@ export class Viewer {
     // sig: presence socket up; net: this device has internet; reader: the
     // server reports the reader present (its session is registered)
     this.state = { viewers: 0, live: false, path: classifyPath(null), server: { conns: 0, limit: 0 }, retryIn: null, error: null, received: 0, sig: null, net: true, reader: null };   // null = not known yet
+    this.lastRxAt = null; this.now = () => Date.now(); this.lastStatus = null; this.recheck = null;
     this.stopped = false; this.pathTimer = null; this.cancelRetry = null; this.relayOnly = false; this.p2pDeadline = null; this.sfuTask = null;
   }
   emit() { this.onState({ ...this.state }); }
@@ -298,12 +320,24 @@ export class Viewer {
 
   onStatus(m) {
     this.state.viewers = m.viewers; this.state.server = m.server || this.state.server;
-    this.state.reader = !!(m.live && m.session);
-    if (!m.live || !m.session) {
+    this.lastStatus = m;
+    const serverLive = !!(m.live && m.session);
+    // Freshness first: readings still arriving prove the reader is there, whatever
+    // the relay says (its session is wiped by a blink of the reader's socket).
+    this.state.reader = readerPresent({ serverLive, lastRxAt: this.lastRxAt, now: this.now() });
+    if (!serverLive) {
+      if (this.state.reader) {
+        if (!this.recheck) {
+          this.log('live: server reports no reader session, but readings are still arriving - keeping the link');
+          this.recheck = setTimeout(() => { this.recheck = null; if (this.lastStatus && !this.stopped) this.onStatus(this.lastStatus); }, FRESH_MS);
+        }
+        this.emit(); return;
+      }
       if (this.pubSession) this.log('live: publisher went offline');
       this.pubSession = null; this.state.live = false; this.state.error = null;
       this.teardownSfu(); this.clearRetry(); this.emit(); return;
     }
+    if (this.recheck) { clearTimeout(this.recheck); this.recheck = null; }
     this.emit();
     if (m.session !== this.pubSession) {
       this.pubSession = m.session;
@@ -391,7 +425,9 @@ export class Viewer {
     try {
       const env = await decrypt(this.key, new Uint8Array(data));
       if (!validEnvelope(env)) return;
-      this.state.received++; this.onEnvelope(env);
+      this.state.received++; this.lastRxAt = this.now();
+      if (this.state.reader === false) { this.state.reader = true; this.emit(); }   // data beats the server's word
+      this.onEnvelope(env);
     } catch { this.state.error = 'cannot decrypt: wrong or missing key'; this.emit(); }
   }
   scheduleRetry(seconds) {
@@ -414,7 +450,7 @@ export class Viewer {
     if (this.state.path.tier !== 'p2p') { this.state.live = false; this.state.path = classifyPath(null); }
   }
   stop() {
-    this.stopped = true; this.clearRetry(); clearTimeout(this.p2pDeadline);
+    this.stopped = true; this.clearRetry(); clearTimeout(this.p2pDeadline); clearTimeout(this.recheck); this.recheck = null;
     this.dropP2P(); this.teardownSfu(); if (this.sig) this.sig.close(); unwatchNet(this);
     this.state.live = false; this.emit();
   }
