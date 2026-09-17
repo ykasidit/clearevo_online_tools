@@ -66,9 +66,9 @@ const FAKE = `
 await send('Page.addScriptToEvaluateOnNewDocument', { source: FAKE });
 await send('Page.navigate', { url: `${BASE}/batray/?test` });   // ?test exposes window.__batrayTest (renderQr)
 await sleep(2500);
-await evalJs(`new MutationObserver(() => window.__renders++).observe(document.getElementById('soc'), { childList: true, characterData: true, subtree: true }); 1`);
+await evalJs(`new MutationObserver(() => window.__renders++).observe(document.getElementById('fSoc'), { childList: true, characterData: true, subtree: true }); 1`);
 
-const state = () => evalJs(`({ stat: document.getElementById('stat').textContent, soc: document.getElementById('soc').textContent, updated: document.getElementById('updated').textContent, gatt: window.__dev.gatt.connected, renders: window.__renders })`);
+const state = () => evalJs(`({ stat: document.getElementById('stat').textContent, soc: document.getElementById('fSoc').textContent, updated: document.getElementById('updated').textContent, gatt: window.__dev.gatt.connected, renders: window.__renders })`);
 const notify = (frame, times = 1) => evalJs(`for (let i = 0; i < ${times}; i++) window.__notify([${[...frame].join(',')}]); 1`);
 
 let fails = 0;
@@ -80,6 +80,11 @@ await notify(AIO_32S_DEV); await notify(OWNER_32S_CELL);
 await sleep(1200);
 let s = await state();
 check('a connected pack shows readings', s.gatt === true && s.soc !== '-' && /n11/.test(s.stat), s);
+// no adapter-state probe any more (2026-09-17): the app warns once to keep
+// Bluetooth on (toast) and keeps a line under the readings while connected
+const bt = await evalJs(`({ toast: document.getElementById('toast').textContent, toastShown: !document.getElementById('toast').hidden, note: !document.getElementById('btNote').hidden, meters: document.querySelectorAll('.meter').length, packV: document.getElementById('fSoh').textContent, rows: document.getElementById('secondary').textContent })`);
+check('after connecting: keep-Bluetooth-on toast + line, no big meter cards, values in the details grid',
+  bt.toastShown && /Bluetooth on/.test(bt.toast) && bt.note && bt.meters === 0 && /\d V · SOH/.test(bt.packV) && /Pack voltage/.test(bt.rows) && /State of charge/.test(bt.rows) && /Power/.test(bt.rows), bt);
 
 // a fast unit (or a flush) must paint once per animation frame, not once per frame received
 await evalJs('window.__renders = 0; 1');
@@ -117,6 +122,8 @@ await notify(OWNER_32S_CELL);                                              // on
 await sleep(300);
 await evalJs(`window.__dev.gatt.disconnect(); 1`);                        // -> disconnected -> countdown (auto reconnect on)
 await sleep(800);
+const cd = await evalJs(`({ count: document.getElementById('reCount').textContent, tap: !document.getElementById('reNow').hidden, note: document.getElementById('btNote').hidden, gate: !!document.getElementById('reForce') })`);
+check('the countdown runs on its own (no "tap to reconnect" gate) and offers Reconnect now', /reconnecting to n11 in \d+ s/.test(cd.count) && cd.tap && cd.note && !cd.gate, cd);
 const connectsBefore = await evalJs('window.__connects');
 await evalJs(`document.getElementById('reNow').click(); 1`);              // the user taps while the countdown is pending
 await sleep(12000);                                                        // longer than the countdown: it must NOT fire a second connect

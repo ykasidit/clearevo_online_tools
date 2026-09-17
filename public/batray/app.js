@@ -19,12 +19,11 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 
-export const APP_VERSION = '0.9.6';
+export const APP_VERSION = '0.9.7';
 
 const $ = (id) => document.getElementById(id);
 const els = {
   disconnect: $('disconnect'), demoBtn: $('demoBtn'), copy: $('copy'), stat: $('stat'), empty: $('empty'), readouts: $('readouts'),
-  volts: $('volts'), voltsSub: $('voltsSub'), soc: $('soc'), socBar: $('socBar'), amps: $('amps'), ampsSub: $('ampsSub'), watts: $('watts'),
   updated: $('updated'), layout: $('layout'), cells: $('cells'), secondary: $('secondary'), settings: $('settings'), settingsCard: $('settingsCard'),
   device: $('device'), log: $('log'), debug: $('debug'), packBar: $('packBar'), share: $('share'), liveChip: $('liveChip'), liveTxt: $('liveTxt'),
   liveStop: $('liveStop'), shareLink: $('shareLink'), viewChip: $('viewChip'), viewTxt: $('viewTxt'),
@@ -51,7 +50,7 @@ function log(msg) {
   els.log.textContent = logLines.join('\n');
   els.log.scrollTop = els.log.scrollHeight;
 }
-let toastTimer = null;
+let toastTimer = null, btWarned = false;
 function toast(msg, ms = 8000) {
   const t = $('toast');
   t.textContent = msg; t.hidden = false;
@@ -81,7 +80,7 @@ class Pack {
     this.bms = remote ? null : new JkBms();
     this.device = null; this.info = null; this.settings = null; this.data = null; this.lastFrameAt = null;
     this.demo = null; this.userDisconnect = false; this.reTimer = null; this.reconnecting = false; this.connectPending = false;
-    this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.reNow = false; this.reForce = false; this.dumped = false;
+    this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.reNow = false; this.dumped = false;
     this.stalled = false; this.stalledAge = 0; this.connectedAt = null;   // link reported connected but gone quiet
     this.remoteLive = false;
     if (this.bms) this.wire();
@@ -98,14 +97,17 @@ class Pack {
       this.device = e.detail; this.userDisconnect = false; this.connectPending = false; this.stalled = false; this.connectedAt = Date.now();
       showReconnectIdle(this);
       this.loadThunk = () => T.loading(this.label);
-      if (this.isActive) { setStatus(() => T.connectedTo(this.label), 'good'); $('oneApp').hidden = false; }
+      if (this.isActive) { setStatus(() => T.connectedTo(this.label), 'good'); $('oneApp').hidden = false; $('btNote').hidden = false; }
+      // Auto-reconnect no longer waits for an adapter-state probe (which this
+      // Chrome lacks): the user is told once to keep Bluetooth on instead.
+      if (!btWarned) { btWarned = true; toast(T.btKeepOn, 12000); }
       refreshCard(); renderPackBar(); syncWake();
     });
     b.addEventListener('disconnected', () => {
       this.plog('gatt disconnected');
       this.offlineThunk = () => T.offlineDrop(this.label);
       // a link that went quiet says so, instead of a bare "disconnected"
-      if (this.isActive) { setStatus(() => (this.stalled ? T.stalled(this.label, this.stalledAge) : T.disconnectedFrom(this.label)), 'bad'); $('oneApp').hidden = true; }
+      if (this.isActive) { setStatus(() => (this.stalled ? T.stalled(this.label, this.stalledAge) : T.disconnectedFrom(this.label)), 'bad'); $('oneApp').hidden = true; $('btNote').hidden = true; }
       if ($('autoRe').checked && this.device && !this.userDisconnect) startReconnectCountdown(this, this.stalled ? 3 : 10);
       else showReconnectIdle(this);
       this.userDisconnect = false;
@@ -168,7 +170,7 @@ function setActive(pack) {
   if (pack.info) renderDevice(pack.info); else els.device.hidden = true;
   if (pack.settings) renderSettings(pack.settings); else els.settingsCard.hidden = true;
   if (pack.data) render(pack.data, true); else clearReadouts();
-  $('oneApp').hidden = !(pack.bms && pack.bms.connected);
+  $('oneApp').hidden = !(pack.bms && pack.bms.connected); $('btNote').hidden = !(pack.bms && pack.bms.connected);
   if (pack.demo) setStatus(() => T.demoStatus, 'demo');
   else if (pack.remote) setStatus(() => (pack.remoteLive ? T.viewingPack(pack.label) : (readerGone() ? T.viewOfflineShort : T.viewReconnecting)), pack.remoteLive ? 'good' : 'bad');
   else if (pack.bms.connected) setStatus(() => T.connectedTo(pack.label), 'good');
@@ -177,9 +179,9 @@ function setActive(pack) {
 }
 
 function clearReadouts() {
-  for (const el of [els.volts, els.soc, els.amps, els.watts]) el.textContent = '-';
-  els.voltsSub.textContent = ''; els.ampsSub.textContent = ''; els.layout.innerHTML = ''; els.secondary.innerHTML = ''; els.cells.innerHTML = '';
-  els.socBar.style.width = '0%';
+  els.layout.innerHTML = ''; els.secondary.innerHTML = ''; els.cells.innerHTML = '';
+  for (const id of ['fSoc', 'fPower', 'fAmps']) $(id).textContent = '-';
+  $('fSoh').textContent = T.battLbl(null, null);
 }
 
 // The offline / loading / reconnect card reflects the ACTIVE pack only.
@@ -202,7 +204,7 @@ function refreshCard() {
   if (p.reconnecting || p.connectPending) {
     $('reState').hidden = false; $('reIdle').hidden = true;
     $('reCount').textContent = p.countThunk ? p.countThunk() : '';
-    $('reNow').hidden = !p.reNow; $('reForceRow').hidden = !p.reForce;
+    $('reNow').hidden = !p.reNow;
   } else { $('reState').hidden = true; $('reIdle').hidden = false; }
 }
 
@@ -267,7 +269,7 @@ function renderFlow(d) {
   const lit = soc === null ? 0 : Math.min(5, Math.floor(soc / 20));
   segs.forEach((r, i) => { r.className.baseVal = i < lit ? `on${soc <= 10 ? ' crit' : soc <= 25 ? ' low' : ''}` : ''; });
   $('fSoc').textContent = soc === null ? '-' : `${soc}%`;
-  $('fSoh').textContent = T.sohLbl(d.soh === undefined || d.soh === null ? null : d.soh);
+  $('fSoh').textContent = T.battLbl(d.packV === null || d.packV === undefined ? null : fmt(d.packV, 2), d.soh === undefined || d.soh === null ? null : d.soh);
   const I = d.current;
   const charging = I !== null && I > 0.05, discharging = I !== null && I < -0.05;
   const s = active && active.settings;
@@ -306,16 +308,8 @@ function render(d, relabelOnly = false) {
     document.body.classList.remove('offline', 'loading');
   }
   renderFlow(d);
-  els.volts.textContent = fmt(d.packV, 2);
-  els.voltsSub.textContent = T.cellSum(fmt(d.cellSum, 2, ' V'), d.cells.length, d.maskCells !== null && d.maskCells !== d.cells.length ? T.maskSays(d.maskCells) : '');
-  els.soc.textContent = `${d.soc}`;
-  els.socBar.style.width = `${Math.max(0, Math.min(100, d.soc))}%`;
   const charging = d.current > 0.05, discharging = d.current < -0.05;
-  els.amps.textContent = fmt(Math.abs(d.current), 2);
-  els.amps.className = `v${charging ? ' chg' : discharging ? ' dis' : ''}`;
-  els.ampsSub.textContent = charging ? T.charging : discharging ? T.discharging : T.idle;
-  els.watts.textContent = fmt(Math.abs(d.power), 0);
-  els.watts.className = els.amps.className;
+  const flowTxt = charging ? T.charging : discharging ? T.discharging : T.idle;
   const src = d.layoutSource === 'firmware' ? T.srcFw : d.layoutSource === 'float-cells' ? T.srcFloat : T.srcSum;
   els.layout.innerHTML = d.confident
     ? T.layoutOk(d.variant, src, d.variant === 'JK04' ? '' : T.layoutAgree(fmt(d.agreement, 3, ' V')))
@@ -327,6 +321,11 @@ function render(d, relabelOnly = false) {
   const info = active && active.info;
   const pb14 = !!(info && info.swMajor >= 14);
   const rows = [
+    // the headline numbers again, as plain rows: the flow box above is for
+    // glancing, this grid is where the exact values live (no big duplicate cards)
+    [T.packV, fmt(d.packV, 2, ' V')], [T.cellSumK, `${fmt(d.cellSum, 2, ' V')} · ${d.cells.length}${d.maskCells !== null && d.maskCells !== d.cells.length ? T.maskSays(d.maskCells) : ''}`],
+    [T.soc, d.soc === null || d.soc === undefined ? '-' : `${d.soc} %`],
+    [T.current, `${fmt(Math.abs(d.current), 2, ' A')} ${flowTxt}`], [T.power, `${fmt(Math.abs(d.power), 0, ' W')} ${flowTxt}`],
     [R.cellMin, fmt(d.cellMin, 3, ' V')], [R.cellMax, fmt(d.cellMax, 3, ' V')], [R.cellDelta, fmt(d.cellDelta, 3, ' V')],
     [R.balance, d.balanceA === null ? '-' : `${fmt(d.balanceA, 3, ' A')}${d.balancing ? d.balancing === 2 ? R.balDis : R.balChg : ''}`],
     [R.remaining, fmt(d.remainAh, 1, ' Ah')], [R.fullCap, fmt(d.nominalAh, 1, ' Ah')],
@@ -436,11 +435,11 @@ $('demoAgain').addEventListener('click', runDemo);
 
 // ---- reconnect machinery, per pack; the card shows the active pack ----
 function showReconnectIdle(p) {
-  p.reconnecting = false; p.countThunk = null; p.reNow = false; p.reForce = false;
+  p.reconnecting = false; p.countThunk = null; p.reNow = false;
   if (p.reTimer) { clearInterval(p.reTimer); p.reTimer = null; }
   refreshCard(); syncWake();
 }
-function setCount(p, thunk) { p.countThunk = thunk; p.reNow = false; p.reForce = false; if (p.isActive) refreshCard(); }
+function setCount(p, thunk, tap = false) { p.countThunk = thunk; p.reNow = tap; if (p.isActive) refreshCard(); }
 
 function startReconnectCountdown(p, seconds = 10) {
   // One attempt at a time. A manual tap while a countdown was pending used to
@@ -449,36 +448,19 @@ function startReconnectCountdown(p, seconds = 10) {
   if (!reconnectAllowed({ connectPending: p.connectPending, connected: p.connected, countdownRunning: !!p.reTimer })) { p.plog('reconnect countdown not started: an attempt is already in progress'); return; }
   p.reconnecting = true; syncWake();
   let left = seconds;
-  setCount(p, () => T.reIn(p.label, left));
+  setCount(p, () => T.reIn(p.label, left), true);          // "Reconnect now" is offered during the countdown
   if (p.reTimer) clearInterval(p.reTimer);
   p.reTimer = setInterval(async () => {
     left -= 1;
-    if (left > 0) { setCount(p, () => T.reIn(p.label, left)); return; }
+    if (left > 0) { setCount(p, () => T.reIn(p.label, left), true); return; }
     clearInterval(p.reTimer); p.reTimer = null;
     if (p.connectPending || p.connected) { p.plog('reconnect countdown ended: a connect is already in flight'); return; }
     try {
       p.device = await freshHandle(p.device);
-      setCount(p, () => T.listening(p.label));
-      let heard = null;
-      try { heard = await heardAdvertising(p.device); } catch (err) {
-        p.plog(`advertising watch failed: ${err.message}`);
-        if (p.isActive) setStatus(() => T.btOff, 'bad');
-        setCount(p, () => T.btOffWait);
-        if (p.reconnecting && $('autoRe').checked) startReconnectCountdown(p);
-        return;
-      }
-      if (heard === false) {
-        p.plog('reconnect skipped: BMS not heard advertising');
-        setCount(p, () => T.notSeen(p.label));
-        if (p.reconnecting && $('autoRe').checked) startReconnectCountdown(p);
-        return;
-      }
-      if (heard === null && !$('reForce').checked) {
-        p.plog('reconnect needs a tap: this browser has no adapter-state probe');
-        p.reconnecting = false; p.countThunk = () => T.tapToRe(p.label); p.reNow = true; p.reForce = true;
-        p.connectPending = false; refreshCard(); return;
-      }
-      if (heard === null) p.plog('reconnecting unprobed (user opted in)');
+      // No adapter-state probe any more: older Chrome had none, and the gate
+      // it fed (a "tap to reconnect" wait) was removed 2026-09-17. The trade:
+      // with Bluetooth OFF this Chrome may close the tab on reconnect, so the
+      // app tells the user to keep Bluetooth on (toast + line under the readings).
       await connectTo(p, p.device);
     } catch (err) {
       p.plog(`reconnect failed: ${err.message}`);
@@ -497,7 +479,7 @@ $('reNow').addEventListener('click', async () => {
     p.plog(`reconnect failed: ${err.message}`);
     setStatus(() => T.disconnectedFromWhy(p.label, err.message), 'bad');
     toast(T.reFailed(err.message) + T.oneAppToast, 9000);
-    p.reconnecting = false; p.countThunk = () => T.tapToRe(p.label); p.reNow = true; refreshCard();
+    if ($('autoRe').checked) startReconnectCountdown(p); else showReconnectIdle(p);
   }
 });
 $('cancelRe').addEventListener('click', () => {
@@ -531,22 +513,6 @@ async function connectTo(p, device) {
   } finally {
     p.connectPending = false; clearInterval(ticker); $('connectBig').disabled = false; refreshCard();
   }
-}
-
-async function heardAdvertising(device, ms = 8000) {
-  if (device.watchAdvertisements) {
-    const ac = new AbortController();
-    try {
-      const heard = new Promise((res) => device.addEventListener('advertisementreceived', () => res(true), { once: true, signal: ac.signal }));
-      await device.watchAdvertisements({ signal: ac.signal });
-      return await Promise.race([heard, new Promise((res) => setTimeout(() => res(false), ms))]);
-    } finally { ac.abort(); }
-  }
-  if (navigator.bluetooth.getDevices) {
-    const list = await navigator.bluetooth.getDevices();
-    return list.some((d) => d.id === device.id);
-  }
-  return null;
 }
 
 if (navigator.bluetooth && navigator.bluetooth.addEventListener) {
@@ -770,14 +736,6 @@ $('bAbout').addEventListener('click', () => { $('about').style.display = 'flex';
 $('aboutClose').addEventListener('click', () => { $('about').style.display = 'none'; });
 $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('about').style.display = 'none'; });
 
-(function () {
-  const f = $('reForce');
-  try { f.checked = localStorage.getItem('batray_reconnect_force') === '1'; } catch {}
-  f.addEventListener('change', () => {
-    try { localStorage.setItem('batray_reconnect_force', f.checked ? '1' : '0'); } catch {}
-    const p = active; if (f.checked && p && !p.remote && !p.reTimer && p.device && !p.connected) startReconnectCountdown(p, 3);
-  });
-})();
 (function () {
   const cb = $('autoRe');
   try { const v = localStorage.getItem('batray_auto_reconnect'); if (v !== null) cb.checked = v === '1'; } catch {}
