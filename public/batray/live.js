@@ -98,10 +98,11 @@ class Signal {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}${API}/room/${this.room}/ws?role=${this.role}${this.token ? `&token=${this.token}` : ''}`);
     this.ws = ws;
-    ws.onopen = () => { this.connected = true; this.onConn(true); if (this.lastPath) this.send({ type: 'path', path: this.lastPath }); };
-    ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } for (const h of this.handlers) h(m); };
-    ws.onclose = () => { this.connected = false; if (!this.closed) this.onConn(false); if (!this.closed) { this.timer = setTimeout(() => this.open(), 4000); } };
-    ws.onerror = () => { /* onclose follows */ };
+    const t0 = Date.now();
+    ws.onopen = () => { this.connected = true; this.log(`signal: socket open (${this.role}) in ${Date.now() - t0} ms`); this.onConn(true); if (this.lastPath) this.send({ type: 'path', path: this.lastPath }); };
+    ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { this.log('signal: unparsable message'); return; } for (const h of this.handlers) h(m); };
+    ws.onclose = (e) => { this.connected = false; this.log(`signal: socket closed code=${e.code} reason="${e.reason || ''}" clean=${e.wasClean}${this.closed ? '' : ' - reopening in 4 s'}`); if (!this.closed) this.onConn(false); if (!this.closed) { this.timer = setTimeout(() => this.open(), 4000); } };
+    ws.onerror = () => { this.log('signal: socket error (close follows)'); };
   }
   on(h) { this.handlers.add(h); }
   send(obj) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); }
@@ -171,6 +172,8 @@ export class Publisher {
 
   onSignal(m) {
     if (m.type === 'status') {
+      const key = `${m.viewers}|${m.live}|${(m.session || '').slice(0, 8)}|${m.server ? m.server.conns : '?'}`;
+      if (key !== this.lastStatusKey) { this.lastStatusKey = key; this.log(`status: viewers=${m.viewers} live=${m.live} session=${(m.session || '-').slice(0, 8)} server=${m.server ? `${m.server.conns}/${m.server.limit}` : '?'}`); }
       this.state.viewers = m.viewers; this.state.server = m.server || this.state.server; this.emit();
       if (!m.live && this.sid && this.state.live && !this.registering) {   // the room lost our session while we are still publishing
         this.registering = true; this.registerSession('room reported no session').finally(() => { this.registering = false; });
@@ -195,6 +198,7 @@ export class Publisher {
     const peer = { pc, dc, open: false };
     this.peers.set(viewerId, peer);
     pc.onicecandidate = (e) => { if (e.candidate) this.sig.send({ type: 'ice', to: viewerId, cand: e.candidate.toJSON() }); };
+    pc.oniceconnectionstatechange = () => this.log(`p2p ice (viewer ${viewerId.slice(0, 6)}): ${pc.iceConnectionState}`);
     dc.onopen = async () => { peer.open = true; this.state.p2p = [...this.peers.values()].filter((p) => p.open).length; const d = await directPathOf(pc); this.log(`p2p: viewer ${viewerId.slice(0, 6)} connected - ${d.label}`); this.emit(); this.resendSnapshot && this.resendSnapshot(); };
     dc.onclose = () => { if (this.peers.get(viewerId) === peer) this.dropPeer(viewerId); };
     pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && this.peers.get(viewerId) === peer) this.dropPeer(viewerId); };
@@ -228,8 +232,9 @@ export class Publisher {
       await j(`room/${this.room}/session?token=${this.pubToken}`, { method: 'PUT', body: JSON.stringify({ session: sessionId }) });
       this.state.live = true; this.state.path = await pathOf(pc); this.sig.reportPath(this.state.path.tier); this.emit();
       this.log(`live: publishing on ${this.state.path.label}`);
+      pc.addEventListener('iceconnectionstatechange', () => this.log(`ice (sfu): ${pc.iceConnectionState}`));
       clearInterval(this.pathTimer);
-      this.pathTimer = setInterval(async () => { if (this.pc) { const p = await pathOf(this.pc); if (p.tier !== this.state.path.tier) this.sig.reportPath(p.tier); this.state.path = p; this.emit(); } }, 5000);
+      this.pathTimer = setInterval(async () => { if (this.pc) { const p = await pathOf(this.pc); if (p.tier !== this.state.path.tier) { this.log(`live: path changed ${this.state.path.label} -> ${p.label}`); this.sig.reportPath(p.tier); } this.state.path = p; this.emit(); } }, 5000);
       pc.addEventListener('connectionstatechange', () => {
         if (['failed', 'disconnected', 'closed'].includes(pc.connectionState) && !this.stopped && this.pc === pc) {
           this.log(`live: transport ${pc.connectionState}`);
@@ -319,6 +324,8 @@ export class Viewer {
   }
 
   onStatus(m) {
+    const key = `${m.viewers}|${m.live}|${(m.session || '').slice(0, 8)}|${m.server ? m.server.conns : '?'}`;
+    if (key !== this.lastStatusKey) { this.lastStatusKey = key; this.log(`status: viewers=${m.viewers} live=${m.live} session=${(m.session || '-').slice(0, 8)} server=${m.server ? `${m.server.conns}/${m.server.limit}` : '?'} lastRx=${this.lastRxAt ? Math.round((this.now() - this.lastRxAt) / 1000) + 's' : '-'}`); }
     this.state.viewers = m.viewers; this.state.server = m.server || this.state.server;
     this.lastStatus = m;
     const serverLive = !!(m.live && m.session);
@@ -353,6 +360,7 @@ export class Viewer {
     const p = { pc, dc: null, open: false };
     this.p2p = p;
     pc.onicecandidate = (e) => { if (e.candidate) this.sig.send({ type: 'ice', cand: e.candidate.toJSON() }); };
+    pc.oniceconnectionstatechange = () => this.log(`p2p ice: ${pc.iceConnectionState}`);
     pc.ondatachannel = (e) => {
       p.dc = e.channel; p.dc.binaryType = 'arraybuffer';
       p.dc.onmessage = (ev) => this.onBytes(ev.data);
@@ -403,8 +411,9 @@ export class Viewer {
         if (this.p2p && this.p2p.open) { this.teardownSfu(); return; }   // Wi-Fi won the race after all
         this.state.live = true; this.state.error = null; this.state.path = await pathOf(pc); this.sig.reportPath(this.state.path.tier); this.emit();
         this.log(`live: subscribed on ${this.state.path.label}`);
+        pc.addEventListener('iceconnectionstatechange', () => this.log(`ice (sfu): ${pc.iceConnectionState}`));
         clearInterval(this.pathTimer);
-        this.pathTimer = setInterval(async () => { if (this.sfu === s) { const p = await pathOf(pc); if (p.tier !== this.state.path.tier) this.sig.reportPath(p.tier); this.state.path = p; this.emit(); } }, 5000);
+        this.pathTimer = setInterval(async () => { if (this.sfu === s) { const p = await pathOf(pc); if (p.tier !== this.state.path.tier) { this.log(`live: path changed ${this.state.path.label} -> ${p.label}`); this.sig.reportPath(p.tier); } this.state.path = p; this.emit(); } }, 5000);
         pc.addEventListener('connectionstatechange', () => {
           if (['failed', 'disconnected', 'closed'].includes(pc.connectionState) && !this.stopped && this.sfu === s) {
             this.log(`live: transport ${pc.connectionState}`); this.scheduleRetry(RETRY_S);
@@ -428,7 +437,7 @@ export class Viewer {
       this.state.received++; this.lastRxAt = this.now();
       if (this.state.reader === false) { this.state.reader = true; this.emit(); }   // data beats the server's word
       this.onEnvelope(env);
-    } catch { this.state.error = 'cannot decrypt: wrong or missing key'; this.emit(); }
+    } catch { if (!this.state.error) this.log('live: a message could not be decrypted (wrong or missing key)'); this.state.error = 'cannot decrypt: wrong or missing key'; this.emit(); }
   }
   scheduleRetry(seconds) {
     if (this.stopped) return;

@@ -45,7 +45,7 @@ export class TvStream {
     if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') { const e = new Error('no WebCodecs'); e.code = 'nocodec'; throw e; }
     for (const c of this.codecs) {
       const cfg = this.encoderConfig(c);
-      try { if ((await VideoEncoder.isConfigSupported(cfg)).supported) { this.codec = c; break; } } catch { /* next */ }
+      try { const r = await VideoEncoder.isConfigSupported(cfg); this.log(`tv: codec ${c} ${r.supported ? 'supported' : 'not supported'}`); if (r.supported) { this.codec = c; break; } } catch (e) { this.log(`tv: codec ${c} probe failed: ${e.message}`); }
     }
     if (!this.codec) { const e = new Error('no supported video encoder'); e.code = 'nocodec'; throw e; }
     const { tv, token } = await j('tv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ codecs: this.codec, target: this.segS + 1 }) });
@@ -100,11 +100,13 @@ export class TvStream {
     this.state.uploading++;
     this.chain = this.chain.then(async () => {
       if (this.stopped && !path.startsWith('seg')) return;
+      const t0 = Date.now();
       try {
         const r = await fetch(`${API}/tv/${this.id}/${path}?token=${this.token}${extra}`, { method: 'PUT', body: bytes });
         if (!r.ok) throw new Error(`${path}: ${r.status}`);
         this.state.bytes += bytes.length; if (path.startsWith('seg')) this.state.segs++;
         this.state.error = null;
+        this.log(`tv: ${path} ${Math.round(bytes.length / 1024)} KB in ${Date.now() - t0} ms`);
       } catch (e) { this.state.error = e.message; this.log(`tv: upload failed: ${e.message}`); }
       finally { this.state.uploading--; this.emit(); }
     });

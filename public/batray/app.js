@@ -22,7 +22,7 @@ import { timeToGo, splitHours, Ema, Trend } from './trend.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.15';
+export const APP_VERSION = '0.9.16';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -41,18 +41,65 @@ $('titleText').textContent = `BatRay by ClearEvo.com v${APP_VERSION}`;
 $('aboutVer').textContent = `v${APP_VERSION}`;
 $('sbVer').textContent = `v${APP_VERSION}`;
 
-const MAX_LOG_LINES = 400;
+// The log is meant to debug any device from the log alone - no ADB, no
+// remote inspector: a header of facts about the browser and device, every
+// state change, every error, and a heartbeat line each minute.
+const MAX_LOG_LINES = 4000;
 const logLines = [];
 let T = I18N.en;
 let statusThunk = () => T.ready, statusKind = '';
-
+let logRaf = 0;
+function renderLog() {
+  if (!$('debug').open) return;                       // rendering 4000 lines is only worth it when someone looks
+  els.log.textContent = logLines.join('\n');
+  els.log.scrollTop = els.log.scrollHeight;
+}
 function log(msg) {
   const line = `${new Date().toISOString().slice(11, 23)}  ${msg}`;
   logLines.push(line);
   if (logLines.length > MAX_LOG_LINES) logLines.shift();
-  els.log.textContent = logLines.join('\n');
-  els.log.scrollTop = els.log.scrollHeight;
+  if (!logRaf) logRaf = requestAnimationFrame(() => { logRaf = 0; renderLog(); });
 }
+$('debug').addEventListener('toggle', renderLog);
+const yn = (v) => (v ? 'yes' : 'no');
+function safe(fn, dflt = 'n/a') { try { return fn(); } catch { return dflt; } }
+/** Facts about this browser and device, first line first: the upload's header. */
+function logHeaderLines() {
+  const c = navigator.connection || {};
+  const uad = navigator.userAgentData;
+  const v = document.createElement('video');
+  const storageOk = safe(() => { localStorage.setItem('batray_probe', '1'); localStorage.removeItem('batray_probe'); return true; }, false);
+  const lsKeys = safe(() => Object.keys(localStorage).filter((k) => k.startsWith('batray')).join(','), 'n/a');
+  return [
+    `BatRay v${APP_VERSION} · ${new Date().toISOString()} · tz ${safe(() => Intl.DateTimeFormat().resolvedOptions().timeZone)} · ${viewMode ? `viewer of room ${viewMode.room}` : 'reader'} · page ${location.origin}${location.pathname}${location.search}`,
+    `ua: ${navigator.userAgent}`,
+    `platform: ${navigator.platform} · uaData ${uad ? JSON.stringify({ brands: uad.brands, mobile: uad.mobile, platform: uad.platform }) : 'n/a'} · cores ${navigator.hardwareConcurrency || '?'} · mem ${navigator.deviceMemory || '?'} GB`,
+    `screen: ${screen.width}x${screen.height} @${devicePixelRatio} · viewport ${innerWidth}x${innerHeight} · touch ${navigator.maxTouchPoints} · orientation ${safe(() => screen.orientation.type)} · visibility ${document.visibilityState}`,
+    `net: online=${navigator.onLine} · type ${c.type || c.effectiveType || '?'} · downlink ${c.downlink ?? '?'} Mbps · rtt ${c.rtt ?? '?'} ms · saveData ${c.saveData ?? '?'}`,
+    `lang: ui=${$('lang').value} · browser ${navigator.language} · ${(navigator.languages || []).join(',')}`,
+    `features: secure=${yn(isSecureContext)} bluetooth=${yn(!!navigator.bluetooth)} adv=${yn(typeof BluetoothDevice !== 'undefined' && 'watchAdvertisements' in BluetoothDevice.prototype)} getDevices=${yn(navigator.bluetooth && navigator.bluetooth.getDevices)} availability=${yn(navigator.bluetooth && navigator.bluetooth.getAvailability)} wakeLock=${yn('wakeLock' in navigator)} notifications=${typeof Notification === 'undefined' ? 'none' : Notification.permission} sw=${navigator.serviceWorker && navigator.serviceWorker.controller ? 'controlled' : 'none'} webCodecs=${yn(typeof VideoEncoder !== 'undefined')} hls=${v.canPlayType('application/vnd.apple.mpegurl') || 'no'} remotePlayback=${yn('remote' in v)} storage=${yn(storageOk)} clipboard=${yn(navigator.clipboard && navigator.clipboard.writeText)}`,
+    `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutoffPct}% tvRes=${$('tvRes').value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
+  ];
+}
+// what the header cannot know synchronously: battery, codec support, adapter state
+async function logEnvAsync() {
+  // each probe on its own: one that never settles (getBattery in some builds) must not hold the others
+  (async () => { try { if (navigator.getBattery) { const b = await navigator.getBattery(); log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => log(`battery: ${Math.round(b.level * 100)}%`)); b.addEventListener('chargingchange', () => log(`battery: charging=${b.charging}`)); } } catch (e) { log(`battery: ${e.message}`); } })();
+  if (typeof VideoEncoder !== 'undefined') {
+    const out = [];
+    for (const codec of ['avc1.42E01E', 'avc1.4D401F', 'vp09.00.10.08']) { try { const r = await VideoEncoder.isConfigSupported({ codec, width: 1280, height: 720, bitrate: 500000, framerate: 1, ...(codec.startsWith('avc') ? { avc: { format: 'avc' } } : {}) }); out.push(`${codec}=${yn(r.supported)}`); } catch (e) { out.push(`${codec}=err`); } }
+    log(`codecs: ${out.join(' ')}`);
+  }
+  try { if (navigator.bluetooth && navigator.bluetooth.getAvailability) log(`bluetooth adapter available: ${await navigator.bluetooth.getAvailability()}`); } catch (e) { log(`bluetooth availability: ${e.message}`); }
+}
+// errors that would otherwise only show in a remote inspector
+window.addEventListener('error', (e) => log(`ERROR ${e.message} @ ${(e.filename || '').split('/').pop()}:${e.lineno}:${e.colno}${e.error && e.error.stack ? '\n' + String(e.error.stack).split('\n').slice(0, 6).join('\n') : ''}`));
+window.addEventListener('unhandledrejection', (e) => { const r = e.reason; log(`UNHANDLED ${r && r.message ? r.message : String(r)}${r && r.stack ? '\n' + String(r.stack).split('\n').slice(0, 6).join('\n') : ''}`); });
+for (const level of ['error', 'warn']) { const orig = console[level].bind(console); console[level] = (...a) => { try { log(`console.${level}: ${a.map((x) => (x instanceof Error ? x.message : typeof x === 'object' ? JSON.stringify(x).slice(0, 300) : String(x))).join(' ')}`); } catch { /* */ } orig(...a); }; }
+document.addEventListener('visibilitychange', () => log(`tab ${document.visibilityState}`));
+window.addEventListener('online', () => log('network: online')); window.addEventListener('offline', () => log('network: offline'));
+window.addEventListener('pagehide', () => log('page hidden/unloading'));
+let lastStatusKey = '';
 let toastTimer = null, btWarned = false;
 function toast(msg, ms = 8000) {
   const t = $('toast');
@@ -64,8 +111,11 @@ function toast(msg, ms = 8000) {
 function setStatus(thunk, kind = '') {
   statusThunk = typeof thunk === 'function' ? thunk : () => thunk;
   statusKind = kind;
-  els.stat.textContent = statusThunk();
+  const txt = statusThunk();
+  els.stat.textContent = txt;
   els.stat.className = kind;
+  const key = `${txt.replace(/\d+/g, '#')}|${kind}`;
+  if (key !== lastStatusKey) { lastStatusKey = key; log(`status: ${txt}${kind ? ` [${kind}]` : ''}`); }
 }
 function fmt(n, digits = 2, unit = '') {
   if (n === null || n === undefined || Number.isNaN(n)) return '-';
@@ -99,6 +149,7 @@ class Pack {
     b.addEventListener('log', (e) => this.plog(e.detail));
     b.addEventListener('connected', (e) => {
       this.device = e.detail; this.userDisconnect = false; this.connectPending = false; this.stalled = false; this.connectedAt = Date.now();
+      this.plog(`gatt connected: ${this.label} id=${String(e.detail.id || '').slice(0, 10)}…`);
       showReconnectIdle(this);
       this.loadThunk = () => T.loading(this.label);
       if (this.isActive) { setStatus(() => T.connectedTo(this.label), 'good'); $('oneApp').hidden = false; $('btNote').hidden = false; }
@@ -140,6 +191,7 @@ class Pack {
   }
   onData(d) {
     const first = !this.lastFrameAt;
+    if (first) this.plog(`first reading ${this.connectedAt ? Math.round((Date.now() - this.connectedAt) + '') + ' ms after connect' : ''}: soc=${d.soc} V=${d.packV} A=${d.current} cells=${d.cells.length} variant=${d.variant}`);
     this.take(d);
     if (this.isActive) scheduleRender(this);
     schedulePackBar();
@@ -605,6 +657,7 @@ function startReconnectCountdown(p, seconds = 10) {
   // "connected" for seconds, then dropped (live, 2026-09-17).
   if (!reconnectAllowed({ connectPending: p.connectPending, connected: p.connected, countdownRunning: !!p.reTimer })) { p.plog('reconnect countdown not started: an attempt is already in progress'); return; }
   p.reconnecting = true; syncWake();
+  p.plog(`reconnect: countdown ${seconds} s`);
   let left = seconds;
   setCount(p, () => T.reIn(p.label, left), true);          // "Reconnect now" is offered during the countdown
   if (p.reTimer) clearInterval(p.reTimer);
@@ -631,6 +684,7 @@ function startReconnectCountdown(p, seconds = 10) {
 $('reNow').addEventListener('click', async () => {
   const p = active; if (!p || p.remote) return;
   if (p.connectPending) return;                                        // double tap
+  p.plog('reconnect: user tapped Reconnect now');
   if (p.reTimer) { clearInterval(p.reTimer); p.reTimer = null; }       // the tap replaces any pending countdown
   p.reNow = false; refreshCard();
   try { p.reconnecting = true; syncWake(); await connectTo(p, p.device); } catch (err) {
@@ -642,6 +696,7 @@ $('reNow').addEventListener('click', async () => {
 });
 $('cancelRe').addEventListener('click', () => {
   const p = active; if (!p || p.remote) return;
+  p.plog('reconnect: cancelled by user');
   showReconnectIdle(p); p.userDisconnect = true;
   try { if (p.device && p.device.gatt.connected) p.device.gatt.disconnect(); } catch { /* nothing to drop */ }
   setStatus(() => T.disconnectedFrom(p.label), 'bad');
@@ -674,9 +729,10 @@ async function connectTo(p, device) {
   $('connectBig').disabled = true;
   try {
     for (;;) {
-      try { await p.bms.connect(device, { timeoutMs: CONNECT_S * 1000 }); return; } catch (err) {
+      const t0 = Date.now();
+      try { await p.bms.connect(device, { timeoutMs: CONNECT_S * 1000 }); p.plog(`connect: ok on attempt ${attempt} in ${Date.now() - t0} ms`); return; } catch (err) {
+        p.plog(`connect: attempt ${attempt} failed after ${Date.now() - t0} ms: ${err.message}`);
         if (attempt >= CONNECT_TRIES || !retryableConnectError(err) || p.userDisconnect) throw err;
-        p.plog(`connect attempt ${attempt} failed: ${err.message} - retrying`);
         attempt++; left = CONNECT_S; show();
         await new Promise((r) => setTimeout(r, CONNECT_GAP_MS));
       }
@@ -709,6 +765,7 @@ async function startConnect(p) {
     } catch { /* nothing to drop */ }
     setStatus(() => T.choosing);
     const device = await p.bms.requestDevice();
+    log(`chooser: picked "${device.name || '(no name)'}" id=${String(device.id || '').slice(0, 10)}…`);
     if ([...packs.values()].some((x) => x !== p && x.device && x.device.id === device.id)) { toast(T.alreadyAdded(device.name || device.id)); setActive(packs.get([...packs.values()].find((x) => x.device && x.device.id === device.id).id)); return; }
     p.device = device; p.id = fresh ? `bt-${device.id}` : p.id;
     if (fresh) { addPack(p); setActive(p); }
@@ -976,7 +1033,7 @@ async function stopTv() {
   window.addEventListener('pagehide', () => { if (tv) { const t = tv; tv = null; t.stop(); } });
 })();
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
-  startTv, stopTv, tvState: () => (tv ? tv.state : null),
+  startTv, stopTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
 
@@ -990,6 +1047,28 @@ async function copyLog(btn) {
   } catch { els.debug.open = true; log(T.clipBlocked); }
 }
 els.copy.addEventListener('click', () => copyLog(els.copy));
+// Upload: the same log to clearevo.com, only after the warning is accepted.
+// The relay stores it for 90 days for the owner to read; the id is the handle.
+async function uploadLog(btn) {
+  if (!window.confirm(T.uploadWarn)) { log('log upload: declined at the warning'); return; }
+  const body = logHeaderLines().join('\n') + '\n---\n' + logLines.join('\n');
+  const lbl = btn.querySelector('.lbl'); const was = lbl ? lbl.textContent : '';
+  if (lbl) lbl.textContent = T.uploading;
+  btn.disabled = true;
+  try {
+    const r = await fetch('/batray/api/log', { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    log(`log uploaded: id ${j.id} (${body.length} chars)`);
+    $('uploadId').textContent = T.uploadedId(j.id); $('uploadId').hidden = false;
+    toast(T.uploadDone(j.id), 14000);
+  } catch (e) {
+    log(`log upload failed: ${e.message}`);
+    toast(T.uploadFailed(e.message), 10000);
+  } finally { if (lbl) lbl.textContent = was; btn.disabled = false; }
+}
+$('upload').addEventListener('click', () => uploadLog($('upload')));
+$('upload2').addEventListener('click', () => uploadLog($('upload2')));
 $('copy2').addEventListener('click', () => copyLog($('copy2')));
 $('bAbout').addEventListener('click', () => { $('about').style.display = 'flex'; });
 $('aboutClose').addEventListener('click', () => { $('about').style.display = 'none'; });
@@ -1008,14 +1087,20 @@ $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('ab
   apply();
 })();
 
-if (navigator.bluetooth) {
-  // typeof-guarded: a browser can expose navigator.bluetooth without the
-  // BluetoothDevice global, and a throw here would abort the rest of startup
-  const hasAdv = typeof BluetoothDevice !== 'undefined' && 'watchAdvertisements' in BluetoothDevice.prototype;
-  log(`web bluetooth features: watchAdvertisements=${hasAdv ? 'yes' : 'no'} getDevices=${navigator.bluetooth.getDevices ? 'yes' : 'no'} getAvailability=${navigator.bluetooth.getAvailability ? 'yes' : 'no'} wakeLock=${'wakeLock' in navigator ? 'yes' : 'no'}`);
-}
+for (const line of logHeaderLines()) log(line);     // typeof-guarded inside: a missing BluetoothDevice global must not abort startup
+logEnvAsync();
+// one line a minute with everything that matters, so a log of a whole night reads as a timeline
+setInterval(() => {
+  const p = active;
+  const age = p && p.lastFrameAt ? Math.round((Date.now() - p.lastFrameAt) / 1000) : null;
+  const pub = publisher ? `pub(live=${publisher.state.live} viewers=${publisher.state.viewers} path=${publisher.state.path.tier} p2p=${publisher.state.p2p} sent=${publisher.state.sent} dropped=${publisher.state.dropped} sig=${publisher.state.sig})` : '';
+  const vw = viewer ? `view(live=${viewer.state.live} reader=${viewer.state.reader} path=${viewer.state.path.tier} received=${viewer.state.received} sig=${viewer.state.sig})` : '';
+  const tvs = tv ? `tv(segs=${tv.state.segs} kb=${Math.round(tv.state.bytes / 1024)} pull=${tv.state.pullAgeS}s err=${tv.state.error || '-'})` : '';
+  const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
+  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} frameAge=${age === null ? '-' : age + 's'} wake=${!!wakeLock} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
+}, 60000);
 $('lang').innerHTML = Object.keys(I18N).map((k) => `<option value="${k}">${I18N[k].langName}</option>`).join('');
-$('lang').addEventListener('change', () => { try { localStorage.setItem('batray_lang', $('lang').value); } catch {} applyLang($('lang').value); });
+$('lang').addEventListener('change', () => { try { localStorage.setItem('batray_lang', $('lang').value); } catch {} log(`language: ${$('lang').value}`); applyLang($('lang').value); });
 
 if (!navigator.bluetooth && !viewMode) {
   setStatus(() => T.noWebBt, 'bad');

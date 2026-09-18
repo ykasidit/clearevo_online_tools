@@ -196,6 +196,7 @@ body.view #empty,body.view #oneApp{display:none}
     <button class="tbtn" id="share" title="share a live link: readings are encrypted on this device, the key exists only in the link"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg><span class="lbl" data-i18n="share">Share live</span></button>
     <button class="tbtn" id="tv" title="show this picture on a TV (Chromecast, Google TV, TV browser, VLC)"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span class="lbl" data-i18n="tv">Show on TV</span></button>
     <button class="tbtn" id="copy" title="copy the raw-frame log to the clipboard"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></svg><span class="lbl" data-i18n="copyLog">Copy log</span></button>
+    <button class="tbtn" id="upload" title="upload the debug log to clearevo.com (asks first)"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg><span class="lbl" data-i18n="uploadLog">Upload log</span></button>
     <span title="language" style="align-self:center;font-size:14px;padding-left:6px">🌐</span><select id="lang" title="language" style="align-self:center;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:5px;padding:3px 6px;font-size:11px;margin-left:4px"></select>
     <span id="stat">ready</span>
   </div>
@@ -320,7 +321,8 @@ body.view #empty,body.view #oneApp{display:none}
       </details>
       <details class="card" id="debug">
         <summary><span data-i18n="debugH">Debug</span> <span class="note" data-i18n="debugNote">raw frames - check these if the numbers look wrong</span></summary>
-        <div class="hint"><button class="tbtn" id="copy2" title="copy the raw-frame log to the clipboard"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></svg><span class="lbl" data-i18n="copyLog">Copy log</span></button><span data-i18n-html="debugHint"></span></div>
+        <div class="hint"><button class="tbtn" id="copy2" title="copy the raw-frame log to the clipboard"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></svg><span class="lbl" data-i18n="copyLog">Copy log</span></button> <button class="tbtn" id="upload2" title="upload the debug log to clearevo.com (asks first)"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg><span class="lbl" data-i18n="uploadLog">Upload log</span></button> <span id="uploadId" class="tvnote" hidden></span><span data-i18n-html="debugHint"></span></div>
+        <div class="tvnote" data-i18n="uploadNote">Upload sends this log to clearevo.com only after you confirm the warning: browser and device details, raw BMS frames and readings, the BMS name and serial. Never the share-link key. Kept 90 days, read by the site owner to fix what you report.</div>
         <pre id="log"></pre>
       </details>
     </div>

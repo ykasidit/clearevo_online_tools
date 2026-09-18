@@ -503,10 +503,13 @@ export class JkBms extends EventTarget {
     });
     const work = (async () => {
       this._log(`connecting to ${device.name || device.id}`);
+      const t0 = Date.now();
       const server = await device.gatt.connect();
       if (stale()) throw new Error('superseded');
+      this._log(`gatt: server connected in ${Date.now() - t0} ms`);
       const service = await server.getPrimaryService(JK_SERVICE);
       if (stale()) throw new Error('superseded');
+      this._log(`gatt: service found in ${Date.now() - t0} ms`);
       this.char = await service.getCharacteristic(JK_CHAR);
       if (stale()) throw new Error('superseded');
       this.char.addEventListener('characteristicvaluechanged', (e) =>

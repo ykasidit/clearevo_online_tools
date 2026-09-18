@@ -4,6 +4,8 @@
 #   smoke.mjs     - every tool page loads with no console errors / failed requests
 #   batray_freeze.mjs - BatRay over a fake BLE device: a frozen tab must not
 #                   replay queued readings or sit on a dead "connected"
+#   batray_tv.mjs   - Show on TV: real encode, stubbed relay, ffmpeg decodes the stream
+#   batray_log.mjs  - the debug log header, error capture and Upload log
 #   clinician.mjs - 24-scenario DICOM viewer suite (measure landing under
 #                   zoom/pan/rotate/flip/hi-DPI, wheel/keys/slider, cine,
 #                   multi-frame US, tags, capture-with-overlay)
@@ -37,6 +39,8 @@ rc=0
 node smoke.mjs || rc=1
 node clinician.mjs || rc=1
 node batray_freeze.mjs || rc=1
+node batray_tv.mjs || rc=1
+node batray_log.mjs || rc=1      # last: it throws deliberate errors that Chrome replays to the next Runtime.enable
 node probe.mjs
 node repro.mjs
 [ $rc -eq 0 ] && echo 'browser tests ok' || echo 'BROWSER TESTS FAILED'
