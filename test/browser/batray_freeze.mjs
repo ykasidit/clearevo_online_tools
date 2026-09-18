@@ -161,6 +161,12 @@ await notify(OWNER_32S_CELL); await sleep(500);
 s = await state();
 check('...and the countdown brings it back once the BMS accepts', s.gatt === true && /^connected/i.test(s.stat), s);
 
+// --- the share setup prefills the BMS's own name ---
+await evalJs(`localStorage.removeItem('batray_share_name'); document.getElementById('share').click(); 1`); await sleep(200);
+const sp = await evalJs(`({ name: document.getElementById('shareName').value, shown: !document.getElementById('sharePanel').hidden })`);
+check('Share prefills the name with the BMS name', sp.shown && sp.name === 'n11', sp);
+await evalJs(`document.getElementById('shareCancel').click(); 1`);
+
 // --- share link as a QR code: the other phone just scans the screen ---
 const qr = await evalJs(`(() => {
   const t = window.__batrayTest; if (!t) return { err: 'no test hook' };

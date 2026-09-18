@@ -157,3 +157,25 @@ export function readerPresent({ serverLive, lastRxAt, now = Date.now(), freshMs 
   if (serverLive === null || serverLive === undefined) return null;
   return !!serverLive;
 }
+
+// ---- channel name (shown above the QR and at the top of the viewer) ----
+export const CAT_NAMES = ['Mochi', 'Whiskers', 'Biscuit', 'Tabby', 'Luna', 'Simba', 'Nala', 'Pumpkin', 'Oreo', 'Salem', 'Cleo', 'Milo', 'Tigger', 'Ginger', 'Smokey', 'Pepper', 'Muffin', 'Noodle', 'Peanut', 'Waffles', 'Purrito', 'Catnip', 'Snowball', 'Boots', 'Felix', 'Kitkat', 'Sushi', 'Mittens', 'Shadow', 'Pickles'];
+export const MAX_CHANNEL_NAME = 40;
+
+/** Prefill for the share name: the saved one, else the BMS's own name, else a cat. */
+export function suggestChannelName({ saved, deviceName, rand = Math.random }) {
+  const clean = (v) => (typeof v === 'string' ? v.trim().slice(0, MAX_CHANNEL_NAME) : '');
+  if (clean(saved)) return clean(saved);
+  const dn = clean(deviceName);
+  if (dn && !/^(DEMO|BMS \d+)$/i.test(dn)) return dn;
+  return CAT_NAMES[Math.min(CAT_NAMES.length - 1, Math.floor(rand() * CAT_NAMES.length))];
+}
+
+/** The saved share credentials, if the stored shape is sane. */
+export function parseSavedShare(raw) {
+  try {
+    const o = JSON.parse(raw);
+    if (o && typeof o.room === 'string' && typeof o.pub === 'string' && validKey(o.key) && Number.isFinite(o.at)) return o;
+  } catch { /* */ }
+  return null;
+}

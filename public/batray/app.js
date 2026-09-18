@@ -20,9 +20,10 @@ import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { timeToGo, splitHours, Ema, Trend } from './trend.js';
 import { TvStream } from './tv.js';
+import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.16';
+export const APP_VERSION = '0.9.17';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -836,8 +837,35 @@ function showQr(show) {
   $('qrLink').textContent = publisher ? publisher.link : '';
 }
 if (new URLSearchParams(location.search).has('test')) window.__batrayTest = { renderQr };
+// Share setup: a name the viewers see, and whether to keep the earlier link
+// (room + key saved on this device, so a restart does not orphan bookmarks).
+let channelName = '';
+const savedShare = () => { try { return parseSavedShare(localStorage.getItem('batray_share_last')); } catch { return null; } };
+function openSharePanel() {
+  const saved = savedShare();
+  let savedName = ''; try { savedName = localStorage.getItem('batray_share_name') || ''; } catch {}
+  const dev = active && !active.remote && !active.demo ? active.label : '';
+  $('shareName').value = suggestChannelName({ saved: savedName, deviceName: dev });
+  const cb = $('shareReuse');
+  cb.disabled = !saved; cb.checked = !!saved;
+  $('shareReuseInfo').textContent = saved ? T.shareReuseFrom(fmtSpan((Date.now() - saved.at) / 3600000) === '-' ? '' : fmtSpan((Date.now() - saved.at) / 3600000) + ' ago') : T.shareReuseNone;
+  $('sharePanel').hidden = false; $('sharePanel').open = true; $('sharePanel').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  $('shareName').focus();
+}
+function renderChannelName() {
+  $('qrName').textContent = channelName;
+}
 async function startShare() {
   if (publisher) { copyShareLink(); return; }
+  openSharePanel();
+}
+async function beginShare() {
+  if (publisher) return;
+  channelName = $('shareName').value.trim().slice(0, 40) || suggestChannelName({ saved: '', deviceName: '' });
+  try { localStorage.setItem('batray_share_name', channelName); } catch {}
+  const reuse = $('shareReuse').checked ? savedShare() : null;
+  log(`share: name "${channelName}", ${reuse ? `reusing room ${reuse.room}` : 'new room'}`);
+  $('sharePanel').hidden = true;
   els.share.disabled = true;
   let lastViewers = 0;
   publisher = new Publisher({ log, onState: (s) => {
@@ -849,7 +877,10 @@ async function startShare() {
   } });
   renderLiveChip();
   try {
-    await publisher.start();
+    await publisher.start(reuse);
+    try { localStorage.setItem('batray_share_last', JSON.stringify(publisher.credentials)); } catch {}
+    if (reuse && !publisher.reused) toast(T.shareNewLink, 9000);
+    renderChannelName();
     showQr(true);
     copyShareLink();
     // late viewers need the pack list plus info/settings: resend every 10 s
@@ -863,6 +894,7 @@ async function startShare() {
 }
 function sendSnapshots() {
   if (!publisher) return;
+  publisher.publish(envelope('hello', { id: '*', name: '*' }, { channel: channelName, version: APP_VERSION }));
   const list = [...packs.values()].map((p) => ({ id: p.id, name: p.label, demo: !!p.demo, connected: p.connected }));
   publisher.publish(envelope('packs', { id: '*', name: '*' }, list));
   for (const p of packs.values()) {
@@ -880,6 +912,9 @@ async function stopShare() {
   toast(T.shareStopped, 5000);
 }
 els.share.addEventListener('click', startShare);
+$('shareGo').addEventListener('click', () => beginShare().catch(() => {}));
+$('shareCancel').addEventListener('click', () => { $('sharePanel').hidden = true; });
+$('shareName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); beginShare().catch(() => {}); } });
 $('viewStop').addEventListener('click', () => { if (viewer) { viewer.stop(); setStatus(() => T.viewStopped, 'bad'); $('viewStop').hidden = true; els.viewTxt.textContent = T.viewStopped; } });
 els.liveStop.addEventListener('click', stopShare);
 $('shareCopy').addEventListener('click', copyShareLink);
@@ -895,7 +930,7 @@ function renderViewChip() {
   els.viewTxt.textContent = liveText(s, T.viewChip);
   $('viewStop').hidden = !(s.retryIn !== null && s.retryIn !== undefined);
 }
-let readerLive = false, readerSeen = false;
+let readerLive = false, readerSeen = false, viewChannel = '';
 // only the server's word counts as "reader offline"; our own socket being down is "reconnecting"
 function readerGone() { return !!(viewer && viewer.state.sig && viewer.state.reader === false); }
 // Internet / server reachability of THIS device, same on both sides. A state
@@ -936,6 +971,11 @@ function startView() {
       refreshCard(); renderPackBar(); syncWake();
     },
     onEnvelope: (env) => {
+      if (env.k === 'hello') {
+        const name = env.v && typeof env.v.channel === 'string' ? env.v.channel.slice(0, 40) : '';
+        if (name !== viewChannel) { viewChannel = name; $('viewName').textContent = name; $('viewName').hidden = !name; document.title = name ? `${name} · BatRay live` : document.title; log(`live: channel "${name}"${env.v.version ? ` (reader v${env.v.version})` : ''}`); }
+        return;
+      }
       if (env.k === 'packs') {
         const ids = new Set(env.v.map((x) => x.id));
         for (const p of [...packs.values()]) if (!ids.has(p.id)) removePack(p);
@@ -1033,7 +1073,7 @@ async function stopTv() {
   window.addEventListener('pagehide', () => { if (tv) { const t = tv; tv = null; t.stop(); } });
 })();
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
-  startTv, stopTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
+  openSharePanel, beginShare, startTv, stopTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
 

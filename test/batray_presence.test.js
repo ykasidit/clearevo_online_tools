@@ -97,3 +97,41 @@ test('publisher re-registers its SFU session when its socket reopens and when th
   p.state.live = false; p.onSigConn(true); await new Promise((r) => setTimeout(r, 0));
   assert.equal(fetches.length, 2);
 });
+
+test('channel name: saved, else the BMS name, else a cat; placeholders never win', async () => {
+  const { suggestChannelName, CAT_NAMES, parseSavedShare } = await import('../public/batray/live-logic.js');
+  assert.equal(suggestChannelName({ saved: ' Home bank ', deviceName: 'n11' }), 'Home bank');
+  assert.equal(suggestChannelName({ saved: '', deviceName: 'n11' }), 'n11');
+  assert.equal(suggestChannelName({ saved: '', deviceName: 'DEMO', rand: () => 0 }), CAT_NAMES[0]);
+  assert.equal(suggestChannelName({ saved: '', deviceName: 'BMS 2', rand: () => 0.999 }), CAT_NAMES[CAT_NAMES.length - 1]);
+  assert.equal(suggestChannelName({ saved: 'x'.repeat(60), deviceName: '' }).length, 40);
+  assert.equal(parseSavedShare('garbage'), null);
+  assert.equal(parseSavedShare(JSON.stringify({ room: 'r', pub: 'p', key: 'short', at: 1 })), null);
+  const ok = parseSavedShare(JSON.stringify({ room: 'r', pub: 'p', key: makeKeyB64(), at: 1 }));
+  assert.equal(ok && ok.room, 'r');
+});
+
+test('publisher reuses an earlier room when the relay still has it, else makes a new one', async () => {
+  const oldKey = makeKeyB64();
+  const stubFetch = (roomAlive) => async (url, init = {}) => {
+    const u = String(url); const m = (init.method || 'GET').toUpperCase();
+    fetches.push({ url: u, method: m });
+    if (/\/room$/.test(u) && m === 'POST') return { ok: true, status: 200, json: async () => ({ room: 'newroom', pub: 'newpub' }) };
+    if (/\/room\/oldroom$/.test(u)) return { ok: roomAlive, status: roomAlive ? 200 : 404, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  for (const alive of [true, false]) {
+    globalThis.fetch = stubFetch(alive);
+    const p = new Publisher({ log: () => {}, onState: () => {} });
+    p.connectSfu = async () => {};                                       // no WebRTC in node
+    const link = await p.start({ room: 'oldroom', pub: 'oldpub', key: oldKey, at: 1 });
+    if (alive) {
+      assert.equal(p.reused, true); assert.equal(p.room, 'oldroom'); assert.equal(p.pubToken, 'oldpub'); assert.equal(p.keyB64, oldKey);
+      assert.match(link, /view=oldroom#k=/); assert.ok(!fetches.some((f) => f.method === 'POST' && /\/room$/.test(f.url)), 'no new room asked for');
+    } else {
+      assert.equal(p.reused, false); assert.equal(p.room, 'newroom'); assert.notEqual(p.keyB64, oldKey); assert.match(link, /view=newroom#k=/);
+    }
+    assert.deepEqual(Object.keys(p.credentials).sort(), ['at', 'key', 'pub', 'room']);
+    p.stop(); fetches.length = 0;
+  }
+});

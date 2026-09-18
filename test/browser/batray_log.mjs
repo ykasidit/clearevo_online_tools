@@ -33,7 +33,14 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   window.__confirmAnswer = true; window.confirm = () => window.__confirmAnswer;
   window.__logPosts = [];
   const rf = window.fetch.bind(window);
-  window.fetch = async (u, i = {}) => { if (!String(u).endsWith('/batray/api/log')) return rf(u, i); window.__logPosts.push({ method: i.method, headers: i.headers, body: String(i.body) }); return new Response(JSON.stringify({ id: 'TestLogId0000000000000', key: 'logs/x' }), { status: 200, headers: { 'Content-Type': 'application/json' } }); };
+  window.fetch = async (u, i = {}) => {
+    const url = String(u); const ok = (b, st = 200) => new Response(JSON.stringify(b), { status: st, headers: { 'Content-Type': 'application/json' } });
+    if (url.endsWith('/batray/api/log')) { window.__logPosts.push({ method: i.method, headers: i.headers, body: String(i.body) }); return ok({ id: 'TestLogId0000000000000', key: 'logs/x' }); }
+    if (url.endsWith('/batray/api/room')) return ok({ room: 'testroom0000000000000A', pub: 'testpub00000000000000A' });
+    if (url.includes('/batray/api/room/')) return ok({ viewers: 0, live: false });
+    if (url.includes('/batray/api/sfu') || url.includes('/batray/api/turn')) return ok({ error: 'no sfu in this test' }, 500);
+    return rf(u, i);
+  };
 ` });
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 
@@ -63,6 +70,22 @@ const post = await evalJs(`window.__logPosts[0] ? { method: window.__logPosts[0]
 const ui = await evalJs(`({ idTxt: document.getElementById('uploadId').textContent, shown: !document.getElementById('uploadId').hidden, toast: document.getElementById('toast').textContent })`);
 check('accepting uploads header + separator + log as text/plain and shows the id', post && post.method === 'POST' && /text\/plain/.test(post.ct) && /^BatRay v/.test(post.head) && post.hasSep && post.hasBoom && post.len > 1000, post);
 check('the id is shown in the Debug card and the toast', /TestLogId0000000000000/.test(ui.idTxt) && ui.shown && /TestLogId0000000000000/.test(ui.toast), ui);
+
+// --- share setup: name prefill, the last-link option, and what Start saves ---
+await evalJs(`localStorage.removeItem('batray_share_last'); localStorage.removeItem('batray_share_name'); document.getElementById('share').click(); 1`); await sleep(300);
+let sp = await evalJs(`({ shown: !document.getElementById('sharePanel').hidden, name: document.getElementById('shareName').value, reuseDisabled: document.getElementById('shareReuse').disabled, reuseChecked: document.getElementById('shareReuse').checked, info: document.getElementById('shareReuseInfo').textContent })`);
+check('Share opens the setup: a cat name for the demo, last-link option greyed when nothing is saved', sp.shown && /^[A-Z][a-z]+$/.test(sp.name) && sp.reuseDisabled && !sp.reuseChecked && /none saved/.test(sp.info), sp);
+await evalJs(`document.getElementById('shareName').value = 'Home bank'; document.getElementById('shareGo').click(); 1`); await sleep(2500);
+sp = await evalJs(`({ panelHidden: document.getElementById('sharePanel').hidden, qrName: document.getElementById('qrName').textContent, savedName: localStorage.getItem('batray_share_name'), saved: JSON.parse(localStorage.getItem('batray_share_last') || 'null'), logged: window.__batrayTest.logLines().filter((l) => /share: name|live share room/.test(l)) })`);
+check('Start sharing saves the name and the link, shows the name above the QR', sp.panelHidden && sp.qrName === 'Home bank' && sp.savedName === 'Home bank' && sp.saved && sp.saved.room === 'testroom0000000000000A' && sp.saved.pub === 'testpub00000000000000A' && /^[A-Za-z0-9_-]{22}$/.test(sp.saved.key) && sp.logged.some((l) => /new room/.test(l)) && sp.logged.some((l) => /created/.test(l)), sp);
+await evalJs(`document.getElementById('liveStop').click(); 1`); await sleep(800);
+await evalJs(`document.getElementById('share').click(); 1`); await sleep(300);
+sp = await evalJs(`({ name: document.getElementById('shareName').value, reuseDisabled: document.getElementById('shareReuse').disabled, reuseChecked: document.getElementById('shareReuse').checked, info: document.getElementById('shareReuseInfo').textContent })`);
+check('next time: the saved name is prefilled and "use the last share link" is on by default', sp.name === 'Home bank' && !sp.reuseDisabled && sp.reuseChecked && /saved/.test(sp.info), sp);
+await evalJs(`document.getElementById('shareGo').click(); 1`); await sleep(2500);
+sp = await evalJs(`({ logged: window.__batrayTest.logLines().filter((l) => /reusing room|reused/.test(l)), saved: JSON.parse(localStorage.getItem('batray_share_last') || 'null') })`);
+check('...and Start reuses the earlier room and key', sp.logged.length >= 2 && sp.saved.room === 'testroom0000000000000A', sp);
+await evalJs(`document.getElementById('liveStop').click(); 1`); await sleep(500);
 
 const errors = events.filter((e) => e.method === 'Runtime.exceptionThrown').map((e) => e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text).filter((t) => !/boom/.test(t));
 check('no page exceptions besides the deliberate ones', errors.length === 0, errors);

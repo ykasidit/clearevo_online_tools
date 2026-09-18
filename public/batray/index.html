@@ -130,6 +130,10 @@ body.demo #demoBadge{display:block}
 #demoBadge button{margin-left:12px;background:transparent;border:1px solid #ffd24a;color:#ffd24a;border-radius:5px;padding:2px 9px;font:600 11px Tahoma,sans-serif;cursor:pointer;vertical-align:middle}
 #demoBadge button:hover{background:#ffd24a;color:#1a1200}
 .chipbar[hidden],#packBar[hidden],#shareLink[hidden],#qrPanel[hidden],#qrShow[hidden]{display:none!important}
+.chname{font:600 18px 'Segoe UI',Tahoma,sans-serif;color:#eaf4ff;text-align:center;letter-spacing:.3px}
+#viewName{margin:2px 0 8px;color:#8fe3ff;font-size:20px}#viewName[hidden]{display:none}
+.qrpanel .chname{color:#123}
+#shareName{background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:4px;padding:3px 6px;font:13px 'Segoe UI',Tahoma,sans-serif;max-width:min(260px,100%)}
 .tvpanel{padding:4px 0 2px;font:12px 'Segoe UI',Tahoma,sans-serif;color:#cdd9e5;display:flex;flex-direction:column;gap:8px}
 details.card[hidden]{display:none}details.card>summary{cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:#7fb0d8;font-weight:600;display:flex;gap:10px;align-items:center;flex-wrap:wrap;list-style:none}
 details.card>summary::-webkit-details-marker{display:none}details.card>summary::before{content:'▸';font-size:11px}details.card[open]>summary::before{content:'▾'}
@@ -221,9 +225,20 @@ body.view #empty,body.view #oneApp{display:none}
       </div>
     </div>
     <div class="panel">
+      <div id="viewName" class="chname" hidden></div>
+      <details class="card" id="sharePanel" hidden open>
+        <summary><span data-i18n="shareH">Share live</span> <span class="note" data-i18n="shareSetupNote">a name for the viewers, and whether to keep the earlier link</span></summary>
+        <div class="tvpanel">
+          <div class="tvrow"><label><span data-i18n="shareNameLbl">name shown to viewers</span> <input id="shareName" type="text" maxlength="40" size="22"></label></div>
+          <div class="tvrow"><label class="chk"><input type="checkbox" id="shareReuse"> <span data-i18n="shareReuse">use the last share link</span> <span class="tvnote" id="shareReuseInfo"></span></label></div>
+          <div class="tvnote" data-i18n="shareReuseHint">The same link and QR keep working for anyone who kept them, even after this phone restarts. Untick for a fresh link that makes the old one useless.</div>
+          <div class="tvrow"><button id="shareGo" type="button" class="demobtn" style="padding:6px 16px" data-i18n="shareGo">Start sharing</button> <button id="shareCancel" type="button" class="linkbtn" data-i18n="cancel">Cancel</button></div>
+        </div>
+      </details>
       <details class="card" id="qrPanel" hidden open>
         <summary><span data-i18n="qrSummary">QR code of the live view</span> <span class="note" data-i18n="qrHint">Point the other phone's camera at this code to open the live view</span></summary>
         <div class="qrpanel">
+          <div id="qrName" class="chname"></div>
           <canvas id="qrCanvas" width="10" height="10" aria-label="QR code of the share link"></canvas>
           <div class="qrlink" id="qrLink"></div>
           <div class="qrrow"><button id="qrCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button> · <button id="qrHide" type="button" class="linkbtn" data-i18n="qrHide">hide QR</button></div>

@@ -141,12 +141,24 @@ export class Publisher {
   }
   emit() { this.onState({ ...this.state }); }
 
-  async start() {
-    const { room, pub } = await j('room', { method: 'POST' });
+  /** existing: { room, pub, key } from an earlier share - the same link keeps
+   *  working for viewers who bookmarked it. Falls back to a new room when the
+   *  relay no longer knows the old one. */
+  async start(existing = null) {
+    let room = null, pub = null;
+    this.reused = false;
+    if (existing && existing.room && existing.pub && existing.key) {
+      try {
+        const r = await fetch(`${API}/room/${existing.room}`);
+        if (r.ok) { room = existing.room; pub = existing.pub; this.keyB64 = existing.key; this.reused = true; }
+        else this.log(`live: earlier room ${existing.room} is gone (${r.status}) - making a new one`);
+      } catch (e) { this.log(`live: could not check the earlier room: ${e.message} - making a new one`); }
+    }
+    if (!room) { ({ room, pub } = await j('room', { method: 'POST' })); this.keyB64 = makeKeyB64(); }
     this.room = room; this.pubToken = pub;
-    this.keyB64 = makeKeyB64(); this.key = await importKey(this.keyB64);
+    this.key = await importKey(this.keyB64);
     this.link = shareLink(location.origin, room, this.keyB64);
-    this.log(`live share room ${room} created`);
+    this.log(`live share room ${room} ${this.reused ? 'reused' : 'created'}`);
     this.sig = new Signal(room, 'pub', pub, this.log);
     this.sig.on((m) => this.onSignal(m));
     this.sig.onConn = (up) => this.onSigConn(up);
@@ -155,6 +167,7 @@ export class Publisher {
     return this.link;
   }
 
+  get credentials() { return { room: this.room, pub: this.pubToken, key: this.keyB64, at: Date.now() }; }
   onSigConn(up) {
     this.state.sig = up; this.emit();
     // The relay forgets the session when this socket closes - even a 4 s blink
