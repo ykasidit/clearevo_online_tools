@@ -22,7 +22,7 @@ import { timeToGo, splitHours, Ema, Trend } from './trend.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.14';
+export const APP_VERSION = '0.9.15';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -658,16 +658,29 @@ async function freshHandle(device) {
   return device;
 }
 
+// Android's BLE stack often refuses the first GATT connect outright
+// ("Connection attempt failed", status 133) and accepts the next one a second
+// later - seen live 2026-09-18: three taps, third one worked. So one tap makes
+// up to CONNECT_TRIES attempts before the failure is shown.
+const CONNECT_TRIES = 3, CONNECT_GAP_MS = 1500;
+const retryableConnectError = (e) => !/cancel|not found|no such|permission/i.test(e.message);
 async function connectTo(p, device) {
   const name = device.name || device.id;
   const CONNECT_S = 15;
-  let left = CONNECT_S;
-  const show = () => { if (p.isActive) setStatus(() => T.connectingTo(name, left)); setCount(p, () => T.connectingTo(name, left)); };
+  let left = CONNECT_S, attempt = 1;
+  const show = () => { const txt = () => (attempt > 1 ? T.connectingRetry(name, left, attempt, CONNECT_TRIES) : T.connectingTo(name, left)); if (p.isActive) setStatus(txt); setCount(p, txt); };
   p.connectPending = true; show(); refreshCard();
   const ticker = setInterval(() => { left = Math.max(0, left - 1); show(); }, 1000);
   $('connectBig').disabled = true;
   try {
-    await p.bms.connect(device, { timeoutMs: CONNECT_S * 1000 });
+    for (;;) {
+      try { await p.bms.connect(device, { timeoutMs: CONNECT_S * 1000 }); return; } catch (err) {
+        if (attempt >= CONNECT_TRIES || !retryableConnectError(err) || p.userDisconnect) throw err;
+        p.plog(`connect attempt ${attempt} failed: ${err.message} - retrying`);
+        attempt++; left = CONNECT_S; show();
+        await new Promise((r) => setTimeout(r, CONNECT_GAP_MS));
+      }
+    }
   } finally {
     p.connectPending = false; clearInterval(ticker); $('connectBig').disabled = false; refreshCard();
   }
@@ -686,7 +699,7 @@ async function startConnect(p) {
   try {
     const fresh = !p;
     if (fresh) p = new Pack(`bt-${++packSeq}`, `BMS ${packs.size + 1 - (packs.size && [...packs.values()].some((x) => x.demo) ? 1 : 0)}`);
-    else showReconnectIdle(p);
+    else { showReconnectIdle(p); p.userDisconnect = false; }   // an explicit Connect tap lifts an earlier Cancel
     try {
       if (p.device && p.device.gatt.connected) {
         const gone = new Promise((res) => p.device.addEventListener('gattserverdisconnected', res, { once: true }));
@@ -704,7 +717,13 @@ async function startConnect(p) {
     setStatus(err.message, 'bad');
     log(`connect failed: ${err.message}`);
     if (!/cancelled/i.test(err.message)) toast(T.couldNot(err.message) + T.oneAppToast);
-    if (p && packs.has(p.id)) { showReconnectIdle(p); refreshCard(); }
+    if (p && packs.has(p.id)) {
+      // a device was picked but would not connect: keep trying on the countdown
+      // (Reconnect now is offered there) instead of dropping back to the chooser
+      if (p.device && !/cancelled/i.test(err.message) && $('autoRe').checked) { p.offlineThunk = () => T.offlineDrop(p.label); startReconnectCountdown(p, 5); }
+      else showReconnectIdle(p);
+      refreshCard();
+    }
   }
 }
 $('connectBig').addEventListener('click', () => startConnect(null));
@@ -755,7 +774,7 @@ function renderQr(text, c = $('qrCanvas')) {
 }
 function showQr(show) {
   const ok = show && publisher && renderQr(publisher.link);
-  $('qrPanel').hidden = !ok;
+  $('qrPanel').hidden = !ok; if (ok) $('qrPanel').open = true;
   $('qrShow').hidden = !publisher || ok;
   $('qrLink').textContent = publisher ? publisher.link : '';
 }
@@ -947,8 +966,8 @@ async function stopTv() {
 }
 (function () {
   try { const r = localStorage.getItem('batray_tv_res'); if (r && [...$('tvRes').options].some((o) => o.value === r)) $('tvRes').value = r; } catch {}
-  $('tv').addEventListener('click', () => { const p = $('tvPanel'); p.hidden = !p.hidden; if (!p.hidden) showQr(false); });
-  $('tvClose').addEventListener('click', () => { $('tvPanel').hidden = true; });
+  $('tv').addEventListener('click', () => { const p = $('tvPanel'); p.hidden = !p.hidden; if (!p.hidden) { p.open = true; p.scrollIntoView({ block: 'start', behavior: 'smooth' }); } });
+  $('tvClose').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); $('tvPanel').hidden = true; });
   $('tvStart').addEventListener('click', () => startTv().catch(() => {}));
   $('tvStop').addEventListener('click', stopTv);
   $('tvCast').addEventListener('click', () => { const v = $('tvVideo'); if (v.remote) v.remote.prompt().catch((e) => toast(T.tvFailed(e.message), 8000)); });

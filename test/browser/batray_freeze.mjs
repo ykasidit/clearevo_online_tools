@@ -55,12 +55,13 @@ const FAKE = `
   char.writeValueWithoutResponse = async () => {};
   const gatt = {
     connected: false,
-    connect: async () => { window.__connects = (window.__connects || 0) + 1; gatt.connected = true; return { getPrimaryService: async () => ({ getCharacteristic: async () => char }) }; },
+    connect: async () => { window.__connects = (window.__connects || 0) + 1; if (window.__failConnects > 0) { window.__failConnects--; throw new Error('Connection Error: Connection attempt failed.'); } gatt.connected = true; return { getPrimaryService: async () => ({ getCharacteristic: async () => char }) }; },
     disconnect: () => { if (!gatt.connected) return; gatt.connected = false; window.__dev.dispatchEvent(new Event('gattserverdisconnected')); },
   };
   const dev = new EventTarget(); dev.id = 'fake-1'; dev.name = 'n11'; dev.gatt = gatt;
   window.__dev = dev;
-  navigator.bluetooth = { requestDevice: async () => dev, getAvailability: async () => true, getDevices: async () => [dev] };
+  window.__failConnects = 0; window.__requestDevices = 0;
+  navigator.bluetooth = { requestDevice: async () => { window.__requestDevices++; return dev; }, getAvailability: async () => true, getDevices: async () => [dev] };
   window.__notify = (bytes) => { char.value = new DataView(Uint8Array.from(bytes).buffer); char.dispatchEvent(new Event('characteristicvaluechanged')); };
 `;
 await send('Page.addScriptToEvaluateOnNewDocument', { source: FAKE });
@@ -74,12 +75,16 @@ const notify = (frame, times = 1) => evalJs(`for (let i = 0; i < ${times}; i++) 
 let fails = 0;
 const check = (name, cond, got) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : ` - got ${JSON.stringify(got)}`}`); if (!cond) fails++; };
 
-await evalJs(`document.getElementById('connectBig').click(); 1`);
-await sleep(600);
+// Android often refuses the first GATT connect ("Connection attempt failed") and
+// takes the next: one tap must retry on its own, without reopening the chooser
+await evalJs(`window.__failConnects = 2; document.getElementById('connectBig').click(); 1`);
+await sleep(4500);
 await notify(AIO_32S_DEV); await notify(OWNER_32S_CELL);
 await sleep(1200);
 let s = await state();
+const tries = await evalJs(`({ connects: window.__connects, choosers: window.__requestDevices })`);
 check('a connected pack shows readings', s.gatt === true && s.soc !== '-' && /n11/.test(s.stat), s);
+check('two refused GATT connects were retried by the same tap: one chooser, three attempts', tries.choosers === 1 && tries.connects === 3, tries);
 // no adapter-state probe any more (2026-09-17): the app warns once to keep
 // Bluetooth on (toast) and keeps a line under the readings while connected
 const bt = await evalJs(`({ toast: document.getElementById('toast').textContent, toastShown: !document.getElementById('toast').hidden, note: !document.getElementById('btNote').hidden, meters: document.querySelectorAll('.meter').length, packV: document.getElementById('fSoh').textContent, rows: document.getElementById('secondary').textContent })`);
@@ -141,6 +146,20 @@ check('...and stays up once its first frame arrives', s.gatt === true && /^conne
 // the session trend appears once the pack has been read for 30 s (frames above span more than that)
 const tr = await evalJs(`({ shown: !document.getElementById('trendCard').hidden, energy: document.getElementById('trendEnergy').textContent, w: document.getElementById('trend').width })`);
 check('the session trend card shows with an energy line once 30 s of readings exist', tr.shown && /charged .* · discharged/.test(tr.energy) && tr.w > 100, tr);
+
+// --- a picked device that refuses all attempts goes to the countdown, never back to the chooser ---
+await evalJs(`window.__dev.gatt.disconnect(); 1`); await sleep(500);
+await evalJs(`{ const re3 = document.getElementById('autoRe'); if (!re3.checked) re3.click(); } document.getElementById('cancelRe').click(); 1`); await sleep(300);
+const before = await evalJs(`({ connects: window.__connects, choosers: window.__requestDevices })`);
+await evalJs(`window.__failConnects = 99; document.getElementById('connectAgain').click(); 1`);
+await sleep(6500);                                                         // 3 attempts with 1.5 s gaps, then the countdown
+const cd2 = await evalJs(`({ count: document.getElementById('reCount').textContent, countdown: !document.getElementById('reState').hidden, idle: !document.getElementById('reIdle').hidden, connects: window.__connects, choosers: window.__requestDevices })`);
+check('after three refused attempts the pack sits on the reconnect countdown, not on the Connect button', cd2.countdown && !cd2.idle && cd2.connects - before.connects === 3 && cd2.choosers - before.choosers === 1 && /reconnecting to n11 in/.test(cd2.count), { ...cd2, before });
+await evalJs(`window.__failConnects = 0; 1`);
+await sleep(9000);                                                         // the countdown's own attempt now succeeds
+await notify(OWNER_32S_CELL); await sleep(500);
+s = await state();
+check('...and the countdown brings it back once the BMS accepts', s.gatt === true && /^connected/i.test(s.stat), s);
 
 // --- share link as a QR code: the other phone just scans the screen ---
 const qr = await evalJs(`(() => {
