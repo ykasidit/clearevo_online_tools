@@ -88,8 +88,20 @@ const ups = await evalJs(`window.__tvUploads.map((u) => ({ path: u.path, dur: u.
 check('an init segment and at least three media segments were uploaded within 9.5 s', ups[0] && ups[0].path === 'init.mp4' && ups.filter((u) => u.path.startsWith('seg/')).length >= 3, ups);
 check('media segments carry their duration and are numbered from 0', ups.filter((u) => u.path.startsWith('seg/')).every((u, i) => u.path === `seg/${i}` && Math.abs(+u.dur - 2) < 0.6), ups);
 check('the state counts segments and shows the fake TV pull', s.live && s.segs >= 3 && s.codec === 'vp09.00.10.08' && s.hits === 3 && s.pullAgeS === 2 && !s.error, s);
-const ui = await evalJs(`({ stat: document.getElementById('tvStat').textContent, note: !document.getElementById('tvNote').hidden, link: document.getElementById('tvLink').textContent, videoSrc: document.getElementById('tvVideo').getAttribute('src'), canHls: !!document.getElementById('tvVideo').canPlayType('application/vnd.apple.mpegurl'), noPreview: !document.getElementById('tvNoPreview').hidden, castRow: !document.getElementById('tvCastRow').hidden })`);
-check('status line, status-bar note and link are set; preview and Cast follow the browser\'s own HLS support', /segments/.test(ui.stat) && ui.note && ui.link === url && (ui.canHls ? ui.videoSrc === url && ui.castRow && !ui.noPreview : ui.videoSrc === null && !ui.castRow && ui.noPreview), ui);
+const ui = await evalJs(`({ stat: document.getElementById('tvStat').textContent, note: !document.getElementById('tvNote').hidden, link: document.getElementById('tvLink').textContent, videoSrc: document.getElementById('tvVideo').getAttribute('src'), canHls: !!document.getElementById('tvVideo').canPlayType('application/vnd.apple.mpegurl'), noPreview: !document.getElementById('tvNoPreview').hidden, castRow: !document.getElementById('tvCastRow').hidden, castHint: document.getElementById('tvCastHint').textContent })`);
+check('status line, status-bar note and link are set; the preview follows the browser\'s own HLS support; Cast is always offered', /segments/.test(ui.stat) && ui.note && ui.link === url && ui.castRow && /Google/.test(ui.castHint) && (ui.canHls ? ui.videoSrc === url && !ui.noPreview : ui.videoSrc === null && ui.noPreview), ui);
+
+// Cast: with a fake cast library in place, the button loads our playlist as live HLS on the default receiver
+await evalJs(`
+  window.__castLoads = []; const dev = { friendlyName: 'Living room TV' };
+  const sess = { getCastDevice: () => dev, loadMedia: async (req) => { window.__castLoads.push({ url: req.media.contentId, type: req.media.contentType, stream: req.media.streamType, seg: req.media.hlsSegmentFormat, autoplay: req.autoplay, title: req.media.metadata && req.media.metadata.title }); } };
+  const ctx = { opts: null, setOptions(o) { this.opts = o; }, addEventListener() {}, getCurrentSession: () => sess, requestSession: async () => {} };
+  window.chrome = window.chrome || {}; window.chrome.cast = { media: { DEFAULT_MEDIA_RECEIVER_APP_ID: 'CC1AD845', StreamType: { LIVE: 'LIVE' }, HlsSegmentFormat: { FMP4: 'fmp4' }, HlsVideoSegmentFormat: { FMP4: 'fmp4' }, MediaInfo: function (id, type) { this.contentId = id; this.contentType = type; }, GenericMediaMetadata: function () {}, LoadRequest: function (m) { this.media = m; } }, AutoJoinPolicy: { ORIGIN_SCOPED: 'origin_scoped' } };
+  window.cast = { framework: { CastContext: { getInstance: () => ctx }, CastContextEventType: { CAST_STATE_CHANGED: 'x' }, CastState: {} } };
+  1`);
+await evalJs(`document.getElementById('tvCast').click(); 1`); await sleep(500);
+const cst = await evalJs(`({ loads: window.__castLoads, hint: document.getElementById('tvCastHint').textContent, opts: window.cast.framework.CastContext.getInstance().opts, scripts: [...document.scripts].filter((s) => /gstatic/.test(s.src)).length })`);
+check('Cast loads the playlist as live HLS (fmp4) on the default media receiver and names the TV', cst.loads.length === 1 && cst.loads[0].url === url && cst.loads[0].type === 'application/x-mpegURL' && cst.loads[0].stream === 'LIVE' && cst.loads[0].seg === 'fmp4' && cst.loads[0].autoplay === true && /BatRay/.test(cst.loads[0].title) && cst.opts.receiverApplicationId === 'CC1AD845' && /Living room TV/.test(cst.hint) && cst.scripts === 0, cst);
 
 // stop: the last fragment is flushed and the relay is told
 await evalJs(`window.__batrayTest.stopTv()`);

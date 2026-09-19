@@ -23,7 +23,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.17';
+export const APP_VERSION = '0.9.18';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -1022,18 +1022,91 @@ function renderTv(s) {
   if (!tv || !s.live) return;
   $('tvLink').textContent = s.url;
   const v = $('tvVideo');
-  // Chrome on Android plays HLS itself (and casts it); desktop Chrome does not,
-  // so there the preview and the Cast button stay hidden and the link/QR is the way.
+  // Chrome on Android plays HLS itself; desktop Chrome does not, so the preview
+  // shows only where it can. Cast is offered everywhere the cast library runs.
   const canHls = !!v.canPlayType('application/vnd.apple.mpegurl');
-  $('tvPreviewRow').hidden = !canHls; $('tvCastRow').hidden = !canHls; $('tvNoPreview').hidden = canHls;
-  if (canHls && s.segs >= 2 && !v.getAttribute('src')) { v.src = s.url; v.play().catch(() => {}); watchCast(v); }
+  $('tvPreviewRow').hidden = !canHls; $('tvNoPreview').hidden = canHls;
+  // a live playlist needs a few segments before a player will start: wait for 3
+  if (canHls && s.segs >= 3 && !v.getAttribute('src')) startPreview(v, s.url);
   const pull = s.pullAgeS === null || s.pullAgeS === undefined ? T.tvNotPulled : T.tvPulled(s.pullAgeS);
-  $('tvStat').textContent = (s.error ? T.tvErr(s.error) + ' · ' : '') + T.tvStat(s.segs, Math.round(s.bytes / 1024), pull) + (s.segs < 2 ? ' · ' + T.tvStarting : '');
+  $('tvStat').textContent = (s.error ? T.tvErr(s.error) + ' · ' : '') + T.tvStat(s.segs, Math.round(s.bytes / 1024), pull) + (s.segs < 3 ? ' · ' + T.tvStarting : '');
 }
-function watchCast(v) {
-  if (!v.remote || !v.remote.watchAvailability) { $('tvCastHint').textContent = T.tvCastUnsup; return; }
-  v.remote.watchAvailability((avail) => { $('tvCast').disabled = !avail; $('tvCastHint').textContent = avail ? T.tvCastReady : T.tvCastNone; })
-    .catch(() => { $('tvCast').disabled = false; $('tvCastHint').textContent = ''; });   // availability unknown: let the user try
+function startPreview(v, url) {
+  v.src = url;
+  let tries = 0;
+  const kick = () => v.play().catch((e) => log(`tv preview: play refused: ${e.message}`));
+  v.addEventListener('loadedmetadata', () => { log('tv preview: metadata loaded'); kick(); });
+  v.addEventListener('canplay', kick, { once: true });
+  v.addEventListener('error', () => {
+    const err = v.error ? `${v.error.code} ${v.error.message || ''}` : '?';
+    log(`tv preview: player error ${err} (try ${tries + 1})`);
+    if (tv && tries++ < 5) setTimeout(() => { if (tv && $('tvVideo') === v) { v.src = url; v.load(); kick(); } }, 4000);   // the live window has grown meanwhile
+  });
+  kick();
+}
+// ---- Cast to TV: Google's cast sender library with the built-in media
+// receiver (no registration, no receiver app of ours). Loaded from Google
+// only when the user taps Cast, and the panel says so. Chrome's own remote
+// playback for a <video> never marks an HLS source castable (Chromium keeps a
+// source "incompatible until proved otherwise" and nothing proves HLS), so
+// this is the path every video site uses.
+const CAST_SDK = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';
+let castLoad = null, castWired = false;
+function loadCastSdk() {
+  if (window.cast && window.cast.framework) return Promise.resolve();
+  if (castLoad) return castLoad;
+  castLoad = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('cast library did not load')), 15000);
+    window.__onGCastApiAvailable = (ok, reason) => { clearTimeout(timer); if (ok) resolve(); else reject(new Error(reason || 'cast not available in this browser')); };
+    const sc = document.createElement('script'); sc.src = CAST_SDK; sc.async = true;
+    sc.onerror = () => { clearTimeout(timer); reject(new Error('cast library blocked or offline')); };
+    document.head.appendChild(sc);
+    log('cast: loading the cast library');
+  }).catch((e) => { castLoad = null; throw e; });
+  return castLoad;
+}
+function castHint(txt, disabled = false) { $('tvCastHint').textContent = txt; $('tvCast').disabled = disabled; }
+function wireCastState() {
+  if (castWired) return; castWired = true;
+  const ctx = cast.framework.CastContext.getInstance();
+  ctx.setOptions({ receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID, autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED });
+  ctx.addEventListener(cast.framework.CastContextEventType.CAST_STATE_CHANGED, (e) => {
+    log(`cast: state ${e.castState}`);
+    const S = cast.framework.CastState;
+    if (e.castState === S.NO_DEVICES_AVAILABLE) castHint(T.tvCastNone);
+    else if (e.castState === S.NOT_CONNECTED) castHint(T.tvCastReady);
+    else if (e.castState === S.CONNECTING) castHint(T.tvCastConnecting);
+    else if (e.castState === S.CONNECTED) { const sess = ctx.getCurrentSession(); castHint(T.tvCastConnected(sess ? sess.getCastDevice().friendlyName : '')); }
+  });
+}
+async function castToTv() {
+  if (!tv || !tv.state.url) return;
+  castHint(T.tvCastLoading, true);
+  try {
+    await loadCastSdk();
+    wireCastState();
+    const ctx = cast.framework.CastContext.getInstance();
+    let sess = ctx.getCurrentSession();
+    if (!sess) { castHint(T.tvCastPick, true); await ctx.requestSession(); sess = ctx.getCurrentSession(); }
+    if (!sess) throw new Error('no cast session');
+    const info = new chrome.cast.media.MediaInfo(tv.state.url, 'application/x-mpegURL');
+    info.streamType = chrome.cast.media.StreamType.LIVE;
+    info.hlsSegmentFormat = chrome.cast.media.HlsSegmentFormat.FMP4;
+    info.hlsVideoSegmentFormat = chrome.cast.media.HlsVideoSegmentFormat.FMP4;
+    info.metadata = new chrome.cast.media.GenericMediaMetadata(); info.metadata.title = `BatRay · ${channelName || (active ? active.label : '')}`;
+    const req = new chrome.cast.media.LoadRequest(info); req.autoplay = true;
+    await sess.loadMedia(req);
+    const dev = sess.getCastDevice ? sess.getCastDevice().friendlyName : '';
+    log(`cast: playing on "${dev}"`);
+    castHint(T.tvCastConnected(dev));
+    toast(T.tvCastConnected(dev), 8000);
+  } catch (e) {
+    const msg = e && (e.message || e.code || String(e));
+    if (/cancel/i.test(msg)) { castHint(T.tvCastReady); return; }
+    log(`cast: ${msg}`);
+    castHint(T.tvCastFailed(msg));
+    toast(T.tvCastFailed(msg), 9000);
+  }
 }
 async function startTv(opts = {}) {
   if (tv) return tv.state.url;
@@ -1044,7 +1117,7 @@ async function startTv(opts = {}) {
   tv = t;
   try {
     const url = await t.start();
-    $('tvStop').hidden = false; $('tvStart').hidden = true; $('tvRes').disabled = true; $('tvLive').hidden = false; $('tvNote').hidden = false; renderTv(t.state); syncWake();
+    $('tvStop').hidden = false; $('tvStart').hidden = true; $('tvRes').disabled = true; $('tvLive').hidden = false; $('tvNote').hidden = false; castHint(T.tvCastLoads); renderTv(t.state); syncWake();
     toast(T.tvStarting, 9000);
     return url;
   } catch (e) {
@@ -1067,13 +1140,13 @@ async function stopTv() {
   $('tvClose').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); $('tvPanel').hidden = true; });
   $('tvStart').addEventListener('click', () => startTv().catch(() => {}));
   $('tvStop').addEventListener('click', stopTv);
-  $('tvCast').addEventListener('click', () => { const v = $('tvVideo'); if (v.remote) v.remote.prompt().catch((e) => toast(T.tvFailed(e.message), 8000)); });
+  $('tvCast').addEventListener('click', () => castToTv());
   $('tvCopy').addEventListener('click', async () => { if (!tv) return; try { await navigator.clipboard.writeText(tv.state.url); toast(T.linkCopied, 6000); } catch { toast(T.linkCopyManual, 8000); } });
   $('tvQrBtn').addEventListener('click', () => { const c = $('tvQr'); if (!tv) return; if (c.hidden) { renderQr(tv.state.url, c); c.hidden = false; } else c.hidden = true; });
   window.addEventListener('pagehide', () => { if (tv) { const t = tv; tv = null; t.stop(); } });
 })();
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
-  openSharePanel, beginShare, startTv, stopTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
+  openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
 

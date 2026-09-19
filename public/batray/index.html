@@ -247,14 +247,14 @@ body.view #empty,body.view #oneApp{display:none}
       <details class="card" id="tvPanel" hidden open>
         <summary><span data-i18n="tvH">Show on TV</span> <span class="note" data-i18n="tvSummary">Chromecast / Google TV, TV browser or VLC - not encrypted</span> <button id="tvClose" type="button" class="linkbtn" data-i18n="close">Close</button></summary>
         <div class="tvpanel">
-    <div class="tvnote" data-i18n="tvIntro">Turns this picture into a small video a TV can play, about 15 s behind: press Cast for a Chromecast or Google TV on this Wi-Fi, or open the link in a TV browser or a player such as VLC.</div>
+    <div class="tvnote" data-i18n="tvIntro">Turns this picture into a small video a TV can play, about 20 s behind: press Cast for a Chromecast or Google TV on this Wi-Fi (this loads Google's cast library, only then), or open the link in a TV browser or a player such as VLC.</div>
       <div class="tvnote warn" data-i18n="tvPrivacy">Not encrypted, unlike Share live: clearevo.com holds the last few seconds of the picture so the TV can fetch it, and anyone with the link can watch. Stop it when you are done.</div>
       <div class="tvrow"><label><span data-i18n="tvRes">resolution</span> <select id="tvRes"><option value="1280x720">720p</option><option value="1920x1080" selected>1080p</option></select></label> <button id="tvStart" type="button" class="demobtn" style="padding:6px 16px" data-i18n="tvStart">Start TV stream</button> <button id="tvStop" type="button" class="linkbtn" hidden data-i18n="tvStop">stop TV stream</button></div>
       <div id="tvLive" hidden>
         <div class="tvnote" id="tvStat"></div>
         <div class="tvrow" id="tvPreviewRow"><video id="tvVideo" playsinline muted controls></video></div>
-        <div class="tvrow" id="tvCastRow"><button id="tvCast" type="button" class="demobtn" style="padding:6px 16px" data-i18n="tvCast" disabled>Cast to TV</button> <span class="tvnote" id="tvCastHint"></span></div>
-        <div class="tvnote" id="tvNoPreview" hidden data-i18n="tvNoPreview">This browser cannot play the stream itself, so there is no preview or Cast button here (Chrome on Android has both). Use the link or the QR code on the TV.</div>
+        <div class="tvrow" id="tvCastRow"><button id="tvCast" type="button" class="demobtn" style="padding:6px 16px" data-i18n="tvCast">Cast to TV</button> <span class="tvnote" id="tvCastHint"></span></div>
+        <div class="tvnote" id="tvNoPreview" hidden data-i18n="tvNoPreview">This browser cannot play the stream itself, so there is no preview here (Chrome on Android has one). Cast, the link or the QR code still work.</div>
         <div class="tvnote" data-i18n="tvOpenHint">TV browser or a player such as VLC: open this link</div>
         <div class="qrlink" id="tvLink"></div>
         <div class="tvrow"><button id="tvCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button> · <button id="tvQrBtn" type="button" class="linkbtn" data-i18n="qrShow">show QR</button></div>
