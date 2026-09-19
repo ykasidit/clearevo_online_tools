@@ -63,6 +63,18 @@ const FAKE = `
   window.__failConnects = 0; window.__requestDevices = 0;
   navigator.bluetooth = { requestDevice: async () => { window.__requestDevices++; return dev; }, getAvailability: async () => true, getDevices: async () => [dev] };
   window.__notify = (bytes) => { char.value = new DataView(Uint8Array.from(bytes).buffer); char.dispatchEvent(new Event('characteristicvaluechanged')); };
+  // a fake Screen Wake Lock the test can drop, as a phone does after hours
+  window.__locks = [];
+  Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request: async (type) => {
+    if (window.__refuseWake) throw new DOMException('denied', 'NotAllowedError');
+    const l = new EventTarget(); l.type = type; l.released = false;
+    l.release = async () => { if (l.released) return; l.released = true; l.dispatchEvent(new Event('release')); };
+    window.__locks.push(l); return l;
+  } } });
+  window.__dropWake = () => { const l = window.__locks.at(-1); if (l) l.release(); };
+  window.__plays = [];
+  const origPlay = HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play = function () { window.__plays.push(this.id + ':' + (this.getAttribute('src') || '').split('/').pop() + ':muted=' + this.muted + ':vol=' + this.volume); return origPlay.call(this); };
 `;
 await send('Page.addScriptToEvaluateOnNewDocument', { source: FAKE });
 await send('Page.navigate', { url: `${BASE}/batray/?test` });   // ?test exposes window.__batrayTest (renderQr)
@@ -160,6 +172,27 @@ await sleep(9000);                                                         // th
 await notify(OWNER_32S_CELL); await sleep(500);
 s = await state();
 check('...and the countdown brings it back once the BMS accepts', s.gatt === true && /^connected/i.test(s.stat), s);
+
+// --- the screen lock: asked for again when the phone lets go of it, then a silent video (old Sony slept after hours, 2026-09-19) ---
+const wakeState = () => evalJs(`({ locks: window.__locks.length, ...window.__batrayTest.wakeState(), plays: window.__plays.filter((p) => /keepawake/.test(p)), paused: document.getElementById('keepVideo').paused, muted: document.getElementById('keepVideo').muted, volume: document.getElementById('keepVideo').volume, note: !document.getElementById('wakeVideo').hidden, saved: localStorage.getItem('batray_keepawake') })`);
+let wk = await wakeState();
+check('a connected pack holds the screen wake lock, no video', wk.lock && wk.locks >= 1 && !wk.video && wk.plays.length === 0, wk);
+const locks0 = wk.locks;
+await evalJs(`window.__dropWake(); 1`); await sleep(2600);                 // first drop: asked again after 2 s, still no video
+wk = await wakeState();
+check('a lock the system drops while the tab is in front is asked for again', wk.lock && wk.locks === locks0 + 1 && wk.drops === 1 && !wk.video, wk);
+await evalJs(`window.__dropWake(); 1`); await sleep(800);                  // second drop: the video steps in at once
+wk = await wakeState();
+check('a second drop starts the keep-awake video, unmuted at 1 % volume, with a status note', wk.drops === 2 && wk.video && !wk.paused && wk.muted === false && Math.abs(wk.volume - 0.01) < 1e-6 && wk.plays.length === 1 && wk.note, wk);
+await sleep(4000);                                                         // 4 s back-off, then the lock is asked for again too
+wk = await wakeState();
+check('...and the lock itself is still asked for again', wk.lock && wk.locks === locks0 + 2, wk);
+const setKeep = (v) => evalJs(`{ const s = document.getElementById('keepAwake'); s.value = '${v}'; s.dispatchEvent(new Event('change')); } 1`);
+await setKeep('never'); await sleep(300); wk = await wakeState();
+check('"never" stops the video and is remembered', !wk.video && wk.paused && !wk.note && wk.saved === 'never', wk);
+await setKeep('always'); await sleep(500); wk = await wakeState();
+check('"always" plays it even while the lock is held', wk.video && !wk.paused && wk.lock && wk.saved === 'always', wk);
+await setKeep('auto');
 
 // --- the share setup prefills the BMS's own name ---
 await evalJs(`localStorage.removeItem('batray_share_name'); document.getElementById('share').click(); 1`); await sleep(200);

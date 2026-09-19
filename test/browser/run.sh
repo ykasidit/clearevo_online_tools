@@ -24,7 +24,7 @@ cd "$(dirname "$0")"
 [ -f data/ct1.dcm ] || python3 gen_dicom.py
 CHROME=$(command -v google-chrome || command -v chromium-browser || command -v chromium)
 PROFILE=$(mktemp -d)
-"$CHROME" --headless=new --disable-gpu --remote-debugging-port=9333 --window-size=1200,800 \
+"$CHROME" --headless=new --disable-gpu --remote-debugging-port=9333 --window-size=1200,800 --autoplay-policy=no-user-gesture-required \
   --user-data-dir="$PROFILE" about:blank >/dev/null 2>&1 &
 CHROME_PID=$!
 SRV_PID=""

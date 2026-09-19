@@ -23,7 +23,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.18';
+export const APP_VERSION = '0.9.19';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -79,7 +79,7 @@ function logHeaderLines() {
     `net: online=${navigator.onLine} · type ${c.type || c.effectiveType || '?'} · downlink ${c.downlink ?? '?'} Mbps · rtt ${c.rtt ?? '?'} ms · saveData ${c.saveData ?? '?'}`,
     `lang: ui=${$('lang').value} · browser ${navigator.language} · ${(navigator.languages || []).join(',')}`,
     `features: secure=${yn(isSecureContext)} bluetooth=${yn(!!navigator.bluetooth)} adv=${yn(typeof BluetoothDevice !== 'undefined' && 'watchAdvertisements' in BluetoothDevice.prototype)} getDevices=${yn(navigator.bluetooth && navigator.bluetooth.getDevices)} availability=${yn(navigator.bluetooth && navigator.bluetooth.getAvailability)} wakeLock=${yn('wakeLock' in navigator)} notifications=${typeof Notification === 'undefined' ? 'none' : Notification.permission} sw=${navigator.serviceWorker && navigator.serviceWorker.controller ? 'controlled' : 'none'} webCodecs=${yn(typeof VideoEncoder !== 'undefined')} hls=${v.canPlayType('application/vnd.apple.mpegurl') || 'no'} remotePlayback=${yn('remote' in v)} storage=${yn(storageOk)} clipboard=${yn(navigator.clipboard && navigator.clipboard.writeText)}`,
-    `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutoffPct}% tvRes=${$('tvRes').value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
+    `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutoffPct}% keepAwake=${keepAwakeMode} tvRes=${$('tvRes').value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
   ];
 }
 // what the header cannot know synchronously: battery, codec support, adapter state
@@ -306,22 +306,90 @@ function applyLang(code) {
 }
 
 // ---- wake lock: any wanted session keeps the screen (and BLE) awake ----
-let wakeLock = null, wakeWanted = false;
+// Two layers (an old Sony phone let the screen lock after a few hours with
+// BatRay in front, 2026-09-19). Layer 1: the Screen Wake Lock API, asked for
+// again whenever the phone lets go of it while the tab is still visible, with
+// a 2 s .. 30 s back-off and a once-a-minute watchdog in the heartbeat.
+// Layer 2: when the API is missing, refuses, or has been dropped twice, a
+// tiny near-silent video keeps playing: Chromium's VideoWakeLock holds the
+// screen for a playing video that is audible (has an audio track AND volume
+// > 0) on a visible page, or visible and >= 20 % of the viewport - so this
+// one must NOT be muted and keepawake.webm carries a silent opus track.
+// The Notes card sets it to auto (default) / always / never.
+let wakeLock = null, wakeWanted = false, wakeDrops = 0, wakeRefusals = 0, wakeRetryTimer = null;
+const KEEP_AWAKE_KEY = 'batray_keepawake', WAKE_DROPS_FOR_VIDEO = 2;
+let keepAwakeMode = 'auto', keepVideo = null, keepAwakeOn = false;
+try { const v = localStorage.getItem(KEEP_AWAKE_KEY); if (['auto', 'always', 'never'].includes(v)) keepAwakeMode = v; } catch {}
+$('keepAwake').value = keepAwakeMode;
+$('keepAwake').addEventListener('change', () => {
+  keepAwakeMode = $('keepAwake').value;
+  try { localStorage.setItem(KEEP_AWAKE_KEY, keepAwakeMode); } catch {}
+  log(`keep-awake video: ${keepAwakeMode}`); syncKeepAwake();
+});
+function wantVideo() {
+  if (!wakeWanted || keepAwakeMode === 'never') return false;
+  if (keepAwakeMode === 'always') return true;
+  return !('wakeLock' in navigator) || wakeRefusals > 0 || wakeDrops >= WAKE_DROPS_FOR_VIDEO;
+}
+async function syncKeepAwake() {
+  const want = wantVideo();
+  if (want && !keepAwakeOn) {
+    if (!keepVideo) {
+      keepVideo = $('keepVideo');
+      keepVideo.src = 'keepawake.webm';                 // literal name: build.sh hashes it
+      keepVideo.muted = false; keepVideo.volume = 0.01; // > 0: audible to Chrome, not to people
+      keepVideo.addEventListener('pause', () => {       // paused by the browser (a call, audio focus): try again
+        if (!keepAwakeOn) return;
+        keepAwakeOn = false; $('wakeVideo').hidden = true; log('keep-awake video paused by the browser');
+        setTimeout(syncKeepAwake, 5000);
+      });
+    }
+    try {
+      await keepVideo.play(); keepAwakeOn = true;
+      log(`keep-awake video playing (${keepAwakeMode}, lock=${!!wakeLock} drops=${wakeDrops} refusals=${wakeRefusals})`);
+    } catch (err) { log(`keep-awake video refused: ${err.name} ${err.message}`); }
+  } else if (!want && keepAwakeOn) {
+    keepAwakeOn = false; keepVideo.pause(); log('keep-awake video stopped');
+  }
+  $('wakeVideo').hidden = !keepAwakeOn;
+}
+function scheduleWakeRetry() {
+  if (wakeRetryTimer) return;
+  const delay = Math.min(30000, 1000 * 2 ** Math.min(5, wakeDrops + wakeRefusals));
+  wakeRetryTimer = setTimeout(() => { wakeRetryTimer = null; if (wakeWanted && document.visibilityState === 'visible') syncWake(); }, delay);
+}
 async function syncWake() {
   wakeWanted = [...packs.values()].some((p) => p.connected || p.reconnecting || !!p.reTimer) || !!publisher || !!(viewer && viewer.state.live) || !!(tv && tv.state.live);
   const el = $('wake');
-  if (!('wakeLock' in navigator)) { el.hidden = true; return; }
-  if (wakeWanted && !wakeLock && document.visibilityState === 'visible') {
-    try {
-      wakeLock = await navigator.wakeLock.request('screen');
-      wakeLock.addEventListener('release', () => { wakeLock = null; el.hidden = true; log('screen wake lock released'); });
-      log('screen wake lock acquired');
-    } catch (err) { log(`screen wake lock refused: ${err.message}`); }
-  } else if (!wakeWanted && wakeLock) {
-    try { await wakeLock.release(); } catch { /* already gone */ }
-    wakeLock = null;
+  if (!('wakeLock' in navigator)) el.hidden = true;
+  else {
+    if (wakeWanted && !wakeLock && document.visibilityState === 'visible') {
+      try {
+        const lock = await navigator.wakeLock.request('screen');
+        wakeLock = lock;
+        lock.addEventListener('release', () => {
+          if (wakeLock !== lock) return;
+          wakeLock = null; el.hidden = true;
+          if (wakeWanted && document.visibilityState === 'visible') {
+            wakeDrops++;
+            log(`screen wake lock dropped by the system while in front (${wakeDrops}) - asking again`);
+            scheduleWakeRetry();
+          } else log('screen wake lock released');
+          syncKeepAwake();
+        });
+        log('screen wake lock acquired');
+      } catch (err) {
+        wakeRefusals++;
+        log(`screen wake lock refused (${wakeRefusals}): ${err.name} ${err.message}`);
+        scheduleWakeRetry();
+      }
+    } else if (!wakeWanted && wakeLock) {
+      try { await wakeLock.release(); } catch { /* already gone */ }
+      wakeLock = null;
+    }
+    el.hidden = !wakeLock;
   }
-  el.hidden = !wakeLock;
+  await syncKeepAwake();
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && wakeWanted) syncWake(); });
 
@@ -1147,6 +1215,7 @@ async function stopTv() {
 })();
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
+  wakeState: () => ({ lock: !!wakeLock, drops: wakeDrops, refusals: wakeRefusals, video: keepAwakeOn, mode: keepAwakeMode }),
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
 
@@ -1210,7 +1279,8 @@ setInterval(() => {
   const vw = viewer ? `view(live=${viewer.state.live} reader=${viewer.state.reader} path=${viewer.state.path.tier} received=${viewer.state.received} sig=${viewer.state.sig})` : '';
   const tvs = tv ? `tv(segs=${tv.state.segs} kb=${Math.round(tv.state.bytes / 1024)} pull=${tv.state.pullAgeS}s err=${tv.state.error || '-'})` : '';
   const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
-  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} frameAge=${age === null ? '-' : age + 's'} wake=${!!wakeLock} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
+  if (wakeWanted && document.visibilityState === 'visible' && (!wakeLock || (keepAwakeOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
+  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} frameAge=${age === null ? '-' : age + 's'} wake=${!!wakeLock} keep=${keepAwakeOn ? keepAwakeMode : 'off'} drops=${wakeDrops}/${wakeRefusals} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
 }, 60000);
 $('lang').innerHTML = Object.keys(I18N).map((k) => `<option value="${k}">${I18N[k].langName}</option>`).join('');
 $('lang').addEventListener('change', () => { try { localStorage.setItem('batray_lang', $('lang').value); } catch {} log(`language: ${$('lang').value}`); applyLang($('lang').value); });
