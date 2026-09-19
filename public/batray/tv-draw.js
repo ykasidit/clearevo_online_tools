@@ -16,7 +16,7 @@
 // prepares), never from the DOM, so the same picture comes out at any size.
 // Layout mirrors the landscape flow picture: battery, flow line, load/charger,
 // status chips, with fonts sized for a screen across the room.
-// model: { label, soc, battLine, dir: 'chg'|'dis'|'idle', powerTxt, ampsTxt, etaTxt,
+// model: { label, soc, cutoffPct, battLine, dir: 'chg'|'dis'|'idle', powerTxt, ampsTxt, etaTxt,
 //          sysLbl, chips: [{ txt, cls }], updatedTxt, clock, brand, stale, waiting }
 
 const C = { bg: '#0a1626', node: '#0d1f33', edge: '#5bb6e6', dim: '#7fb0d8', text: '#eaf4ff', muted: '#6f8aa6', line: '#26476a', chg: '#5fd39a', dis: '#ffb74d', crit: '#ff8a80', low: '#ffd24a', seg: '#12283f', segOn: '#2aa9e0', bolt: '#8fe3ff', ok: '#5fd39a', bad: '#ff8a80', warn: '#ffd24a' };
@@ -45,28 +45,32 @@ export function drawTvFrame(g, W, H, m) {
   text(g, m.updatedTxt || '', 0.96 * W, 0.115 * H, 32 * s, m.stale ? C.low : C.muted, { align: 'right' });
   if (m.waiting) { text(g, m.waitingTxt || '…', W / 2, H / 2, 64 * s, C.dim, { font: SANS }); footer(g, W, H, s, m); return; }
 
-  // battery node
-  const bx = 0.05 * W, by = 0.26 * H, bw = 0.23 * W, bh = 0.36 * H, r = 26 * s;
+  // battery node: upright, a level that fills from the bottom (0.9.20), 20 % ticks, cut-off line
+  const bx = 0.07 * W, by = 0.20 * H, bw = 0.15 * W, bh = 0.48 * H, r = 26 * s, ly = by + bh / 2;
+  g.fillStyle = C.edge; rrect(g, bx + bw * 0.33, by - 0.035 * H, bw * 0.34, 0.045 * H, 8 * s); g.fill();   // the nub, on top
   g.lineWidth = 8 * s; g.strokeStyle = C.edge; g.fillStyle = C.node; rrect(g, bx, by, bw, bh, r); g.fill(); g.stroke();
-  g.fillStyle = C.edge; rrect(g, bx + bw, by + bh * 0.3, 0.018 * W, bh * 0.4, 8 * s); g.fill();
   const soc = m.soc === null || m.soc === undefined ? null : m.soc;
-  const lit = soc === null ? 0 : Math.min(5, Math.floor(soc / 20));
   const segColor = soc !== null && soc <= 10 ? C.crit : soc !== null && soc <= 25 ? C.low : C.segOn;
-  const pad = bw * 0.06, gap = bw * 0.025, sw = (bw - 2 * pad - 4 * gap) / 5;
-  for (let i = 0; i < 5; i++) { g.fillStyle = i < lit ? segColor : C.seg; g.strokeStyle = C.line; g.lineWidth = 2 * s; rrect(g, bx + pad + i * (sw + gap), by + bh * 0.13, sw, bh * 0.74, 8 * s); g.fill(); g.stroke(); }
-  halo(g, soc === null ? '-' : `${soc}%`, bx + bw / 2, by + bh / 2, 132 * s, 700, C.text);
-  text(g, m.battLine || '', bx + bw / 2, by + bh + 0.06 * H, 44 * s, C.dim);
+  const pad = 14 * s, fx = bx + pad, fy = by + pad, fw = bw - 2 * pad, fh = bh - 2 * pad;
+  g.fillStyle = C.seg; rrect(g, fx, fy, fw, fh, 10 * s); g.fill();
+  if (soc !== null) { const lh = fh * Math.max(0, Math.min(100, soc)) / 100; g.fillStyle = segColor; rrect(g, fx, fy + fh - lh, fw, lh, 10 * s); g.fill(); }
+  g.strokeStyle = '#3d6389'; g.lineWidth = 3 * s; g.beginPath();
+  for (const p of [0.2, 0.4, 0.6, 0.8]) { const ty = fy + fh * (1 - p); g.moveTo(fx, ty); g.lineTo(fx + 18 * s, ty); g.moveTo(fx + fw - 18 * s, ty); g.lineTo(fx + fw, ty); }
+  g.stroke();
+  if (m.cutoffPct > 0) { const cy0 = fy + fh * (1 - m.cutoffPct / 100); g.strokeStyle = C.crit; g.lineWidth = 3 * s; g.setLineDash([8 * s, 8 * s]); g.beginPath(); g.moveTo(fx, cy0); g.lineTo(fx + fw, cy0); g.stroke(); g.setLineDash([]); }
+  halo(g, soc === null ? '-' : `${soc}%`, bx + bw / 2, ly, 100 * s, 700, C.text);
+  text(g, m.battLine || '', bx + bw / 2, by + bh + 0.045 * H, 44 * s, C.dim);
 
-  // system node
-  const sx = 0.72 * W, sw2 = 0.23 * W;
-  g.lineWidth = 8 * s; g.strokeStyle = C.edge; g.fillStyle = C.node; rrect(g, sx, by, sw2, bh, r); g.fill(); g.stroke();
-  const cx = sx + sw2 / 2, cy = by + bh / 2, bs = bh * 0.32;
+  // system node, centred on the flow line
+  const sx = 0.72 * W, sw2 = 0.23 * W, sh = 0.36 * H, sy = ly - sh / 2;
+  g.lineWidth = 8 * s; g.strokeStyle = C.edge; g.fillStyle = C.node; rrect(g, sx, sy, sw2, sh, r); g.fill(); g.stroke();
+  const cx = sx + sw2 / 2, cy = ly, bs = sh * 0.32;
   g.fillStyle = C.bolt; g.beginPath();
   g.moveTo(cx, cy - bs); g.lineTo(cx - bs * 0.7, cy + bs * 0.1); g.lineTo(cx - bs * 0.1, cy + bs * 0.1); g.lineTo(cx - bs * 0.3, cy + bs); g.lineTo(cx + bs * 0.7, cy - bs * 0.15); g.lineTo(cx + bs * 0.1, cy - bs * 0.15); g.closePath(); g.fill();
-  text(g, m.sysLbl || '', cx, by + bh + 0.06 * H, 44 * s, C.dim);
+  text(g, m.sysLbl || '', cx, sy + sh + 0.06 * H, 44 * s, C.dim);
 
   // flow line
-  const x1 = bx + bw + 0.018 * W + 0.012 * W, x2 = sx - 0.012 * W, ly = by + bh / 2;
+  const x1 = bx + bw + 0.012 * W, x2 = sx - 0.012 * W;
   const col = m.dir === 'chg' ? C.chg : m.dir === 'dis' ? C.dis : C.line;
   g.lineCap = 'round'; g.lineWidth = 8 * s; g.strokeStyle = C.line; g.beginPath(); g.moveTo(x1, ly); g.lineTo(x2, ly); g.stroke();
   if (m.dir !== 'idle') {

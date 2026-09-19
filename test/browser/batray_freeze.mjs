@@ -194,6 +194,15 @@ await setKeep('always'); await sleep(500); wk = await wakeState();
 check('"always" plays it even while the lock is held', wk.video && !wk.paused && wk.lock && wk.saved === 'always', wk);
 await setKeep('auto');
 
+// --- the upright battery: a level that fills from the bottom, cut-off line at the inverter's percent (0.9.20) ---
+const bf = await evalJs(`({ soc: document.getElementById('fSoc').textContent, h: +document.getElementById('fFill').getAttribute('height'), y: +document.getElementById('fFill').getAttribute('y'), cls: document.getElementById('fFill').getAttribute('class'), cut: document.getElementById('fCut').getAttribute('d'), cutShown: document.getElementById('fCut').getAttribute('display') !== 'none' })`);
+const socN = parseInt(bf.soc, 10);
+check('the battery level matches the SOC and the cut-off line sits at 10 %', Number.isFinite(socN) && socN > 0 && Math.abs(bf.h - 132 * socN / 100) < 0.05 && Math.abs(bf.y + bf.h - 151) < 0.05 && /\bon\b/.test(bf.cls) && bf.cut === 'M9 137.8 H111' && bf.cutShown, bf);
+await evalJs(`{ const c = document.getElementById('cutoff'); c.value = '20'; c.dispatchEvent(new Event('change')); } 1`); await sleep(200);
+const bf2 = await evalJs(`document.getElementById('fCut').getAttribute('d')`);
+check('changing the cut-off moves the line on the battery at once', bf2 === 'M9 124.6 H111', bf2);
+await evalJs(`{ const c = document.getElementById('cutoff'); c.value = '10'; c.dispatchEvent(new Event('change')); } 1`);
+
 // --- the share setup prefills the BMS's own name ---
 await evalJs(`localStorage.removeItem('batray_share_name'); document.getElementById('share').click(); 1`); await sleep(200);
 const sp = await evalJs(`({ name: document.getElementById('shareName').value, shown: !document.getElementById('sharePanel').hidden })`);

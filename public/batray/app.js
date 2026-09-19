@@ -23,7 +23,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.19';
+export const APP_VERSION = '0.9.20';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -397,13 +397,14 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // in full screen when the viewport is taller than wide (owner ask 2026-09-17:
 // the picture is the thing people look at - give it half the screen) ----
 const FLOW = {
-  landscape: { vb: '0 0 640 170', batt: 'translate(30,35)', sys: 'translate(448,35)', line: 'M196 85 H444', dash: 52,
-    out: 'M262 71 L276 85 L262 99 M312 71 L326 85 L312 99 M362 71 L376 85 L362 99', in: 'M278 71 L264 85 L278 99 M328 71 L314 85 L328 99 M378 71 L364 85 L378 99',
-    power: [320, 62], amps: [320, 122], eta: [320, 158], upd: [6, 14] },
-  portrait: { vb: '0 0 340 485', batt: 'translate(89,22)', sys: 'translate(90,352)', line: 'M170 152 V204 M170 292 V346', dash: 52,   // gap behind the text block
+  // battery group: nub 0..12, body 10..160 (120 wide), centre y 85 in group coordinates
+  landscape: { vb: '0 0 640 200', batt: 'translate(36,10)', sys: 'translate(448,45)', line: 'M166 95 H444',
+    out: 'M262 81 L276 95 L262 109 M312 81 L326 95 L312 109 M362 81 L376 95 L362 109', in: 'M278 81 L264 95 L278 109 M328 81 L314 95 L328 109 M378 81 L364 95 L378 109',
+    power: [320, 72], amps: [320, 132], eta: [320, 168], upd: [170, 14] },   // 'updated' clear of the battery nub
+  portrait: { vb: '0 0 340 508', batt: 'translate(110,14)', sys: 'translate(90,376)', line: 'M170 206 V236 M170 330 V370',   // gap behind the text block
     // two chevrons, above and below the text block, so no arrow crosses a number
-    out: 'M156 172 L170 186 L184 172 M156 308 L170 322 L184 308', in: 'M156 186 L170 172 L184 186 M156 322 L170 308 L184 322',
-    power: [170, 224], amps: [170, 252], eta: [170, 278], upd: [6, 14] },
+    out: 'M156 214 L170 228 L184 214 M156 343 L170 357 L184 343', in: 'M156 228 L170 214 L184 228 M156 357 L170 343 L184 357',
+    power: [170, 262], amps: [170, 290], eta: [170, 316], upd: [6, 14] },
 };
 let flowMode = '';
 function layoutFlow() {
@@ -438,9 +439,13 @@ window.addEventListener('resize', layoutFlow);
 function renderFlow(d) {
   layoutFlow();                                   // the card has a width only once readouts are shown
   const soc = d.soc === null || d.soc === undefined ? null : d.soc;
-  const segs = $('fSeg').querySelectorAll('rect');
-  const lit = soc === null ? 0 : Math.min(5, Math.floor(soc / 20));
-  segs.forEach((r, i) => { r.className.baseVal = i < lit ? `on${soc <= 10 ? ' crit' : soc <= 25 ? ' low' : ''}` : ''; });
+  // the level fills from the bottom of the inner area (y 19..151); the cut-off line sits at the inverter's percent
+  const FY = 19, FH = 132, fill = $('fFill');
+  const fh = soc === null ? 0 : Math.round(FH * Math.max(0, Math.min(100, soc))) / 100;
+  fill.setAttribute('y', (FY + FH - fh).toFixed(2)); fill.setAttribute('height', fh.toFixed(2));
+  fill.className.baseVal = soc === null ? '' : `on${soc <= 10 ? ' crit' : soc <= 25 ? ' low' : ''}`;
+  $('fCut').setAttribute('d', `M9 ${(FY + FH * (1 - cutoffPct / 100)).toFixed(1)} H111`);
+  $('fCut').setAttribute('display', cutoffPct > 0 ? '' : 'none');
   $('fSoc').textContent = soc === null ? '-' : `${soc}%`;
   $('fSoh').textContent = T.battLbl(d.packV === null || d.packV === undefined ? null : fmt(d.packV, 2), d.soh === undefined || d.soh === null ? null : d.soh);
   const I = d.current;
@@ -486,6 +491,7 @@ $('cutoff').addEventListener('change', () => {
   if (Number.isFinite(v)) cutoffPct = Math.max(0, Math.min(95, Math.round(v)));
   $('cutoff').value = cutoffPct;
   try { localStorage.setItem('batray_cutoff_pct', cutoffPct); } catch {}
+  if (active && active.data) renderFlow(active.data);           // the cut-off line on the battery
   if (active && active.data) render(active.data, true);
 });
 
@@ -1076,7 +1082,7 @@ function tvModel() {
   const r = timeToGo({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: I, cutoffPct });
   const st = p.settings, maxA = charging ? (st && st.maxChargeA) || 100 : (st && st.maxDischargeA) || 100;
   return {
-    ...base, soc: d.soc === undefined ? null : d.soc,
+    ...base, soc: d.soc === undefined ? null : d.soc, cutoffPct,
     battLine: T.battLbl(d.packV === null || d.packV === undefined ? null : fmt(d.packV, 2), d.soh === undefined || d.soh === null ? null : d.soh),
     dir: charging ? 'chg' : discharging ? 'dis' : 'idle',
     powerTxt: d.power === null ? '-' : `${charging ? T.flowCharge : discharging ? T.flowDischarge : T.flowIdle} ${fmt(Math.abs(d.power), 0)} W`,

@@ -45,7 +45,7 @@ button,select,input{font-family:inherit}
 #flow{display:block;width:100%;max-width:640px;height:auto;margin:0 auto}
 #flow.portrait{max-width:none;max-height:62vh;margin:0 auto}
 /* portrait / full screen: the picture is big, so are its numbers */
-#flow.portrait #fSoc{font-size:44px}#flow.portrait #fSoh,#flow.portrait #fSysLbl{font-size:17px}#flow.portrait #fPower{font-size:30px}#flow.portrait #fAmps{font-size:18px}#flow.portrait #fEta{font-size:17px}#flow.portrait #updated{font-size:13px}
+#flow.portrait #fSoc{font-size:40px}#flow.portrait #fSoh,#flow.portrait #fSysLbl{font-size:17px}#flow.portrait #fPower{font-size:30px}#flow.portrait #fAmps{font-size:18px}#flow.portrait #fEta{font-size:17px}#flow.portrait #updated{font-size:13px}
 #flowCard.full .chip,#flowCard:fullscreen .chip{font-size:14px;padding:4px 12px}
 @media (max-width:700px){.chip{font-size:12px;padding:3px 10px}}
 #flowFull{position:absolute;top:2px;right:6px;z-index:2;text-decoration:none;font-size:18px;color:#7fb0d8;line-height:1;padding:4px 6px}
@@ -55,10 +55,10 @@ button,select,input{font-family:inherit}
 #flowCard.full .chips,#flowCard:fullscreen .chips{justify-content:center}
 #flowCard.full #flowFull,#flowCard:fullscreen #flowFull{top:auto;bottom:10px;right:12px;font-size:24px;color:#cdd9e5;border:1px solid #26476a;border-radius:8px;padding:6px 12px;background:#12283f}
 #notesCard .check{margin-top:6px}#notesCard .check:first-of-type{margin-top:0}
-#fSeg rect{fill:#12283f;stroke:#26476a;stroke-width:1.5;transition:fill .4s}
-#fSeg rect.on{fill:#2aa9e0;stroke:#5bb6e6}
-#fSeg rect.on.low{fill:#ffb74d;stroke:#ffd24a}
-#fSeg rect.on.crit{fill:#e0685f;stroke:#ff8a80}
+#fFill{fill:#12283f}
+#fFill.on{fill:#2aa9e0}
+#fFill.on.low{fill:#ffb74d}
+#fFill.on.crit{fill:#e0685f}
 @keyframes flowIn{to{stroke-dashoffset:52}}
 @keyframes flowOut{to{stroke-dashoffset:-52}}
 #fDash.chg{stroke:#5fd39a;animation:flowIn 1.2s linear infinite}
@@ -152,7 +152,7 @@ details.card>summary .note{text-transform:none;letter-spacing:0;font-weight:400;
 /* Motion is decoration here, never a gate: readings paint on the first frame
    and nothing waits for an animation to finish (owner rule 2026-09-17, after a
    JK app update put a gauge animation in front of the first SOC read). */
-@media (prefers-reduced-motion:reduce){#fDash.chg,#fDash.dis,.chipbar .dot,#loading .bar{animation:none}.cell .bar,#fSeg rect{transition:none}}
+@media (prefers-reduced-motion:reduce){#fDash.chg,#fDash.dis,.chipbar .dot,#loading .bar{animation:none}.cell .bar,}
 #shareLink{flex:1 1 220px;min-width:160px;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:5px;padding:3px 6px;font:11px monospace}
 #packBar{display:flex;flex-wrap:wrap;gap:6px;padding:6px 12px;background:#0b1a2b;border-bottom:1px solid #1c3550}
 .pchip{background:#12283f;border:1px solid #26476a;color:#cdd9e5;border-radius:16px;padding:4px 11px;font:12px 'Segoe UI',Tahoma,sans-serif;cursor:pointer;display:inline-flex;gap:7px;align-items:center}
@@ -275,26 +275,27 @@ body.view #empty,body.view #oneApp{display:none}
           <!-- Battery and system are drawn once each at their own origin; app.js
                lays them out landscape (wide screens) or portrait (phones, full
                screen) by setting the group transforms, line path and text positions. -->
-          <svg id="flow" viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="energy flow between battery and system">
+          <svg id="flow" viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="energy flow between battery and system">
             <text id="updated" x="6" y="14" font-size="11" fill="#6f8aa6" font-family="'DejaVu Sans Mono',Consolas,monospace" data-i18n="noData">no data yet</text>
+            <!-- upright battery (0.9.20): a level that fills from the bottom, 20 % ticks, inverter cut-off as a red dashed line -->
             <g id="gBatt">
-              <rect x="0" y="0" width="150" height="100" rx="12" fill="#0d1f33" stroke="#5bb6e6" stroke-width="4"/>
-              <rect x="150" y="30" width="12" height="40" rx="3" fill="#5bb6e6"/>
-              <g id="fSeg">
-                <rect x="12" y="12" width="22" height="76" rx="3"/><rect x="39" y="12" width="22" height="76" rx="3"/><rect x="66" y="12" width="22" height="76" rx="3"/><rect x="93" y="12" width="22" height="76" rx="3"/><rect x="120" y="12" width="22" height="76" rx="3"/>
-              </g>
-              <text id="fSoc" x="75" y="63" text-anchor="middle" font-size="34" font-weight="700" fill="#eaf4ff" style="paint-order:stroke;stroke:#0a1626;stroke-width:6px;stroke-linejoin:round">-</text>
-              <text id="fSoh" x="75" y="123" text-anchor="middle" font-size="14" fill="#7fb0d8" font-family="'DejaVu Sans Mono',Consolas,monospace">-</text>
+              <rect x="42" y="0" width="36" height="12" rx="3" fill="#5bb6e6"/>
+              <rect x="0" y="10" width="120" height="150" rx="12" fill="#0d1f33" stroke="#5bb6e6" stroke-width="4"/>
+              <rect id="fFill" x="9" y="151" width="102" height="0" rx="6"/>
+              <path id="fTicks" d="M9 45.4 H19 M101 45.4 H111 M9 71.8 H19 M101 71.8 H111 M9 98.2 H19 M101 98.2 H111 M9 124.6 H19 M101 124.6 H111" stroke="#3d6389" stroke-width="2" fill="none"/>
+              <path id="fCut" d="M9 137.8 H111" stroke="#ff8a80" stroke-width="2" stroke-dasharray="4 4" fill="none"/>
+              <text id="fSoc" x="60" y="97" text-anchor="middle" font-size="34" font-weight="700" fill="#eaf4ff" style="paint-order:stroke;stroke:#0a1626;stroke-width:6px;stroke-linejoin:round">-</text>
+              <text id="fSoh" x="60" y="184" text-anchor="middle" font-size="14" fill="#7fb0d8" font-family="'DejaVu Sans Mono',Consolas,monospace">-</text>
             </g>
             <!-- flow line battery <-> system, chevrons: > discharge (to the system), < charge (into the battery) -->
-            <path id="fLine" d="M196 85 H444" fill="none" stroke="#26476a" stroke-width="3" stroke-linecap="round"/>
-            <path id="fDash" d="M196 85 H444" fill="none" stroke="#26476a" stroke-width="3" stroke-linecap="round" stroke-dasharray="14 12"/>
+            <path id="fLine" d="M166 95 H444" fill="none" stroke="#26476a" stroke-width="3" stroke-linecap="round"/>
+            <path id="fDash" d="M166 95 H444" fill="none" stroke="#26476a" stroke-width="3" stroke-linecap="round" stroke-dasharray="14 12"/>
             <g id="fArrOut" class="arr"><path d="M262 71 L276 85 L262 99 M312 71 L326 85 L312 99 M362 71 L376 85 L362 99"/></g>
             <g id="fArrIn" class="arr"><path d="M278 71 L264 85 L278 99 M328 71 L314 85 L328 99 M378 71 L364 85 L378 99"/></g>
             <text id="fPower" x="320" y="62" text-anchor="middle" font-size="24" font-weight="700" fill="#eaf4ff" font-family="'DejaVu Sans Mono',Consolas,monospace" style="paint-order:stroke;stroke:#0d1f33;stroke-width:8px;stroke-linejoin:round">-</text>
             <text id="fAmps" x="320" y="122" text-anchor="middle" font-size="15" fill="#a7bccf" font-family="'DejaVu Sans Mono',Consolas,monospace" style="paint-order:stroke;stroke:#0d1f33;stroke-width:6px;stroke-linejoin:round">-</text>
             <text id="fEta" x="320" y="158" text-anchor="middle" font-size="13" fill="#a7bccf" font-family="'DejaVu Sans Mono',Consolas,monospace" style="paint-order:stroke;stroke:#0d1f33;stroke-width:6px;stroke-linejoin:round"></text>
-            <g id="gSys">
+            <g id="gSys" transform="translate(448,45)">
               <rect x="0" y="0" width="160" height="100" rx="12" fill="#0d1f33" stroke="#5bb6e6" stroke-width="4"/>
               <path d="M80 20 l-22 34 h18 l-6 30 l30 -40 h-18 z" fill="#8fe3ff"/>
               <text id="fSysLbl" x="80" y="123" text-anchor="middle" font-size="13" fill="#7fb0d8">SYSTEM</text>
