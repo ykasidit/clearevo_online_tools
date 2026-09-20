@@ -46,7 +46,9 @@ core"). The role is a layout decision, not a fork.
 
 - Mobile-first; every touch target at least 48 px on touch and narrow screens
   (checked by `test/browser/batray_ui.mjs`). Known exception until the title
-  bar is redesigned: the About / A- / A+ trio in the fixed title bar is 40 px.
+  bar is redesigned: the About / A- / A+ trio in the fixed title bar is 34 px
+  on phones. The toolbar is one scrolling row of icons on phones, debug
+  buttons (bug icons) last; the status line sits under it.
 - Icon-first for controls. Visible text stays for exactly four things:
   numbers with units, the DEMO badge, the "not encrypted on the TV path" note,
   and "keep Bluetooth on". A hidden disclosure is no disclosure.

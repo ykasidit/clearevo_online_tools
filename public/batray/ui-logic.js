@@ -104,6 +104,9 @@ export function sheetModel(kind, ctx, T) {
       m.title = T.keepAwakePre.replace(/:\s*$/, ''); m.lead = T.keepAwakePost;
       m.options = [{ id: 'auto', label: T.keepAwakeAuto, on: ctx.mode === 'auto' }, { id: 'always', label: T.keepAwakeAlways, on: ctx.mode === 'always' }, { id: 'never', label: T.keepAwakeNever, on: ctx.mode === 'never' }];
       break;
+    case 'live':
+      m.title = T.sheetLiveTitle; m.lead = ctx.liveText || '';
+      break;
     case 'upload':
       m.title = T.uploadLog; m.lead = T.uploadWarn;
       m.actions = [{ id: 'cancel', label: T.cancel, primary: false }, { id: 'ok', label: T.uploadGo, primary: true }];

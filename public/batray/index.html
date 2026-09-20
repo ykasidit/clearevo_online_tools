@@ -23,6 +23,7 @@ html,body{height:100%;margin:0;background:#070f18;color:#cdd9e5;font-family:'Seg
 body{overflow:hidden}
 @supports (height:100dvh){html,body{height:100dvh}}
 button,select,input{font-family:inherit}
+[hidden]{display:none!important}
 #app{display:flex;flex-direction:column;position:absolute;inset:0}
 .title-bar{display:flex;align-items:center;gap:8px;background:#0d1f33;border-bottom:1px solid #1c3550;padding:6px 12px}
 .title-bar-text{font-weight:600;color:#e6eef7;letter-spacing:.3px;overflow:hidden;white-space:nowrap;flex:1;display:flex;align-items:center;gap:8px;padding-right:140px}
@@ -30,6 +31,7 @@ button,select,input{font-family:inherit}
 .title-bar-controls{position:fixed;top:8px;right:12px;display:flex;align-items:center;z-index:999}
 .title-bar .fontbtn{width:24px;height:18px;font:bold 10px Tahoma,sans-serif;color:#cdd9e5;background:#183350;border:1px solid #2aa9e0;border-radius:4px;cursor:pointer;padding:0;margin-left:3px}
 .toolbar{display:flex;gap:1px;align-items:stretch;flex-wrap:wrap;background:#0d1f33;border-bottom:1px solid #1c3550;padding:4px 8px}
+.tbrow{display:flex;gap:1px;align-items:stretch;flex:1 1 auto;min-width:0}
 .tbtn{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:transparent;border:1px solid transparent;border-radius:6px;color:#a7bccf;padding:4px 9px;min-width:46px;cursor:pointer;font-size:10px;line-height:1}
 .tbtn svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .tbtn:hover{background:#183350;color:#e9f2fb}
@@ -172,9 +174,18 @@ body.view #empty,body.view #oneApp{display:none}
 #about .box{background:#0d1f33;border:1px solid #2f6a8f;border-radius:12px;max-width:560px;width:100%;max-height:88vh;overflow:auto;padding:22px 24px;box-shadow:0 8px 40px rgba(0,0,0,.6);color:#cdd9e5;font:13px/1.6 'Segoe UI',Tahoma,'DejaVu Sans',sans-serif}
 #about a{color:#4aa9e0}
 @media (max-width:700px){
-  .tbtn .lbl{display:none}.tbtn{min-width:38px;padding:5px 7px}
-  .title-bar-text{padding-right:110px}
-  #stat{flex-basis:100%;text-align:left;padding:3px 2px 0}
+  /* one scrolling row of icons, the status line under it, a compact title bar (UI_GUIDELINES.md) */
+  .tbtn .lbl{display:none}.tbtn{min-width:44px;padding:4px 6px;flex:0 0 auto}
+  .toolbar{padding:2px 6px;flex-wrap:wrap}
+  .tbrow{flex:1 1 100%;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  .tbrow::-webkit-scrollbar{display:none}
+  .toolbar label.chk{flex:0 0 auto;white-space:nowrap}
+  .title-bar{padding:4px 10px}.title-bar-text{padding-right:150px;font-size:13px}
+  .title-bar-controls{top:5px;right:8px}.title-bar .fontbtn{min-height:34px;min-width:34px;height:34px;font-size:10px}
+  #stat{flex-basis:100%;text-align:left;padding:2px 4px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}
+  .chipbar{padding:4px 10px;font-size:11px;gap:6px;flex-wrap:nowrap}
+  .chipbar #liveTxt,.chipbar #viewTxt{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+  #packBar{padding:4px 8px}
 }
 .agrp{margin:8px 0 10px;line-height:1.9}
 .agrp>b{display:block;color:#a7bccf;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
@@ -230,14 +241,17 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
     <div class="title-bar-controls"><button class="fontbtn" id="bAbout" type="button" title="about BatRay" style="width:auto;padding:0 6px" data-i18n="about">About</button><button class="fontbtn" id="fMinus" type="button" title="smaller text">A-</button><button class="fontbtn" id="fPlus" type="button" title="larger text">A+</button></div>
   </div>
   <div class="toolbar">
+    <div class="tbrow">
     <button class="tbtn" id="disconnect" disabled title="drop the Bluetooth link"><svg viewBox="0 0 24 24"><path d="M7 7l10 10-5 4V3l5 4L7 17" opacity=".45"/><path d="M4 4l16 16"/></svg><span class="lbl" data-i18n="disconnect">Disconnect</span></button>
     <label class="chk" title="after a drop, reconnect to the last BMS automatically after a 10 s countdown"><input type="checkbox" id="autoRe" checked> <span data-i18n="autoRe">auto reconnect</span></label>
     <div class="tsep" id="tsep"></div>
     <button class="tbtn" id="share" title="share a live link: readings are encrypted on this device, the key exists only in the link"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg><span class="lbl" data-i18n="share">Share live</span></button>
     <button class="tbtn" id="tv" title="show this picture on a TV (Chromecast, Google TV, TV browser, VLC)"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span class="lbl" data-i18n="tv">Show on TV</span></button>
-    <button class="tbtn" id="copy" title="copy the raw-frame log to the clipboard"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></svg><span class="lbl" data-i18n="copyLog">Copy log</span></button>
-    <button class="tbtn" id="upload" title="upload the debug log to clearevo.com (asks first)"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg><span class="lbl" data-i18n="uploadLog">Upload log</span></button>
     <button class="tbtn" id="langBtn" title="language"><span style="font-size:18px;line-height:1">🌐</span><span class="lbl" id="langLbl">EN</span></button>
+    <div class="tsep"></div>
+    <button class="tbtn" id="copy" title="debug: copy the raw-frame log to the clipboard"><svg viewBox="0 0 24 24"><path d="M8 10a4 4 0 0 1 8 0v5a4 4 0 0 1-8 0z"/><path d="M12 6V3M9 6.5 7 4.5M15 6.5l2-2M4 12h4M16 12h4M5 19l3-2.5M19 19l-3-2.5"/></svg><span class="lbl" data-i18n="copyLog">Copy log</span></button>
+    <button class="tbtn" id="upload" title="debug: upload the log to clearevo.com (asks first)"><svg viewBox="0 0 24 24"><path d="M7 12a4 4 0 0 1 8 0v5a4 4 0 0 1-8 0z"/><path d="M11 8V5M8 8.5 6 6.5M14 8.5l2-2M3 14h4M15 14h4M4 21l3-2.5M18 21l-3-2.5"/><path d="M19 10V3M16.5 5.5 19 3l2.5 2.5"/></svg><span class="lbl" data-i18n="uploadLog">Upload log</span></button>
+    </div>
     <span id="stat">ready</span>
   </div>
   <div id="liveChip" class="chipbar" hidden><span class="dot"></span><span id="liveTxt"></span><button id="shareCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button><button id="qrShow" type="button" class="linkbtn" hidden data-i18n="qrShow">show QR</button><input id="shareLink" readonly hidden><button id="liveStop" type="button" class="linkbtn" data-i18n="shareStop">stop sharing</button></div>

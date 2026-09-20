@@ -30,7 +30,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.24';
+export const APP_VERSION = '0.9.25';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -272,7 +272,7 @@ function refreshCard() {
 
 function renderPackBar() {
   const bar = els.packBar;
-  const show = packs.size > 0;
+  const show = packs.size > 0 && !(viewMode && packs.size === 1);   // a lone remote pack is the picture itself
   bar.hidden = !show;
   if (!show) return;
   const chips = [...packs.values()].map((p) => {
@@ -1170,7 +1170,7 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 let sheetResolve = null, suppressPop = 0;
 function sheetCtx() {
   const p = active;
-  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, label: p ? p.label : '', lang: langCode, langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode };
+  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode };
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
 function openSheet(kind) {
@@ -1217,6 +1217,7 @@ function closeSheet(result = null, why = 'dismiss') {
   $('strip').addEventListener('click', () => openSheet('chips'));
   $('cellsStat').addEventListener('click', () => openSheet('cells'));
   $('cells').addEventListener('click', () => openSheet('cells'));
+  els.liveTxt.addEventListener('click', () => openSheet('live')); els.viewTxt.addEventListener('click', () => openSheet('live'));
   // viewer tabs
   document.querySelectorAll('[data-tab-btn]').forEach((b) => b.addEventListener('click', () => {
     const d = tabTap(uiS, b.dataset.tabBtn);
