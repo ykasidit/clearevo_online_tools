@@ -19,7 +19,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCommand, decodeCellInfo, decodeDeviceInfo, decodeSettings, errorLabels, feedFrames, swMajor, JkBms,
-  isStale, STALE_MS, queuedAfterGap, linkGone, reconnectAllowed,
+  isStale, STALE_MS, queuedAfterGap, linkGone,
 } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -419,9 +419,3 @@ test('linkGone: a frame from before this link\'s connect does not count against 
   assert.equal(linkGone(t - 1_000, t - 5_000, t), false, 'a frame after the connect is this link\'s own');
 });
 
-test('reconnectAllowed: one attempt at a time', () => {
-  assert.equal(reconnectAllowed({ connectPending: false, connected: false, countdownRunning: false }), true);
-  assert.equal(reconnectAllowed({ connectPending: true, connected: false, countdownRunning: false }), false, 'a connect is in flight (manual tap)');
-  assert.equal(reconnectAllowed({ connectPending: false, connected: true, countdownRunning: false }), false, 'already connected');
-  assert.equal(reconnectAllowed({ connectPending: false, connected: false, countdownRunning: true }), false, 'a countdown is already running');
-});

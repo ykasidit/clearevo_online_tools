@@ -15,6 +15,7 @@
 import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision } from './cast-logic.js';
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
+import { fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { connState, connEvent, connCard, packChipState, wakeWantedByConn, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted } from './tv-logic.js';
@@ -23,12 +24,12 @@ import { I18N, detectLang } from './i18n.js';
 import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
-import { timeToGo, splitHours, Ema, Trend } from './trend.js';
+import { Ema, Trend } from './trend.js';
 import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.22';
+export const APP_VERSION = '0.9.23';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -123,10 +124,8 @@ function setStatus(thunk, kind = '') {
   const key = `${txt.replace(/\d+/g, '#')}|${kind}`;
   if (key !== lastStatusKey) { lastStatusKey = key; log(`status: ${txt}${kind ? ` [${kind}]` : ''}`); }
 }
-function fmt(n, digits = 2, unit = '') {
-  if (n === null || n === undefined || Number.isNaN(n)) return '-';
-  return `${n.toFixed(digits)}${unit}`;
-}
+// number / span / runtime formatting and every view model live in view-logic.js (pure, tested); T is bound here
+const fmtSpan = (h) => fmtSpanT(h, T), fmtRuntime = (sec) => fmtRuntimeT(sec, T), chipList = (d) => chipListT(d, T);
 
 // ---------------------------------------------------------------------------
 // Packs: one JK BMS (or the demo, or a remote pack in viewer mode) each. All
@@ -427,32 +426,19 @@ window.addEventListener('resize', layoutFlow);
 // ---- rendering (active pack) ----
 function renderFlow(d) {
   layoutFlow();                                   // the card has a width only once readouts are shown
-  const soc = d.soc === null || d.soc === undefined ? null : d.soc;
-  // the level fills from the bottom of the inner area (y 19..151); the cut-off line sits at the inverter's percent
-  const FY = 19, FH = 132, fill = $('fFill');
-  const fh = soc === null ? 0 : Math.round(FH * Math.max(0, Math.min(100, soc))) / 100;
-  fill.setAttribute('y', (FY + FH - fh).toFixed(2)); fill.setAttribute('height', fh.toFixed(2));
-  fill.className.baseVal = soc === null ? '' : `on${soc <= 10 ? ' crit' : soc <= 25 ? ' low' : ''}`;
-  $('fCut').setAttribute('d', `M9 ${(FY + FH * (1 - cutoffPct / 100)).toFixed(1)} H111`);
-  $('fCut').setAttribute('display', cutoffPct > 0 ? '' : 'none');
-  $('fSoc').textContent = soc === null ? '-' : `${soc}%`;
-  $('fSoh').textContent = T.battLbl(d.packV === null || d.packV === undefined ? null : fmt(d.packV, 2), d.soh === undefined || d.soh === null ? null : d.soh);
-  const I = d.current;
-  const charging = I !== null && I > 0.05, discharging = I !== null && I < -0.05;
-  const s = active && active.settings;
-  const maxA = charging ? (s && s.maxChargeA) || 100 : (s && s.maxDischargeA) || 100;
-  const ratio = I === null ? 0 : Math.min(1, Math.abs(I) / maxA);
-  const w = charging || discharging ? 3 + 15 * ratio : 3;
+  const lv = socLevel(d.soc, cutoffPct), fill = $('fFill');
+  fill.setAttribute('y', lv.y); fill.setAttribute('height', lv.h); fill.className.baseVal = lv.cls;
+  $('fCut').setAttribute('d', lv.cutPath); $('fCut').setAttribute('display', lv.cutShown ? '' : 'none');
+  $('fSoc').textContent = lv.socTxt;
+  const m = flowModel(d, active && active.settings, T);
+  $('fSoh').textContent = m.battLine;
   const dash = $('fDash'), line = $('fLine');
-  dash.setAttribute('stroke-width', w); line.setAttribute('stroke-width', w);
-  dash.setAttribute('stroke-dasharray', `${10 + w} ${10 + w}`);
-  dash.setAttribute('class', charging ? 'chg' : discharging ? 'dis' : '');
-  $('fPower').setAttribute('class', charging ? 'chg' : discharging ? 'dis' : '');
-  $('fPower').textContent = d.power === null ? '-' : `${charging ? T.flowCharge : discharging ? T.flowDischarge : T.flowIdle} ${fmt(Math.abs(d.power), 0)} W`;
-  $('fAmps').textContent = I === null ? T.noCurrent : T.ofMax(fmt(Math.abs(I), 2), fmt(maxA, 0));
-  $('fSysLbl').textContent = charging ? T.charger : discharging ? T.load : T.system;
-  $('fArrIn').classList.toggle('show', charging);
-  $('fArrOut').classList.toggle('show', discharging);
+  dash.setAttribute('stroke-width', m.width); line.setAttribute('stroke-width', m.width);
+  dash.setAttribute('stroke-dasharray', m.dashArray);
+  dash.setAttribute('class', m.cls); $('fPower').setAttribute('class', m.cls);
+  $('fPower').textContent = m.powerTxt; $('fAmps').textContent = m.ampsTxt; $('fSysLbl').textContent = m.sysLbl;
+  $('fArrIn').classList.toggle('show', m.dir === 'chg');
+  $('fArrOut').classList.toggle('show', m.dir === 'dis');
 }
 
 function renderCells(cells) {
@@ -484,50 +470,17 @@ $('cutoff').addEventListener('change', () => {
   if (active && active.data) render(active.data, true);
 });
 
-function fmtSpan(hours) {
-  const x = splitHours(hours);
-  if (!x) return '-';
-  if (x.capped) return T.etaCapped;
-  return x.d ? T.dh(x.d, x.h) : x.h ? T.hm(x.h, x.m) : T.mOnly(x.m);
-}
-
 function renderEta(p, d) {
-  const I = p && p.iEma.v !== null ? p.iEma.v : d.current;
-  const r = timeToGo({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: I, cutoffPct });
+  const e = etaModel({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: p && p.iEma.v !== null ? p.iEma.v : d.current, cutoffPct }, T);
   const el = $('fEta');
-  el.textContent = r.kind === 'empty' ? T.etaEmpty(fmtSpan(r.hours), cutoffPct)
-    : r.kind === 'full' ? T.etaFull(fmtSpan(r.hours))
-    : r.kind === 'atCutoff' ? T.etaAtCutoff : '';
-  el.setAttribute('fill', r.kind === 'atCutoff' ? '#ff8a80' : '#a7bccf');
-  $('etaLine').hidden = r.kind === 'unknown';
-}
-
-function chipList(d) {
-  const R = T.r;
-  const t = (v) => (v === null || v === undefined ? '-' : fmt(v, 0, '°'));
-  const bits = [];
-  if (d.chgMos !== undefined) bits.push({ cls: d.chgMos ? 'ok' : 'bad', txt: T.chipChg(!!d.chgMos) });
-  if (d.dsgMos !== undefined) bits.push({ cls: d.dsgMos ? 'ok' : 'bad', txt: T.chipDsg(!!d.dsgMos) });
-  if (d.balancing !== undefined && d.balancing !== null) bits.push({ cls: d.balancing ? 'warn' : '', txt: T.chipBal(!!d.balancing) });
-  if (d.tempMos !== undefined || d.temp1 !== undefined) bits.push({ cls: '', txt: T.chipTemp(t(d.tempMos), t(d.temp1), t(d.temp2)) });
-  if (d.heating) bits.push({ cls: 'warn', txt: `${R.heating} ${R.on}` });
-  const labels = d.errors ? errorLabels(d.errors) : [];
-  bits.push(labels.length ? { cls: 'bad', txt: T.chipAlarm(labels.length, labels.join(', ')) } : { cls: 'ok', txt: T.chipAlarmNone });
-  return bits;
+  el.textContent = e.text; el.setAttribute('fill', e.bad ? '#ff8a80' : '#a7bccf');
+  $('etaLine').hidden = e.hidden;
 }
 function renderStrip(d) {
   $('strip').innerHTML = chipList(d).map((c) => `<span class="chip${c.cls ? ` ${c.cls}` : ''}">${c.txt}</span>`).join('');
 }
 
-function renderCellsStat(d) {
-  const cells = d.cells || [];
-  if (cells.length < 2) { $('cellsStat').textContent = ''; return; }
-  let lo = cells[0], hi = cells[0];
-  for (const c of cells) { if (c.v < lo.v) lo = c; if (c.v > hi.v) hi = c; }
-  $('cellsStat').textContent = T.cellsStat(Math.round((hi.v - lo.v) * 1000), lo.v.toFixed(3), lo.n, hi.v.toFixed(3), hi.n);
-}
-
-function fmtWh(wh) { return wh >= 1000 ? `${(wh / 1000).toFixed(2)} kWh` : `${Math.round(wh)} Wh`; }
+function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 
 function renderTrend(p) {
   const card = $('trendCard');
@@ -617,11 +570,6 @@ function render(d, relabelOnly = false) {
   ];
   els.secondary.innerHTML = kv(rows);
 }
-function fmtRuntime(s) {
-  if (!s) return '-';
-  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);
-  return d ? T.dh(d, h) : T.hm(h, Math.floor((s % 3600) / 60));
-}
 function renderDevice(i) { els.device.textContent = T.device(i, fmtRuntime(i.uptimeS)); els.device.hidden = false; }
 function renderSettings(s) {
   const R = T.r; const onoff = (b) => (b ? R.on : R.off);
@@ -676,10 +624,9 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function tickAge() {
-  if (!active || !active.lastFrameAt) { els.updated.textContent = T.noData; return; }
-  const age = Math.round((Date.now() - active.lastFrameAt) / 1000);
-  els.updated.textContent = age < 2 ? T.justNow : T.agoS(age);
-  els.updated.setAttribute('fill', age > 15 ? '#ffd24a' : '#6f8aa6');
+  const a = ageLabel(active && active.lastFrameAt ? Math.round((Date.now() - active.lastFrameAt) / 1000) : null, T);
+  els.updated.textContent = a.text;
+  els.updated.setAttribute('fill', a.stale ? '#ffd24a' : '#6f8aa6');
 }
 setInterval(tickAge, 1000);
 
@@ -1014,25 +961,8 @@ function startView() {
 // Not encrypted on this path (a TV cannot hold the link key): the panel and the
 // status bar say so while it runs.
 function tvModel() {
-  const p = active, d = p && p.data;
-  const clock = new Date().toTimeString().slice(0, 8);
-  const base = { label: p ? p.label : '', clock, brand: 'BatRay by ClearEvo.com', footer: p && p.demo ? T.demoBadge : '' };
-  if (!d) return { ...base, waiting: true, waitingTxt: T.tvWaiting, updatedTxt: T.noData };
-  const age = p.lastFrameAt ? Math.round((Date.now() - p.lastFrameAt) / 1000) : null;
-  const I = p.iEma.v !== null ? p.iEma.v : d.current;
-  const charging = d.current > 0.05, discharging = d.current < -0.05;
-  const r = timeToGo({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: I, cutoffPct });
-  const st = p.settings, maxA = charging ? (st && st.maxChargeA) || 100 : (st && st.maxDischargeA) || 100;
-  return {
-    ...base, soc: d.soc === undefined ? null : d.soc, cutoffPct,
-    battLine: T.battLbl(d.packV === null || d.packV === undefined ? null : fmt(d.packV, 2), d.soh === undefined || d.soh === null ? null : d.soh),
-    dir: charging ? 'chg' : discharging ? 'dis' : 'idle',
-    powerTxt: d.power === null ? '-' : `${charging ? T.flowCharge : discharging ? T.flowDischarge : T.flowIdle} ${fmt(Math.abs(d.power), 0)} W`,
-    ampsTxt: d.current === null ? T.noCurrent : T.ofMax(fmt(Math.abs(d.current), 2), fmt(maxA, 0)),
-    etaTxt: r.kind === 'empty' ? T.etaEmpty(fmtSpan(r.hours), cutoffPct) : r.kind === 'full' ? T.etaFull(fmtSpan(r.hours)) : r.kind === 'atCutoff' ? T.etaAtCutoff : '',
-    etaBad: r.kind === 'atCutoff', sysLbl: charging ? T.charger : discharging ? T.load : T.system, chips: chipList(d),
-    updatedTxt: age === null ? T.noData : age < 2 ? T.justNow : T.agoS(age), stale: age !== null && age > 15,
-  };
+  const p = active;
+  return buildTvModel({ label: p ? p.label : '', demo: !!(p && p.demo), data: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, lastFrameAt: p ? p.lastFrameAt : null, now: Date.now(), cutoffPct, T });
 }
 function renderTv(s) {
   if (!tv || !s.live) return;

@@ -402,13 +402,6 @@ export function linkGone(lastFrameAt, connectedAt, now = Date.now(), limitMs = S
   return false;
 }
 
-/** May a new reconnect attempt start now? One attempt at a time: a connect in
- *  flight (manual tap or countdown), a live link, or a countdown already
- *  running all say no - two attempts in parallel supersede each other and the
- *  pack ends up connected for seconds, then dropped. */
-export function reconnectAllowed({ connectPending, connected, countdownRunning }) {
-  return !connectPending && !connected && !countdownRunning;
-}
 
 /** True when a chunk arrives after a gap no live link would produce - i.e.
  *  it was queued while the tab was frozen and is being flushed now. */
