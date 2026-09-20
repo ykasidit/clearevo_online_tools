@@ -78,7 +78,11 @@ check('Share opens the setup: a cat name for the demo, last-link option greyed w
 await evalJs(`document.getElementById('shareName').value = 'Home bank'; document.getElementById('shareGo').click(); 1`); await sleep(2500);
 sp = await evalJs(`({ panelHidden: document.getElementById('sharePanel').hidden, qrName: document.getElementById('qrName').textContent, savedName: localStorage.getItem('batray_share_name'), saved: JSON.parse(localStorage.getItem('batray_share_last') || 'null'), logged: window.__batrayTest.logLines().filter((l) => /share: name|live share room/.test(l)) })`);
 check('Start sharing saves the name and the link, shows the name above the QR', sp.panelHidden && sp.qrName === 'Home bank' && sp.savedName === 'Home bank' && sp.saved && sp.saved.room === 'testroom0000000000000A' && sp.saved.pub === 'testpub00000000000000A' && /^[A-Za-z0-9_-]{22}$/.test(sp.saved.key) && sp.logged.some((l) => /new room/.test(l)) && sp.logged.some((l) => /created/.test(l)), sp);
-await evalJs(`document.getElementById('liveStop').click(); 1`); await sleep(800);
+const sb = await evalJs(`({ on: document.getElementById('share').classList.contains('on'), phase: window.__batrayTest.shareState().phase, title: document.getElementById('share').title })`);
+check('the Share button is sunk while sharing and says a press stops it', sb.on && sb.phase === 'on' && /press again to stop/.test(sb.title), sb);
+await evalJs(`document.getElementById('share').click(); 1`); await sleep(800);
+const sb2 = await evalJs(`({ on: document.getElementById('share').classList.contains('on'), phase: window.__batrayTest.shareState().phase, toast: document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent, chipHidden: document.getElementById('liveChip').hidden })`);
+check('pressing the sunk Share button stops sharing with a toast and lifts the button', !sb2.on && sb2.phase === 'off' && /Sharing stopped/.test(sb2.toast) && sb2.chipHidden, sb2);
 await evalJs(`document.getElementById('share').click(); 1`); await sleep(300);
 sp = await evalJs(`({ name: document.getElementById('shareName').value, reuseDisabled: document.getElementById('shareReuse').disabled, reuseChecked: document.getElementById('shareReuse').checked, info: document.getElementById('shareReuseInfo').textContent })`);
 check('next time: the saved name is prefilled and "use the last share link" is on by default', sp.name === 'Home bank' && !sp.reuseDisabled && sp.reuseChecked && /saved/.test(sp.info), sp);

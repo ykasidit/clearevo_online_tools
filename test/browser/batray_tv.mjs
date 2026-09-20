@@ -87,6 +87,8 @@ check('the TV panel opens and says the picture is not encrypted', panel.shown &&
 // start a small VP9 stream: 640x360, 2 fps, 2 s segments
 const url = await evalJs(`window.__batrayTest.startTv({ res: '640x360', codecs: ['vp09.00.10.08'], fps: 2, segS: 2 })`);
 check('the stream starts and yields a playlist link', /\/batray\/api\/tv\/fakeTvId0000000000000\/index\.m3u8$/.test(url), url);
+const sunk = await evalJs(`({ on: document.getElementById('tv').classList.contains('on'), pressed: document.getElementById('tv').getAttribute('aria-pressed'), title: document.getElementById('tv').title, phase: window.__batrayTest.tvUiState().phase })`);
+check('the Show on TV toolbar button is sunk while the stream runs and says a press stops it', sunk.on && sunk.pressed === 'true' && /press again to stop/.test(sunk.title) && sunk.phase === 'on', sunk);
 await sleep(9500);
 let s = await evalJs(`JSON.stringify(window.__batrayTest.tvState())`); s = JSON.parse(s);
 const ups = await evalJs(`window.__tvUploads.map((u) => ({ path: u.path, dur: u.dur, len: u.len }))`);
@@ -142,10 +144,10 @@ await evalJs(`window.__castPlayer('IDLE', 'ERROR'); 1`); await sleep(100);
 const c2 = await evalJs(`({ hint: document.getElementById('tvCastHint').textContent, log: window.__batrayTest.logLines().filter((l) => /cast: player state/.test(l)).slice(-2) })`);
 check("the receiver's player state shows under the button and an IDLE/ERROR is called out", /TV player: playing/.test(c1) && /could not play/.test(c2.hint) && c2.log.some((l) => /player=PLAYING/.test(l)) && c2.log.some((l) => /player=IDLE idle=ERROR/.test(l)), { c1, ...c2 });
 
-// stop: the last fragment is flushed and the relay is told
-await evalJs(`window.__batrayTest.stopTv()`);
-const after = await evalJs(`({ calls: window.__tvCalls.filter((c) => c.startsWith('DELETE')).length, note: document.getElementById('tvNote').hidden, live: document.getElementById('tvLive').hidden })`);
-check('stop deletes the stream and hides the notes', after.calls === 1 && after.note && after.live, after);
+// stop by pressing the sunk toolbar button: the last fragment is flushed, the relay is told, a toast says so
+await evalJs(`document.getElementById('tv').click(); 1`); await sleep(700);
+const after = await evalJs(`({ calls: window.__tvCalls.filter((c) => c.startsWith('DELETE')).length, note: document.getElementById('tvNote').hidden, live: document.getElementById('tvLive').hidden, on: document.getElementById('tv').classList.contains('on'), toast: document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent, phase: window.__batrayTest.tvUiState().phase, startShown: !document.getElementById('tvStart').hidden })`);
+check('pressing the sunk button stops the stream with a toast, deletes it on the relay, hides the notes and offers Start again', after.calls === 1 && after.note && after.live && !after.on && /TV stream stopped/.test(after.toast) && after.phase === 'off' && after.startShown, after);
 
 // rebuild the stream from the uploads and let ffmpeg decode it
 const dir = mkdtempSync(join(tmpdir(), 'batray-tv-'));

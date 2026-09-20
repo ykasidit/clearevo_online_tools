@@ -84,3 +84,33 @@ export function tvLink(origin, id) { return `${origin}/batray/api/tv/${id}/index
 
 /** Segment boundary rule: frame k starts a new segment (key frame) every segS seconds. */
 export function isSegmentStart(frame, fps, segS) { return frame % Math.max(1, Math.round(fps * segS)) === 0; }
+
+// ---- Show on TV UI state (house rule 2026-09-20): the toolbar button is
+// sunk while the stream runs; pressing it again, or Close on the card, stops
+// the stream (with a toast); the card's own buttons follow the same object. ----
+// phases: off | starting | on
+export function tvUiState() { return { phase: 'off', panelOpen: false }; }
+export function tvTapDecision(ts) {
+  if (ts.phase === 'on') return { action: 'stop', why: 'toolbar' };
+  if (ts.phase === 'starting') return { action: 'ignore', why: 'starting' };
+  ts.panelOpen = !ts.panelOpen;
+  return { action: ts.panelOpen ? 'open-panel' : 'close-panel' };
+}
+export function tvCloseDecision(ts) {
+  ts.panelOpen = false;
+  return ts.phase === 'on' ? { action: 'stop', why: 'close' } : { action: 'close-panel' };
+}
+export function tvStartDecision(ts) {
+  if (ts.phase !== 'off') return { action: 'ignore', why: ts.phase };
+  ts.phase = 'starting'; return { action: 'start' };
+}
+export function tvStarted(ts) { ts.phase = 'on'; ts.panelOpen = true; }
+export function tvStartFailed(ts) { ts.phase = 'off'; }
+export function tvStopped(ts) { ts.phase = 'off'; }
+/** What every button and note shows for this state. */
+export function tvButtons(ts) {
+  const on = ts.phase === 'on', busy = ts.phase === 'starting';
+  return { on, busy, startHidden: on, startDisabled: busy, stopHidden: !on, resDisabled: on || busy, liveHidden: !on, noteHidden: !on, panelHidden: !ts.panelOpen && !on };
+}
+/** A live playlist needs a few segments before a player will start: wait for 3. */
+export function tvPreviewWanted(s, canHls, hasSrc) { return !!(canHls && s.segs >= 3 && !hasSrc); }

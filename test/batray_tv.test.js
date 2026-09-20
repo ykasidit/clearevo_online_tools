@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BoxSplitter, takeSegments, tvLink, isSegmentStart } from '../public/batray/tv-logic.js';
+import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, BoxSplitter, takeSegments, tvLink, isSegmentStart } from '../public/batray/tv-logic.js';
 import { Muxer, StreamTarget } from '../public/batray/mp4-muxer.js';
 
 const box = (type, payload = []) => { const n = 8 + payload.length; const u = new Uint8Array(n); new DataView(u.buffer).setUint32(0, n); u.set([...type].map((c) => c.charCodeAt(0)), 4); u.set(payload, 8); return u; };
@@ -68,4 +68,32 @@ test('the real muxer in fragmented mode yields an init segment and one media seg
 test('links and segment boundaries', () => {
   assert.equal(tvLink('https://www.clearevo.com', 'abc'), 'https://www.clearevo.com/batray/api/tv/abc/index.m3u8');
   assert.ok(isSegmentStart(0, 1, 4) && !isSegmentStart(3, 1, 4) && isSegmentStart(4, 1, 4) && isSegmentStart(8, 2, 4) && !isSegmentStart(7, 2, 4));
+});
+
+test('Show on TV button: opens and closes the card; sunk while streaming; pressing it, or Close, then stops the stream', () => {
+  const ts = tvUiState();
+  assert.deepEqual(tvTapDecision(ts), { action: 'open-panel' }); assert.equal(tvButtons(ts).panelHidden, false);
+  assert.deepEqual(tvTapDecision(ts), { action: 'close-panel' }); assert.equal(tvButtons(ts).panelHidden, true);
+  tvTapDecision(ts);
+  assert.deepEqual(tvStartDecision(ts), { action: 'start' });
+  assert.deepEqual(tvStartDecision(ts), { action: 'ignore', why: 'starting' });
+  assert.deepEqual(tvTapDecision(ts), { action: 'ignore', why: 'starting' });
+  let b = tvButtons(ts); assert.equal(b.on, false); assert.equal(b.busy, true); assert.equal(b.startDisabled, true); assert.equal(b.resDisabled, true);
+  tvStarted(ts);
+  b = tvButtons(ts);
+  assert.deepEqual(b, { on: true, busy: false, startHidden: true, startDisabled: false, stopHidden: false, resDisabled: true, liveHidden: false, noteHidden: false, panelHidden: false });
+  assert.deepEqual(tvTapDecision(ts), { action: 'stop', why: 'toolbar' });
+  tvStopped(ts); assert.equal(tvButtons(ts).on, false); assert.equal(tvButtons(ts).stopHidden, true);
+  tvStartDecision(ts); tvStarted(ts);
+  assert.deepEqual(tvCloseDecision(ts), { action: 'stop', why: 'close' });
+  tvStopped(ts); assert.equal(tvButtons(ts).panelHidden, true);
+  tvStartDecision(ts); tvStartFailed(ts); assert.equal(ts.phase, 'off');
+  assert.deepEqual(tvCloseDecision(ts), { action: 'close-panel' });
+});
+
+test('the preview waits for three segments and is started once', () => {
+  assert.equal(tvPreviewWanted({ segs: 2 }, true, false), false);
+  assert.equal(tvPreviewWanted({ segs: 3 }, true, false), true);
+  assert.equal(tvPreviewWanted({ segs: 3 }, true, true), false);
+  assert.equal(tvPreviewWanted({ segs: 9 }, false, false), false);
 });

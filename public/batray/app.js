@@ -14,7 +14,10 @@
 
 import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision } from './cast-logic.js';
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted } from './wake-logic.js';
-import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone, reconnectAllowed } from './jkbms.js';
+import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
+import { connState, connEvent, connCard, packChipState, wakeWantedByConn, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
+import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
+import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted } from './tv-logic.js';
 import { startDemo } from './demo.js';
 import { I18N, detectLang } from './i18n.js';
 import { Publisher, Viewer } from './live.js';
@@ -25,7 +28,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.21';
+export const APP_VERSION = '0.9.22';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -135,9 +138,9 @@ class Pack {
     this.id = id; this.name = name; this.remote = remote;
     this.bms = remote ? null : new JkBms();
     this.device = null; this.info = null; this.settings = null; this.data = null; this.lastFrameAt = null;
-    this.demo = null; this.userDisconnect = false; this.reTimer = null; this.reconnecting = false; this.connectPending = false;
-    this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.reNow = false; this.dumped = false;
-    this.stalled = false; this.stalledAge = 0; this.connectedAt = null;   // link reported connected but gone quiet
+    this.cs = connState();                                   // the connection flow state (conn-logic.js decides over it)
+    this.demo = null; this.reTimer = null; this.gapTimer = null; this.attemptTicker = null;   // timers: the shell's, never in cs
+    this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.dumped = false;
     this.remoteLive = false;
     this.trend = new Trend(); this.iEma = new Ema(60);   // session trend + smoothed current for the time-to-go
     if (this.bms) this.wire();
@@ -151,9 +154,9 @@ class Pack {
     const b = this.bms;
     b.addEventListener('log', (e) => this.plog(e.detail));
     b.addEventListener('connected', (e) => {
-      this.device = e.detail; this.userDisconnect = false; this.connectPending = false; this.stalled = false; this.connectedAt = Date.now();
+      this.device = e.detail;
       this.plog(`gatt connected: ${this.label} id=${String(e.detail.id || '').slice(0, 10)}…`);
-      showReconnectIdle(this);
+      connAct(this, 'gatt-connected');
       this.loadThunk = () => T.loading(this.label);
       if (this.isActive) { setStatus(() => T.connectedTo(this.label), 'good'); $('oneApp').hidden = false; $('btNote').hidden = false; }
       // Auto-reconnect no longer waits for an adapter-state probe (which this
@@ -165,11 +168,9 @@ class Pack {
       this.plog('gatt disconnected');
       this.offlineThunk = () => T.offlineDrop(this.label);
       // a link that went quiet says so, instead of a bare "disconnected"
-      if (this.isActive) { setStatus(() => (this.stalled ? T.stalled(this.label, this.stalledAge) : T.disconnectedFrom(this.label)), 'bad'); $('oneApp').hidden = true; $('btNote').hidden = true; }
-      if ($('autoRe').checked && this.device && !this.userDisconnect) startReconnectCountdown(this, this.stalled ? 3 : 10);
-      else showReconnectIdle(this);
-      this.userDisconnect = false;
-      refreshCard(); renderPackBar(); syncWake();
+      const stalled = this.cs.stalled, age = this.cs.stalledAge;
+      if (this.isActive) { setStatus(() => (stalled ? T.stalled(this.label, age) : T.disconnectedFrom(this.label)), 'bad'); $('oneApp').hidden = true; $('btNote').hidden = true; }
+      connAct(this, 'gatt-disconnected');
     });
     b.addEventListener('data', (e) => this.onData(e.detail));
     b.addEventListener('device', (e) => { this.onInfo(e.detail); this.plog(`device: ${e.detail.model} hw ${e.detail.hwVersion} fw ${e.detail.swVersion}`); });
@@ -194,15 +195,12 @@ class Pack {
   }
   onData(d) {
     const first = !this.lastFrameAt;
-    if (first) this.plog(`first reading ${this.connectedAt ? Math.round((Date.now() - this.connectedAt) + '') + ' ms after connect' : ''}: soc=${d.soc} V=${d.packV} A=${d.current} cells=${d.cells.length} variant=${d.variant}`);
+    if (first) this.plog(`first reading ${this.cs.connectedAt ? Math.round((Date.now() - this.cs.connectedAt) + '') + ' ms after connect' : ''}: soc=${d.soc} V=${d.packV} A=${d.current} cells=${d.cells.length} variant=${d.variant}`);
     this.take(d);
     if (this.isActive) scheduleRender(this);
     schedulePackBar();
     if (publisher) publisher.publish(envelope('data', this, d));
-    if (this.stalled) {              // back after a gap: say so instead of staying amber
-      this.stalled = false;
-      if (this.isActive) setStatus(() => T.connectedTo(this.label), 'good');
-    }
+    if (connEvent(this.cs, 'data').action === 'back' && this.isActive) setStatus(() => T.connectedTo(this.label), 'good');   // back after a gap: say so instead of staying amber
     if (first) syncWake();
   }
   onInfo(i) { this.info = i; if (this.isActive) renderDevice(i); if (publisher) publisher.publish(envelope('info', this, i)); }
@@ -212,7 +210,12 @@ class Pack {
 const packs = new Map();
 let active = null;
 let packSeq = 0;
-let publisher = null, viewer = null, tv = null;
+let publisher = null, viewer = null, tv = null;     // IO handles (sockets, encoder); their flow state is below
+// ---- the state objects (house rule 2026-09-20): one plain object per flow,
+// decisions in the *-logic.js modules (functional core), this file acts on
+// them (imperative shell) and logs every decision. Per-pack BLE state is p.cs. ----
+const shareS = shareState(), tvS = tvUiState(), castS = castState(), viewS = viewState(), reachS = reachState();
+const wakeS = wakeState('wakeLock' in navigator);
 
 function addPack(pack) { packs.set(pack.id, pack); if (!active) setActive(pack); renderPackBar(); return pack; }
 function removePack(pack) {
@@ -257,20 +260,12 @@ function refreshCard() {
   els.disconnect.disabled = !(p.bms && p.bms.connected);
   if (p.remote) { body.toggle('offline', !p.remoteLive); body.remove('loading'); $('reState').hidden = true; $('reIdle').hidden = true; $('offlineTxt').textContent = readerGone() ? T.viewOffline : T.viewReconnectingLong; return; }
   if (p.demo) { body.remove('offline', 'loading'); return; }
-  if (p.bms.connected) {
-    body.remove('offline');
-    body.toggle('loading', !p.data);
-    if (!p.data && p.loadThunk) $('loadTxt').textContent = p.loadThunk();
-    return;
-  }
-  body.remove('loading');
-  body.toggle('offline', !!(p.lastFrameAt || p.device || p.connectPending || p.reconnecting));
+  const c = connCard(p.cs, { gattConnected: !!p.bms.connected, hasData: !!p.data });
+  body.toggle('offline', c.offline); body.toggle('loading', c.loading);
+  if (c.loading && p.loadThunk) $('loadTxt').textContent = p.loadThunk();
   $('offlineTxt').textContent = p.offlineThunk ? p.offlineThunk() : T.disconnectedFrom(p.label);
-  if (p.reconnecting || p.connectPending) {
-    $('reState').hidden = false; $('reIdle').hidden = true;
-    $('reCount').textContent = p.countThunk ? p.countThunk() : '';
-    $('reNow').hidden = !p.reNow;
-  } else { $('reState').hidden = true; $('reIdle').hidden = false; }
+  $('reState').hidden = !c.countdown; $('reIdle').hidden = !c.idle;
+  if (c.countdown) { $('reCount').textContent = p.countThunk ? p.countThunk() : ''; $('reNow').hidden = !c.reNow; }
 }
 
 function renderPackBar() {
@@ -282,7 +277,8 @@ function renderPackBar() {
     const d = p.data;
     const soc = d ? `${d.soc}%` : '';
     const I = d && d.current !== null ? (d.current > 0.05 ? `+${d.current.toFixed(1)} A` : d.current < -0.05 ? `−${Math.abs(d.current).toFixed(1)} A` : '0 A') : '';
-    const st = p.connected ? (d ? '' : ` <span class="pst">${T.packWaiting}</span>`) : ` <span class="pst off">${p.reconnecting || p.connectPending ? T.packConnecting : T.packOffline}</span>`;
+    const cst = p.remote || p.demo ? (p.connected ? (d ? 'live' : 'waiting') : 'offline') : packChipState(p.cs, p.connected, !!d);
+    const st = cst === 'live' ? '' : cst === 'waiting' ? ` <span class="pst">${T.packWaiting}</span>` : ` <span class="pst off">${cst === 'connecting' ? T.packConnecting : T.packOffline}</span>`;
     return `<button class="pchip${p === active ? ' on' : ''}${p.connected ? '' : ' off'}" data-pack="${p.id}" title="${p.label}"><span class="pn">${p.demo ? 'DEMO' : p.label}</span>${soc ? ` <span class="ps">${soc}</span>` : ''}${I ? ` <span class="pi">${I}</span>` : ''}${st}</button>`;
   });
   const add = viewMode ? '' : `<button class="pchip add" id="addPack" title="${T.addPackTitle}">${T.addPack}</button>`;
@@ -320,7 +316,6 @@ function applyLang(code) {
 // The Notes card sets it to auto (default) / always / never.
 // All decisions are in wake-logic.js over the one `wakeS` object; this code
 // only acts on them (house rule 2026-09-20).
-const wakeS = wakeState('wakeLock' in navigator);
 const KEEP_AWAKE_KEY = 'batray_keepawake';
 let wakeLock = null, wakeRetryTimer = null, keepVideo = null;
 try { wakeS.mode = wakeMode(localStorage.getItem(KEEP_AWAKE_KEY)); } catch {}
@@ -357,7 +352,7 @@ function scheduleWakeRetry() {
   wakeRetryTimer = setTimeout(() => { wakeRetryTimer = null; if (wakeS.wanted && document.visibilityState === 'visible') syncWake(); }, wakeRetryDelayMs(wakeS));
 }
 async function syncWake() {
-  wakeS.wanted = [...packs.values()].some((p) => p.connected || p.reconnecting || !!p.reTimer) || !!publisher || !!(viewer && viewer.state.live) || !!(tv && tv.state.live);
+  wakeS.wanted = [...packs.values()].some((p) => wakeWantedByConn(p.cs, p.connected)) || shareS.phase === 'on' || shareS.phase === 'starting' || !!(viewer && viewer.state.live) || tvS.phase === 'on';
   const el = $('wake');
   if (wakeShouldRequest(wakeS, document.visibilityState === 'visible')) {
     try {
@@ -665,13 +660,11 @@ function schedulePackBar() {
 function watchLinks(why) {
   for (const p of packs.values()) {
     if (p.demo || p.remote || !p.bms || !p.bms.connected) continue;
-    if (!linkGone(p.lastFrameAt, p.connectedAt)) continue;
-    const age = Math.round((Date.now() - (p.lastFrameAt || p.connectedAt)) / 1000);
-    p.stalled = true; p.stalledAge = age;
+    if (!linkGone(p.lastFrameAt, p.cs.connectedAt)) continue;
+    const age = Math.round((Date.now() - (p.lastFrameAt || p.cs.connectedAt)) / 1000);
     p.plog(`no data for ${age} s (${why}) - dropping the link and reconnecting`);
-    p.connectedAt = null;
     if (p.isActive) setStatus(() => T.stalled(p.label, age), 'bad');
-    p.bms.drop(`no data for ${age} s`);
+    connAct(p, 'link-stalled', { ageS: age });
   }
 }
 setInterval(() => watchLinks('watchdog'), 4000);
@@ -712,65 +705,91 @@ $('stopDemo').addEventListener('click', stopDemo);
 els.demoBtn.addEventListener('click', runDemo);
 $('demoAgain').addEventListener('click', runDemo);
 
-// ---- reconnect machinery, per pack; the card shows the active pack ----
-function showReconnectIdle(p) {
-  p.reconnecting = false; p.countThunk = null; p.reNow = false;
+// ---- BLE connection shell: every decision comes from conn-logic.js over
+// p.cs (house rule 2026-09-20). This code owns the chooser, the GATT calls,
+// the timers and the card, and logs each decision as `conn: <event> -> <action>`. ----
+function clearConnTimers(p) {
   if (p.reTimer) { clearInterval(p.reTimer); p.reTimer = null; }
-  refreshCard(); syncWake();
+  if (p.gapTimer) { clearTimeout(p.gapTimer); p.gapTimer = null; }
+  if (p.attemptTicker) { clearInterval(p.attemptTicker); p.attemptTicker = null; }
 }
-function setCount(p, thunk, tap = false) { p.countThunk = thunk; p.reNow = tap; if (p.isActive) refreshCard(); }
-
-function startReconnectCountdown(p, seconds = 10) {
-  // One attempt at a time. A manual tap while a countdown was pending used to
-  // race it: two connects in parallel superseded each other and the pack was
-  // "connected" for seconds, then dropped (live, 2026-09-17).
-  if (!reconnectAllowed({ connectPending: p.connectPending, connected: p.connected, countdownRunning: !!p.reTimer })) { p.plog('reconnect countdown not started: an attempt is already in progress'); return; }
-  p.reconnecting = true; syncWake();
-  p.plog(`reconnect: countdown ${seconds} s`);
-  let left = seconds;
-  setCount(p, () => T.reIn(p.label, left), true);          // "Reconnect now" is offered during the countdown
-  if (p.reTimer) clearInterval(p.reTimer);
-  p.reTimer = setInterval(async () => {
-    left -= 1;
-    if (left > 0) { setCount(p, () => T.reIn(p.label, left), true); return; }
-    clearInterval(p.reTimer); p.reTimer = null;
-    if (p.connectPending || p.connected) { p.plog('reconnect countdown ended: a connect is already in flight'); return; }
-    try {
-      p.device = await freshHandle(p.device);
-      // No adapter-state probe any more: older Chrome had none, and the gate
-      // it fed (a "tap to reconnect" wait) was removed 2026-09-17. The trade:
-      // with Bluetooth OFF this Chrome may close the tab on reconnect, so the
-      // app tells the user to keep Bluetooth on (toast + line under the readings).
-      await connectTo(p, p.device);
-    } catch (err) {
-      p.plog(`reconnect failed: ${err.message}`);
-      if (p.isActive) { setStatus(() => T.disconnectedFromWhy(p.label, err.message), 'bad'); toast(T.reFailed(err.message) + T.oneAppToast, 9000); }
-      if (p.reconnecting && $('autoRe').checked) startReconnectCountdown(p); else showReconnectIdle(p);
-    }
-  }, 1000);
-}
-
-$('reNow').addEventListener('click', async () => {
-  const p = active; if (!p || p.remote) return;
-  if (p.connectPending) return;                                        // double tap
-  p.plog('reconnect: user tapped Reconnect now');
-  if (p.reTimer) { clearInterval(p.reTimer); p.reTimer = null; }       // the tap replaces any pending countdown
-  p.reNow = false; refreshCard();
-  try { p.reconnecting = true; syncWake(); await connectTo(p, p.device); } catch (err) {
-    p.plog(`reconnect failed: ${err.message}`);
-    setStatus(() => T.disconnectedFromWhy(p.label, err.message), 'bad');
-    toast(T.reFailed(err.message) + T.oneAppToast, 9000);
-    if ($('autoRe').checked) startReconnectCountdown(p); else showReconnectIdle(p);
+function connAct(p, ev, inp = {}) {
+  const d = connEvent(p.cs, ev, { autoRe: $('autoRe').checked, now: Date.now(), ...inp });
+  if (d.action !== 'count' && d.action !== 'noop') p.plog(`conn: ${ev} -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}${d.seconds ? ' ' + d.seconds + ' s' : ''}${d.attempt ? ' attempt ' + d.attempt : ''} [${p.cs.phase}]`);
+  switch (d.action) {
+    case 'choose': clearConnTimers(p); p.countThunk = null; runChooser(p, !!inp.fresh); break;
+    case 'connect': clearConnTimers(p); runAttempt(p); break;
+    case 'retry': clearConnTimers(p); showAttempt(p); p.gapTimer = setTimeout(() => { p.gapTimer = null; runAttempt(p); }, d.gapMs); break;
+    case 'countdown': clearConnTimers(p); p.countThunk = () => T.reIn(p.label, p.cs.count); p.reTimer = setInterval(() => connAct(p, 'countdown-tick'), 1000); break;
+    case 'count': if (p.cs.phase === 'connecting') showAttempt(p); break;    // the countdown thunk reads cs.count itself
+    case 'idle': case 'connected': clearConnTimers(p); p.countThunk = null; break;
+    case 'disconnect-gatt': clearConnTimers(p); p.countThunk = null; try { if (p.device && p.device.gatt.connected) p.device.gatt.disconnect(); } catch { /* nothing to drop */ } break;
+    case 'disconnect-bms': clearConnTimers(p); p.countThunk = null; p.bms.disconnect(); break;
+    case 'drop-link': p.bms.drop(`no data for ${d.ageS} s`); break;
+    default: break;
   }
-});
-$('cancelRe').addEventListener('click', () => {
-  const p = active; if (!p || p.remote) return;
-  p.plog('reconnect: cancelled by user');
-  showReconnectIdle(p); p.userDisconnect = true;
-  try { if (p.device && p.device.gatt.connected) p.device.gatt.disconnect(); } catch { /* nothing to drop */ }
-  setStatus(() => T.disconnectedFrom(p.label), 'bad');
-});
-
+  if (p.isActive) refreshCard();
+  renderPackBar(); syncWake();
+  return d;
+}
+function showAttempt(p) {
+  const name = p.device ? (p.device.name || p.device.id) : p.label;
+  const txt = () => (p.cs.attempt > 1 ? T.connectingRetry(name, p.cs.left, p.cs.attempt, CONNECT_TRIES) : T.connectingTo(name, p.cs.left));
+  if (p.isActive) setStatus(txt);
+  p.countThunk = txt;
+  if (p.isActive) refreshCard();
+}
+// Android's BLE stack often refuses the first GATT connect outright
+// ("Connection attempt failed", status 133) and accepts the next one a second
+// later - seen live 2026-09-18: three taps, third one worked. conn-logic.js
+// turns that into up to CONNECT_TRIES attempts per tap; this runs one.
+async function runAttempt(p) {
+  if (p.cs.origin !== 'chooser') p.device = await freshHandle(p.device);
+  showAttempt(p);
+  if (!p.attemptTicker) p.attemptTicker = setInterval(() => connAct(p, 'connect-tick'), 1000);
+  $('connectBig').disabled = true;
+  const t0 = Date.now(), attempt = p.cs.attempt;
+  try {
+    await p.bms.connect(p.device, { timeoutMs: CONNECT_S * 1000 });
+    p.plog(`connect: ok on attempt ${attempt} in ${Date.now() - t0} ms`);
+  } catch (err) {
+    p.plog(`connect: attempt ${attempt} failed after ${Date.now() - t0} ms: ${err.message}`);
+    const d = connAct(p, 'attempt-failed', { msg: err.message });
+    if (d.final) {
+      if (p.isActive) setStatus(() => T.disconnectedFromWhy(p.label, err.message), 'bad');
+      if (!cancelledError(err.message)) toast((p.cs.origin === 'chooser' ? T.couldNot(err.message) : T.reFailed(err.message)) + T.oneAppToast, 9000);
+      p.offlineThunk = () => T.offlineDrop(p.label);
+      if (p.isActive) refreshCard();
+    }
+  } finally {
+    $('connectBig').disabled = false;
+    if (p.attemptTicker) { clearInterval(p.attemptTicker); p.attemptTicker = null; }
+  }
+}
+async function runChooser(p, fresh) {
+  try {
+    if (p.device && p.device.gatt.connected) {
+      const gone = new Promise((res) => p.device.addEventListener('gattserverdisconnected', res, { once: true }));
+      p.device.gatt.disconnect();
+      await Promise.race([gone, new Promise((res) => setTimeout(res, 2000))]);
+    }
+  } catch { /* nothing to drop */ }
+  setStatus(() => T.choosing);
+  try {
+    const device = await p.bms.requestDevice();
+    log(`chooser: picked "${device.name || '(no name)'}" id=${String(device.id || '').slice(0, 10)}…`);
+    const dup = [...packs.values()].find((x) => x !== p && x.device && x.device.id === device.id);
+    if (dup) { toast(T.alreadyAdded(device.name || device.id)); connAct(p, 'chooser-cancelled'); setActive(dup); return; }
+    p.device = device;
+    if (fresh) { p.id = `bt-${device.id}`; addPack(p); setActive(p); }
+    connAct(p, 'picked');
+  } catch (err) {
+    setStatus(err.message, 'bad');
+    log(`connect failed: ${err.message}`);
+    if (!/cancelled/i.test(err.message)) toast(T.couldNot(err.message) + T.oneAppToast);
+    connAct(p, 'chooser-cancelled');
+  }
+}
 async function freshHandle(device) {
   try {
     if (navigator.bluetooth.getDevices) {
@@ -781,103 +800,38 @@ async function freshHandle(device) {
   } catch { /* not supported or denied - keep the old handle */ }
   return device;
 }
-
-// Android's BLE stack often refuses the first GATT connect outright
-// ("Connection attempt failed", status 133) and accepts the next one a second
-// later - seen live 2026-09-18: three taps, third one worked. So one tap makes
-// up to CONNECT_TRIES attempts before the failure is shown.
-const CONNECT_TRIES = 3, CONNECT_GAP_MS = 1500;
-const retryableConnectError = (e) => !/cancel|not found|no such|permission/i.test(e.message);
-async function connectTo(p, device) {
-  const name = device.name || device.id;
-  const CONNECT_S = 15;
-  let left = CONNECT_S, attempt = 1;
-  const show = () => { const txt = () => (attempt > 1 ? T.connectingRetry(name, left, attempt, CONNECT_TRIES) : T.connectingTo(name, left)); if (p.isActive) setStatus(txt); setCount(p, txt); };
-  p.connectPending = true; show(); refreshCard();
-  const ticker = setInterval(() => { left = Math.max(0, left - 1); show(); }, 1000);
-  $('connectBig').disabled = true;
-  try {
-    for (;;) {
-      const t0 = Date.now();
-      try { await p.bms.connect(device, { timeoutMs: CONNECT_S * 1000 }); p.plog(`connect: ok on attempt ${attempt} in ${Date.now() - t0} ms`); return; } catch (err) {
-        p.plog(`connect: attempt ${attempt} failed after ${Date.now() - t0} ms: ${err.message}`);
-        if (attempt >= CONNECT_TRIES || !retryableConnectError(err) || p.userDisconnect) throw err;
-        attempt++; left = CONNECT_S; show();
-        await new Promise((r) => setTimeout(r, CONNECT_GAP_MS));
-      }
-    }
-  } finally {
-    p.connectPending = false; clearInterval(ticker); $('connectBig').disabled = false; refreshCard();
-  }
-}
-
 if (navigator.bluetooth && navigator.bluetooth.addEventListener) {
   navigator.bluetooth.addEventListener('availabilitychanged', (e) => {
     log(`bluetooth adapter ${e.value ? 'available' : 'unavailable'}`);
     if (!e.value) setStatus(() => T.btOff, 'bad');
-    else for (const p of packs.values()) if (p.reconnecting && !p.connectPending && !p.reTimer) startReconnectCountdown(p, 3);
+    else for (const p of packs.values()) if (!p.remote && !p.demo) connAct(p, 'adapter-available');
   });
 }
-
 // Connect a BMS: into `p` (reconnect of a known pack) or a new pack (+ Add BMS).
-async function startConnect(p) {
-  try {
-    const fresh = !p;
-    if (fresh) p = new Pack(`bt-${++packSeq}`, `BMS ${packs.size + 1 - (packs.size && [...packs.values()].some((x) => x.demo) ? 1 : 0)}`);
-    else { showReconnectIdle(p); p.userDisconnect = false; }   // an explicit Connect tap lifts an earlier Cancel
-    try {
-      if (p.device && p.device.gatt.connected) {
-        const gone = new Promise((res) => p.device.addEventListener('gattserverdisconnected', res, { once: true }));
-        p.device.gatt.disconnect();
-        await Promise.race([gone, new Promise((res) => setTimeout(res, 2000))]);
-      }
-    } catch { /* nothing to drop */ }
-    setStatus(() => T.choosing);
-    const device = await p.bms.requestDevice();
-    log(`chooser: picked "${device.name || '(no name)'}" id=${String(device.id || '').slice(0, 10)}…`);
-    if ([...packs.values()].some((x) => x !== p && x.device && x.device.id === device.id)) { toast(T.alreadyAdded(device.name || device.id)); setActive(packs.get([...packs.values()].find((x) => x.device && x.device.id === device.id).id)); return; }
-    p.device = device; p.id = fresh ? `bt-${device.id}` : p.id;
-    if (fresh) { addPack(p); setActive(p); }
-    await connectTo(p, device);
-  } catch (err) {
-    setStatus(err.message, 'bad');
-    log(`connect failed: ${err.message}`);
-    if (!/cancelled/i.test(err.message)) toast(T.couldNot(err.message) + T.oneAppToast);
-    if (p && packs.has(p.id)) {
-      // a device was picked but would not connect: keep trying on the countdown
-      // (Reconnect now is offered there) instead of dropping back to the chooser
-      if (p.device && !/cancelled/i.test(err.message) && $('autoRe').checked) { p.offlineThunk = () => T.offlineDrop(p.label); startReconnectCountdown(p, 5); }
-      else showReconnectIdle(p);
-      refreshCard();
-    }
-  }
+function startConnect(p) {
+  const fresh = !p;
+  if (fresh) p = new Pack(`bt-${++packSeq}`, `BMS ${packs.size + 1 - (packs.size && [...packs.values()].some((x) => x.demo) ? 1 : 0)}`);
+  connAct(p, 'tap-connect', { fresh });
 }
 $('connectBig').addEventListener('click', () => startConnect(null));
 $('connectAgain').addEventListener('click', () => startConnect(active && !active.remote && !active.demo ? active : null));
-els.disconnect.addEventListener('click', () => { const p = active; if (!p || !p.bms) return; p.userDisconnect = true; showReconnectIdle(p); p.bms.disconnect(); });
+els.disconnect.addEventListener('click', () => { const p = active; if (!p || !p.bms) return; connAct(p, 'disconnect'); });
+$('reNow').addEventListener('click', () => { const p = active; if (!p || p.remote) return; p.plog('reconnect: user tapped Reconnect now'); connAct(p, 'reconnect-now'); });
+$('cancelRe').addEventListener('click', () => { const p = active; if (!p || p.remote) return; p.plog('reconnect: cancelled by user'); connAct(p, 'cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); });
 
 // ---- Share live (publisher) ----
 // One line for both chips: viewers, path (and how many are on direct Wi-Fi),
 // server connections against the free cap, or the retry countdown.
 // The server count (connections in use / free cap) is shown in every state
 // once the relay has reported it, so a full server is never a surprise.
-function liveText(s, fmtChip) {
-  const srv = s.server && s.server.limit ? ' · ' + T.serverConns(s.server.conns, s.server.limit) : '';
-  if (!s.net) return T.netOffline;                 // this device has no internet: nothing else can be judged
-  if (s.sig === false) return T.serverUnreachable + srv;    // internet ok, but the server does not answer (null = first connect in progress)
-  if (s.reader === false) return T.readerOffline + srv;   // viewer only: server says the reader is not there
-  if (s.retryIn !== null && s.retryIn !== undefined) return `${s.error ? T.liveError(s.error) + ' · ' : ''}${T.retryIn(s.retryIn)}${srv}`;
-  if (!s.live) return (s.error ? T.liveError(s.error) : T.liveConnecting) + srv;
-  const path = (T.path[s.path.tier] || s.path.label) + (s.path.sub && T.pathSub[s.path.sub] ? ` · ${T.pathSub[s.path.sub]}` : '');
-  const extra = [];
-  if (s.p2p) extra.push(T.p2pCount(s.p2p));
-  return fmtChip(s.viewers, path) + (extra.length ? ' · ' + extra.join(' · ') : '') + srv;
-}
 function renderLiveChip() {
-  if (!publisher) { els.liveChip.hidden = true; els.share.classList.remove('on'); $('liveNote').hidden = true; return; }
+  const b = shareButton(shareS);
+  els.share.classList.toggle('on', b.on); els.share.setAttribute('aria-pressed', b.on); els.share.disabled = b.disabled;
+  els.share.title = b.on ? T.shareOnTitle : (els.share.dataset.title || '');
+  if (!publisher) { els.liveChip.hidden = true; $('liveNote').hidden = true; return; }
   const s = publisher.state;
-  els.liveChip.hidden = false; els.share.classList.add('on'); $('liveNote').hidden = false;
-  els.liveTxt.textContent = liveText(s, T.liveChip);
+  els.liveChip.hidden = false; $('liveNote').hidden = false;
+  els.liveTxt.textContent = liveText(s, T, T.liveChip);
   els.shareLink.value = publisher.link || '';
 }
 async function copyShareLink() {
@@ -907,47 +861,41 @@ function showQr(show) {
 if (new URLSearchParams(location.search).has('test')) window.__batrayTest = { renderQr };
 // Share setup: a name the viewers see, and whether to keep the earlier link
 // (room + key saved on this device, so a restart does not orphan bookmarks).
-let channelName = '';
 const savedShare = () => { try { return parseSavedShare(localStorage.getItem('batray_share_last')); } catch { return null; } };
 function openSharePanel() {
-  const saved = savedShare();
   let savedName = ''; try { savedName = localStorage.getItem('batray_share_name') || ''; } catch {}
-  const dev = active && !active.remote && !active.demo ? active.label : '';
-  $('shareName').value = suggestChannelName({ saved: savedName, deviceName: dev });
-  const cb = $('shareReuse');
-  cb.disabled = !saved; cb.checked = !!saved;
-  $('shareReuseInfo').textContent = saved ? T.shareReuseFrom(fmtSpan((Date.now() - saved.at) / 3600000) === '-' ? '' : fmtSpan((Date.now() - saved.at) / 3600000) + ' ago') : T.shareReuseNone;
+  const m = shareSetupModel({ savedName, deviceName: active && !active.remote && !active.demo ? active.label : '', saved: savedShare(), now: Date.now(), suggest: suggestChannelName });
+  $('shareName').value = m.name;
+  const cb = $('shareReuse'); cb.disabled = !m.reuseEnabled; cb.checked = m.reuseChecked;
+  $('shareReuseInfo').textContent = m.reuseEnabled ? T.shareReuseFrom(fmtSpan(m.savedAgeH) === '-' ? '' : fmtSpan(m.savedAgeH) + ' ago') : T.shareReuseNone;
   $('sharePanel').hidden = false; $('sharePanel').open = true; $('sharePanel').scrollIntoView({ block: 'start', behavior: 'smooth' });
   $('shareName').focus();
 }
-function renderChannelName() {
-  $('qrName').textContent = channelName;
-}
-async function startShare() {
-  if (publisher) { copyShareLink(); return; }
-  openSharePanel();
+function renderChannelName() { $('qrName').textContent = shareS.name; }
+// the toolbar button: sunk while sharing, and pressing it then stops the share (toast)
+function shareTap() {
+  const d = shareTapDecision(shareS);
+  log(`share: tap -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}`);
+  if (d.action === 'stop') stopShare('toolbar');
+  else if (d.action === 'setup') openSharePanel();
 }
 async function beginShare() {
-  if (publisher) return;
-  channelName = $('shareName').value.trim().slice(0, 40) || suggestChannelName({ saved: '', deviceName: '' });
-  try { localStorage.setItem('batray_share_name', channelName); } catch {}
-  const reuse = $('shareReuse').checked ? savedShare() : null;
-  log(`share: name "${channelName}", ${reuse ? `reusing room ${reuse.room}` : 'new room'}`);
+  const b = shareBegin(shareS, { typedName: $('shareName').value, reuseChecked: $('shareReuse').checked, saved: savedShare(), suggest: suggestChannelName });
+  if (b.action !== 'start') { log(`share: start -> ${b.action} (${b.why})`); return; }
+  try { localStorage.setItem('batray_share_name', b.name); } catch {}
+  log(`share: name "${b.name}", ${b.reuse ? `reusing room ${b.reuse.room}` : 'new room'}`);
   $('sharePanel').hidden = true;
-  els.share.disabled = true;
-  let lastViewers = 0;
+  renderLiveChip(); syncWake();
   publisher = new Publisher({ log, onState: (s) => {
     renderLiveChip(); syncWake(); watchReach(s);
-    if (s.viewers !== lastViewers) {
-      const joined = s.viewers > lastViewers; lastViewers = s.viewers;
-      if (alerts) alerts.notify('viewers', joined ? T.evViewerJoined : T.evViewerLeft, T.evWatching(s.viewers));
-    }
+    const v = viewersChange(shareS, s.viewers);
+    if (v && alerts) alerts.notify('viewers', v.joined ? T.evViewerJoined : T.evViewerLeft, T.evWatching(v.viewers));
   } });
-  renderLiveChip();
   try {
-    await publisher.start(reuse);
+    await publisher.start(b.reuse);
     try { localStorage.setItem('batray_share_last', JSON.stringify(publisher.credentials)); } catch {}
-    if (reuse && !publisher.reused) toast(T.shareNewLink, 9000);
+    const st = shareStarted(shareS, { link: publisher.link, reused: publisher.reused });
+    if (st.toastNewLink) toast(T.shareNewLink, 9000);
     renderChannelName();
     showQr(true);
     copyShareLink();
@@ -957,12 +905,12 @@ async function beginShare() {
   } catch (err) {
     log(`share failed: ${err.message}`);
     toast(T.shareFailed(err.message), 9000);
-    publisher.stop(); publisher = null; renderLiveChip();
-  } finally { els.share.disabled = false; syncWake(); }
+    publisher.stop(); publisher = null; shareFailed(shareS);
+  } finally { renderLiveChip(); syncWake(); }
 }
 function sendSnapshots() {
   if (!publisher) return;
-  publisher.publish(envelope('hello', { id: '*', name: '*' }, { channel: channelName, version: APP_VERSION }));
+  publisher.publish(envelope('hello', { id: '*', name: '*' }, { channel: shareS.name, version: APP_VERSION }));
   const list = [...packs.values()].map((p) => ({ id: p.id, name: p.label, demo: !!p.demo, connected: p.connected }));
   publisher.publish(envelope('packs', { id: '*', name: '*' }, list));
   for (const p of packs.values()) {
@@ -971,20 +919,22 @@ function sendSnapshots() {
     if (p.data) publisher.publish(envelope('data', p, p.data));
   }
 }
-async function stopShare() {
+async function stopShare(why = 'chip') {
   if (!publisher) return;
+  log(`share: stop (${why})`);
   clearInterval(publisher.snapshotTimer);
-  await publisher.stop(); publisher = null;
-  showQr(false);
+  const pub = publisher; publisher = null; shareStopped(shareS);
   renderLiveChip(); syncWake();
+  await pub.stop();
+  showQr(false); renderLiveChip();
   toast(T.shareStopped, 5000);
 }
-els.share.addEventListener('click', startShare);
+els.share.addEventListener('click', shareTap);
 $('shareGo').addEventListener('click', () => beginShare().catch(() => {}));
-$('shareCancel').addEventListener('click', () => { $('sharePanel').hidden = true; });
+$('shareCancel').addEventListener('click', () => { $('sharePanel').hidden = true; shareSetupCancelled(shareS); });
 $('shareName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); beginShare().catch(() => {}); } });
 $('viewStop').addEventListener('click', () => { if (viewer) { viewer.stop(); setStatus(() => T.viewStopped, 'bad'); $('viewStop').hidden = true; els.viewTxt.textContent = T.viewStopped; } });
-els.liveStop.addEventListener('click', stopShare);
+els.liveStop.addEventListener('click', () => stopShare('chip'));
 $('shareCopy').addEventListener('click', copyShareLink);
 $('qrCopy').addEventListener('click', copyShareLink);
 $('qrHide').addEventListener('click', () => showQr(false));
@@ -995,30 +945,30 @@ function renderViewChip() {
   if (!viewer) { els.viewChip.hidden = true; return; }
   const s = viewer.state;
   els.viewChip.hidden = false;
-  els.viewTxt.textContent = liveText(s, T.viewChip);
+  els.viewTxt.textContent = liveText(s, T, T.viewChip);
   $('viewStop').hidden = !(s.retryIn !== null && s.retryIn !== undefined);
 }
-let readerLive = false, readerSeen = false, viewChannel = '';
 // only the server's word counts as "reader offline"; our own socket being down is "reconnecting"
 function readerGone() { return !!(viewer && viewer.state.sig && viewer.state.reader === false); }
-// Internet / server reachability of THIS device, same on both sides. A state
-// must hold 10 s before it is announced, so a socket reopen is not an outage.
-let reach = 'ok', reachTimer = null;
+// Internet / server reachability of THIS device, same on both sides: share-logic.js
+// holds a change for REACH_HOLD_MS before it is announced (a socket reopen is not an outage).
+let reachTimer = null;
 function watchReach(s) {
-  const now = !s.net ? 'net' : (s.sig === false ? 'server' : 'ok');
-  if (now === reach) { clearTimeout(reachTimer); reachTimer = null; return; }
-  if (reachTimer) return;
+  const d = reachEvent(reachS, s, Date.now());
+  if (!d) return;
+  if (d.clear) { clearTimeout(reachTimer); reachTimer = null; return; }
+  clearTimeout(reachTimer);
   reachTimer = setTimeout(() => {
     reachTimer = null;
-    const st = viewer ? viewer.state : (publisher ? publisher.state : null); if (!st) return;
-    const cur = !st.net ? 'net' : (st.sig === false ? 'server' : 'ok');
-    if (cur === reach) return;
-    const prev = reach; reach = cur;
+    const st = viewer ? viewer.state : (publisher ? publisher.state : null);
+    const a = reachSettle(reachS, st, Date.now());
+    if (!a) return;
+    log(`reach: ${a.prev} -> ${a.announce}`);
     if (!alerts) return;
-    if (cur === 'net') alerts.notify('net', T.evNetOff, T.evNetOffBody);
-    else if (cur === 'server') alerts.notify('net', T.evServerOff, T.evServerOffBody);
-    else alerts.notify('net', T.evNetOn, prev === 'net' ? T.evNetOnBody : T.evServerOnBody);
-  }, 10000);
+    if (a.announce === 'net') alerts.notify('net', T.evNetOff, T.evNetOffBody);
+    else if (a.announce === 'server') alerts.notify('net', T.evServerOff, T.evServerOffBody);
+    else alerts.notify('net', T.evNetOn, a.prev === 'net' ? T.evNetOnBody : T.evServerOnBody);
+  }, d.hold);
 }
 function startView() {
   document.body.classList.add('view');
@@ -1031,17 +981,15 @@ function startView() {
     onState: (s) => {
       renderViewChip(); watchReach(s);
       for (const p of packs.values()) { p.remoteLive = s.live; }
-      // reader online/offline is the server's word (its session registered or
-      // not), judged only while our own socket is up - our internet dropping
-      // is reported as that, never as the reader vanishing
-      if (s.sig && s.reader !== null && s.reader !== readerLive) { readerLive = s.reader; if (readerSeen && alerts) alerts.notify('reader', readerLive ? T.evReaderOn : T.evReaderOff, readerLive ? T.evReaderOnBody : T.evReaderOffBody); if (readerLive) readerSeen = true; }
+      const ve = viewerEvent(viewS, s);           // the reader's presence: share-logic.js decides what is worth an alert
+      if (ve && alerts) alerts.notify('reader', ve.readerAlert === 'on' ? T.evReaderOn : T.evReaderOff, ve.readerAlert === 'on' ? T.evReaderOnBody : T.evReaderOffBody);
       if (active) { if (!s.live) setStatus(() => (s.reader === false ? T.viewOfflineShort : T.viewReconnecting), 'bad'); else setStatus(() => T.viewingPack(active.label), 'good'); }
       refreshCard(); renderPackBar(); syncWake();
     },
     onEnvelope: (env) => {
       if (env.k === 'hello') {
-        const name = env.v && typeof env.v.channel === 'string' ? env.v.channel.slice(0, 40) : '';
-        if (name !== viewChannel) { viewChannel = name; $('viewName').textContent = name; $('viewName').hidden = !name; document.title = name ? `${name} · BatRay live` : document.title; log(`live: channel "${name}"${env.v.version ? ` (reader v${env.v.version})` : ''}`); }
+        const h = viewHello(viewS, env);
+        if (h) { $('viewName').textContent = h.name; $('viewName').hidden = !h.name; document.title = h.name ? `${h.name} · BatRay live` : document.title; log(`live: channel "${h.name}"${h.version ? ` (reader v${h.version})` : ''}`); }
         return;
       }
       if (env.k === 'packs') {
@@ -1052,7 +1000,7 @@ function startView() {
       }
       let p = packs.get(env.p.id);
       if (!p) { p = addPack(new Pack(env.p.id, env.p.name, { remote: true })); }
-      p.remoteLive = true; readerSeen = true;
+      p.remoteLive = true; viewerDataSeen(viewS);
       if (env.k === 'info') { p.info = env.v; if (p.isActive) renderDevice(env.v); }
       else if (env.k === 'settings') { p.settings = env.v; if (p.isActive) renderSettings(env.v); }
       else if (env.k === 'data') { p.take(env.v); if (p.isActive) { render(env.v); refreshCard(); } renderPackBar(); }
@@ -1094,8 +1042,7 @@ function renderTv(s) {
   // shows only where it can. Cast is offered everywhere the cast library runs.
   const canHls = !!v.canPlayType('application/vnd.apple.mpegurl');
   $('tvPreviewRow').hidden = !canHls; $('tvNoPreview').hidden = canHls;
-  // a live playlist needs a few segments before a player will start: wait for 3
-  if (canHls && s.segs >= 3 && !v.getAttribute('src')) startPreview(v, s.url);
+  if (tvPreviewWanted(s, canHls, !!v.getAttribute('src'))) startPreview(v, s.url);
   const pull = s.pullAgeS === null || s.pullAgeS === undefined ? T.tvNotPulled : T.tvPulled(s.pullAgeS);
   $('tvStat').textContent = (s.error ? T.tvErr(s.error) + ' · ' : '') + T.tvStat(s.segs, Math.round(s.bytes / 1024), pull) + (s.segs < 3 ? ' · ' + T.tvStarting : '');
 }
@@ -1139,7 +1086,6 @@ function castHint(txt, disabled = false) { $('tvCastHint').textContent = txt; $(
 // second request while one is pending fails with invalid_parameter until the
 // page reloads - both phones, 2026-09-20). This code loads the library, asks
 // the decision functions, acts, and logs the TV's own player state.
-const castS = castState();
 let castWaiters = [], castPlayer = null;
 function wireCastState() {
   if (castWired) return; castWired = true;
@@ -1194,7 +1140,7 @@ async function castToTv() {
     info.streamType = chrome.cast.media.StreamType.LIVE;
     info.hlsSegmentFormat = chrome.cast.media.HlsSegmentFormat.FMP4;
     info.hlsVideoSegmentFormat = chrome.cast.media.HlsVideoSegmentFormat.FMP4;
-    info.metadata = new chrome.cast.media.GenericMediaMetadata(); info.metadata.title = `BatRay · ${channelName || (active ? active.label : '')}`;
+    info.metadata = new chrome.cast.media.GenericMediaMetadata(); info.metadata.title = `BatRay · ${shareS.name || (active ? active.label : '')}`;
     const req = new chrome.cast.media.LoadRequest(info); req.autoplay = true;
     await sess.loadMedia(req);
     const dev = sess.getCastDevice ? sess.getCastDevice().friendlyName : '';
@@ -1211,46 +1157,71 @@ async function castToTv() {
     toast(T.tvCastFailed(msg), 9000);
   }
 }
+// every button and note of the TV card and the toolbar follow tvS (tv-logic.js)
+function renderTvButtons() {
+  const b = tvButtons(tvS);
+  $('tv').classList.toggle('on', b.on); $('tv').setAttribute('aria-pressed', b.on); $('tv').title = b.on ? T.tvOnTitle : ($('tv').dataset.title || '');
+  $('tvStart').hidden = b.startHidden; $('tvStart').disabled = b.startDisabled; $('tvStop').hidden = b.stopHidden; $('tvRes').disabled = b.resDisabled;
+  $('tvLive').hidden = b.liveHidden; $('tvNote').hidden = b.noteHidden;
+  $('tvPanel').hidden = b.panelHidden; if (!b.panelHidden) $('tvPanel').open = true;
+}
 async function startTv(opts = {}) {
   if (tv) return tv.state.url;
+  const d = tvStartDecision(tvS);
+  log(`tv: start -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}`);
+  if (d.action !== 'start') return null;
+  renderTvButtons();
   const [w, h] = (opts.res || $('tvRes').value).split('x').map(Number);
   try { localStorage.setItem('batray_tv_res', $('tvRes').value); } catch {}
-  $('tvStart').disabled = true;
   const t = new TvStream({ width: w, height: h, model: tvModel, log, onState: renderTv, ...opts });
   tv = t;
   try {
     const url = await t.start();
-    $('tvStop').hidden = false; $('tvStart').hidden = true; $('tvRes').disabled = true; $('tvLive').hidden = false; $('tvNote').hidden = false; castHint(T.tvCastLoads); renderTv(t.state); syncWake();
+    tvStarted(tvS); renderTvButtons(); castHint(T.tvCastLoads); renderTv(t.state); syncWake();
     toast(T.tvStarting, 9000);
     return url;
   } catch (e) {
     log(`tv failed: ${e.message}`); toast(e.code === 'nocodec' ? T.tvNoCodec : T.tvFailed(e.message), 9000);
-    tv = null; try { await t.stop(); } catch {}
+    tv = null; tvStartFailed(tvS); renderTvButtons(); try { await t.stop(); } catch {}
     throw e;
-  } finally { $('tvStart').disabled = false; }
+  }
 }
-async function stopTv() {
+async function stopTv(why = 'card') {
   if (!tv) return;
-  const t = tv; tv = null;
+  const t = tv; tv = null; tvStopped(tvS); renderTvButtons();
+  log(`tv: stop (${why})`);
   await t.stop();
-  const v = $('tvVideo'); v.removeAttribute('src'); v.load();
-  $('tvStop').hidden = true; $('tvStart').hidden = false; $('tvRes').disabled = false; $('tvLive').hidden = true; $('tvNote').hidden = true; $('tvQr').hidden = true;
+  const v = $('tvVideo'); v.removeAttribute('src'); v.load(); $('tvQr').hidden = true;
   syncWake(); toast(T.tvStopped, 5000);
 }
 (function () {
   try { const r = localStorage.getItem('batray_tv_res'); if (r && [...$('tvRes').options].some((o) => o.value === r)) $('tvRes').value = r; } catch {}
-  $('tv').addEventListener('click', () => { const p = $('tvPanel'); p.hidden = !p.hidden; if (!p.hidden) { p.open = true; p.scrollIntoView({ block: 'start', behavior: 'smooth' }); } });
-  $('tvClose').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); $('tvPanel').hidden = true; });
+  $('tv').dataset.title = $('tv').title; els.share.dataset.title = els.share.title;
+  // the toolbar button: opens the card; sunk while streaming, and pressing it then stops the stream (toast)
+  $('tv').addEventListener('click', () => {
+    const d = tvTapDecision(tvS);
+    log(`tv: tap -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}`);
+    if (d.action === 'stop') { stopTv('toolbar'); return; }
+    renderTvButtons();
+    if (d.action === 'open-panel') $('tvPanel').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  });
+  $('tvClose').addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const d = tvCloseDecision(tvS);
+    log(`tv: close -> ${d.action}`);
+    if (d.action === 'stop') stopTv('close'); else renderTvButtons();
+  });
   $('tvStart').addEventListener('click', () => startTv().catch(() => {}));
-  $('tvStop').addEventListener('click', stopTv);
+  $('tvStop').addEventListener('click', () => stopTv('card'));
   $('tvCast').addEventListener('click', () => castToTv());
   $('tvCopy').addEventListener('click', async () => { if (!tv) return; try { await navigator.clipboard.writeText(tv.state.url); toast(T.linkCopied, 6000); } catch { toast(T.linkCopyManual, 8000); } });
   $('tvQrBtn').addEventListener('click', () => { const c = $('tvQr'); if (!tv) return; if (c.hidden) { renderQr(tv.state.url, c); c.hidden = false; } else c.hidden = true; });
-  window.addEventListener('pagehide', () => { if (tv) { const t = tv; tv = null; t.stop(); } });
+  window.addEventListener('pagehide', () => { if (tv) { const t = tv; tv = null; tvStopped(tvS); t.stop(); } });
 })();
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), connState: () => (active && active.cs ? { ...active.cs } : null),
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
 
@@ -1294,7 +1265,7 @@ $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('ab
 (function () {
   const cb = $('autoRe');
   try { const v = localStorage.getItem('batray_auto_reconnect'); if (v !== null) cb.checked = v === '1'; } catch {}
-  cb.addEventListener('change', () => { try { localStorage.setItem('batray_auto_reconnect', cb.checked ? '1' : '0'); } catch {} if (!cb.checked) for (const p of packs.values()) showReconnectIdle(p); });
+  cb.addEventListener('change', () => { try { localStorage.setItem('batray_auto_reconnect', cb.checked ? '1' : '0'); } catch {} if (!cb.checked) for (const p of packs.values()) if (!p.remote && !p.demo) connAct(p, 'auto-off'); });
 })();
 (function () {
   let z = +localStorage.getItem('ce_zoom') || 100;
@@ -1315,7 +1286,7 @@ setInterval(() => {
   const tvs = tv ? `tv(segs=${tv.state.segs} kb=${Math.round(tv.state.bytes / 1024)} pull=${tv.state.pullAgeS}s err=${tv.state.error || '-'})` : '';
   const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
   if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
-  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
+  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
 }, 60000);
 $('lang').innerHTML = Object.keys(I18N).map((k) => `<option value="${k}">${I18N[k].langName}</option>`).join('');
 $('lang').addEventListener('change', () => { try { localStorage.setItem('batray_lang', $('lang').value); } catch {} log(`language: ${$('lang').value}`); applyLang($('lang').value); });

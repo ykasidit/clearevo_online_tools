@@ -49,6 +49,16 @@ Windows XP theme (xp.css window + title bar), A-/A+ font-size buttons top-right,
 PWA manifest + icons, an emoji favicon, and a status bar with the privacy note +
 "verify" link. See the app READMEs for details.
 
+## State handling (BatRay, and the rule for every app from 2026-09-20 on)
+
+Stateful flows keep their state in one plain object per flow and decide through
+pure functions that take that object as a parameter ("functional core,
+imperative shell"; the author's preference from kernel, Go and Rust work, where
+a context struct is passed in and the function stays pure). `<flow>-logic.js`
+is the core, `<flow>.js` the I/O, `test/<app>_<flow>.test.js` replays the
+sequence from a real log. See [BatRay's README](public/batray/README.md#code-layout-functional-core-imperative-shell)
+for the layout and the table of flows.
+
 ## Copyright & license
 
 Copyright (C) 2026 Kasidit Yusuf.
