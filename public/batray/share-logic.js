@@ -14,8 +14,8 @@
 //
 // Functional core of the share flow (the reader's side), the viewer's reader
 // presence bookkeeping and the internet/server reachability hold. Envelopes,
-// keys and `readerPresent` live in live-logic.js; the sockets in live.js.
-// House rule 2026-09-20: one plain state object, pure decisions, app.js acts.
+// keys and `readerPresent` live in the live-logic module; the sockets in the live module.
+// House rule 2026-09-20: one plain state object, pure decisions, the app shell acts.
 //
 // share phases: off | setup | starting | on
 
@@ -111,5 +111,5 @@ export function viewHello(vs, env) {
   if (name === vs.channel) return null;
   vs.channel = name; return { name, version: env.v && env.v.version ? String(env.v.version) : '' };
 }
-/** A reading arrived: that proves the reader (live.js already judges freshness before it says reader=false). */
+/** A reading arrived: that proves the reader (the live module already judges freshness before it says reader=false). */
 export function viewerDataSeen(vs) { vs.readerSeen = true; vs.readerLive = true; }

@@ -14,7 +14,7 @@
 //
 // Functional core of the connect / retry / reconnect-countdown flow (house rule
 // 2026-09-20: the state is one plain object, `connState()`, that the app owns
-// and passes in; these functions update it and return what to do next; app.js
+// and passes in; these functions update it and return what to do next; the app shell
 // runs the chooser, the GATT calls, the timers and the card). Facts encoded
 // here come from live logs: Android refuses the first GATT connect (status
 // 133) and takes the next one 1.5 s later (2026-09-18); a link that goes quiet
