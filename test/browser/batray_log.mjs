@@ -30,7 +30,6 @@ let fails = 0;
 const check = (name, cond, got) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : ` - got ${JSON.stringify(got).slice(0, 500)}`}`); if (!cond) fails++; };
 
 await send('Page.addScriptToEvaluateOnNewDocument', { source: `
-  window.__confirmAnswer = true; window.confirm = () => window.__confirmAnswer;
   window.__logPosts = [];
   const rf = window.fetch.bind(window);
   window.fetch = async (u, i = {}) => {
@@ -61,11 +60,15 @@ lines = await evalJs(`window.__batrayTest.logLines()`);
 check('status changes and the demo start are logged', lines.some((l) => /status: DEMO/.test(l)) && lines.filter((l) => /status: /.test(l)).length >= 2, lines.filter((l) => /status:/.test(l)).slice(-3));
 
 // upload: declined at the warning -> nothing sent
-await evalJs(`window.__confirmAnswer = false; document.getElementById('upload').click(); 1`); await sleep(300);
+await evalJs(`document.getElementById('upload').click(); 1`); await sleep(300);
+const warn = await evalJs(`({ shown: !document.getElementById('sheet').hidden, lead: document.getElementById('sheetLead').textContent, ok: !!document.querySelector('#sheetActs [data-act=ok]') })`);
+check('the upload warning is a bottom sheet carrying the full wording, not a confirm()', warn.shown && /90 days/.test(warn.lead) && warn.ok, warn);
+await evalJs(`document.querySelector('#sheetActs [data-act=cancel]').click(); 1`); await sleep(300);
 let posts = await evalJs(`window.__logPosts.length`);
 check('declining the warning sends nothing', posts === 0 && (await evalJs(`window.__batrayTest.logLines().some((l) => /log upload: declined/.test(l))`)), posts);
 // accepted -> header + --- + lines, id shown
-await evalJs(`window.__confirmAnswer = true; document.getElementById('upload2').click(); 1`); await sleep(600);
+await evalJs(`document.getElementById('upload2').click(); 1`); await sleep(200);
+await evalJs(`document.querySelector('#sheetActs [data-act=ok]').click(); 1`); await sleep(600);
 const post = await evalJs(`window.__logPosts[0] ? { method: window.__logPosts[0].method, ct: window.__logPosts[0].headers['Content-Type'], head: window.__logPosts[0].body.slice(0, 40), hasSep: window.__logPosts[0].body.includes('\\n---\\n'), hasBoom: window.__logPosts[0].body.includes('boom thrown'), len: window.__logPosts[0].body.length } : null`);
 const ui = await evalJs(`({ idTxt: document.getElementById('uploadId').textContent, shown: !document.getElementById('uploadId').hidden, toast: document.getElementById('toast').textContent })`);
 check('accepting uploads header + separator + log as text/plain and shows the id', post && post.method === 'POST' && /text\/plain/.test(post.ct) && /^BatRay v/.test(post.head) && post.hasSep && post.hasBoom && post.len > 1000, post);

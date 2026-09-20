@@ -18,6 +18,7 @@ import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } fr
 import { fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { connState, connEvent, connCard, packChipState, wakeWantedByConn, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
+import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted } from './tv-logic.js';
 import { startDemo } from './demo.js';
 import { I18N, detectLang } from './i18n.js';
@@ -29,7 +30,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.23';
+export const APP_VERSION = '0.9.24';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -83,9 +84,9 @@ function logHeaderLines() {
     `platform: ${navigator.platform} · uaData ${uad ? JSON.stringify({ brands: uad.brands, mobile: uad.mobile, platform: uad.platform }) : 'n/a'} · cores ${navigator.hardwareConcurrency || '?'} · mem ${navigator.deviceMemory || '?'} GB`,
     `screen: ${screen.width}x${screen.height} @${devicePixelRatio} · viewport ${innerWidth}x${innerHeight} · touch ${navigator.maxTouchPoints} · orientation ${safe(() => screen.orientation.type)} · visibility ${document.visibilityState}`,
     `net: online=${navigator.onLine} · type ${c.type || c.effectiveType || '?'} · downlink ${c.downlink ?? '?'} Mbps · rtt ${c.rtt ?? '?'} ms · saveData ${c.saveData ?? '?'}`,
-    `lang: ui=${$('lang').value} · browser ${navigator.language} · ${(navigator.languages || []).join(',')}`,
+    `lang: ui=${langCode} · browser ${navigator.language} · ${(navigator.languages || []).join(',')}`,
     `features: secure=${yn(isSecureContext)} bluetooth=${yn(!!navigator.bluetooth)} adv=${yn(typeof BluetoothDevice !== 'undefined' && 'watchAdvertisements' in BluetoothDevice.prototype)} getDevices=${yn(navigator.bluetooth && navigator.bluetooth.getDevices)} availability=${yn(navigator.bluetooth && navigator.bluetooth.getAvailability)} wakeLock=${yn('wakeLock' in navigator)} notifications=${typeof Notification === 'undefined' ? 'none' : Notification.permission} sw=${navigator.serviceWorker && navigator.serviceWorker.controller ? 'controlled' : 'none'} webCodecs=${yn(typeof VideoEncoder !== 'undefined')} hls=${v.canPlayType('application/vnd.apple.mpegurl') || 'no'} remotePlayback=${yn('remote' in v)} storage=${yn(storageOk)} clipboard=${yn(navigator.clipboard && navigator.clipboard.writeText)}`,
-    `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutoffPct}% keepAwake=${wakeS.mode} tvRes=${$('tvRes').value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
+    `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutoffPct}% keepAwake=${wakeS.mode} lowPower=${uiS.lowPower} tvRes=${$('tvRes').dataset.value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
   ];
 }
 // what the header cannot know synchronously: battery, codec support, adapter state
@@ -214,6 +215,8 @@ let publisher = null, viewer = null, tv = null;     // IO handles (sockets, enco
 // decisions in the *-logic.js modules (functional core), this file acts on
 // them (imperative shell) and logs every decision. Per-pack BLE state is p.cs. ----
 const shareS = shareState(), tvS = tvUiState(), castS = castState(), viewS = viewState(), reachS = reachState();
+const uiS = uiState(viewMode ? 'viewer' : 'reader');
+let langCode = 'en';
 const wakeS = wakeState('wakeLock' in navigator);
 
 function addPack(pack) { packs.set(pack.id, pack); if (!active) setActive(pack); renderPackBar(); return pack; }
@@ -290,7 +293,8 @@ function renderPackBar() {
 function applyLang(code) {
   T = I18N[code] || I18N.en;
   document.documentElement.lang = code;
-  $('lang').value = code;
+  langCode = code; $('langLbl').textContent = code.toUpperCase();
+  $('keepAwake').textContent = T[{ auto: 'keepAwakeAuto', always: 'keepAwakeAlways', never: 'keepAwakeNever' }[wakeS.mode]] || wakeS.mode;
   document.querySelectorAll('[data-i18n]').forEach((el) => { const v = T[el.dataset.i18n]; if (typeof v === 'string') el.textContent = v; });
   document.querySelectorAll('[data-i18n-html]').forEach((el) => { const v = T[el.dataset.i18nHtml]; if (typeof v === 'string') el.innerHTML = v; });
   $('fSysLbl').textContent = T.system;
@@ -318,12 +322,14 @@ function applyLang(code) {
 const KEEP_AWAKE_KEY = 'batray_keepawake';
 let wakeLock = null, wakeRetryTimer = null, keepVideo = null;
 try { wakeS.mode = wakeMode(localStorage.getItem(KEEP_AWAKE_KEY)); } catch {}
-$('keepAwake').value = wakeS.mode;
-$('keepAwake').addEventListener('change', () => {
-  wakeS.mode = wakeMode($('keepAwake').value);
+function setKeepAwake(mode) {
+  wakeS.mode = wakeMode(mode);
+  $('keepAwake').dataset.value = wakeS.mode; $('keepAwake').textContent = T[{ auto: 'keepAwakeAuto', always: 'keepAwakeAlways', never: 'keepAwakeNever' }[wakeS.mode]];
   try { localStorage.setItem(KEEP_AWAKE_KEY, wakeS.mode); } catch {}
   log(`keep-awake video: ${wakeS.mode}`); syncKeepAwake();
-});
+}
+$('keepAwake').dataset.value = wakeS.mode;
+$('keepAwake').addEventListener('click', async () => { const m = await openSheet('keepAwake'); if (m) setKeepAwake(m); });
 async function syncKeepAwake() {
   const want = wakeVideoWanted(wakeS);
   if (want && !wakeS.videoOn) {
@@ -918,7 +924,7 @@ function watchReach(s) {
   }, d.hold);
 }
 function startView() {
-  document.body.classList.add('view');
+  document.body.classList.add('view'); $('tabs').hidden = false; renderTabs();
   $('titleText').textContent = `BatRay by ClearEvo.com v${APP_VERSION} · ${T.viewTitle}`;
   for (const el of [els.disconnect, $('autoRe').parentElement, els.share, $('tsep')]) el.hidden = true;
   els.empty.hidden = true;
@@ -1101,8 +1107,7 @@ async function startTv(opts = {}) {
   log(`tv: start -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}`);
   if (d.action !== 'start') return null;
   renderTvButtons();
-  const [w, h] = (opts.res || $('tvRes').value).split('x').map(Number);
-  try { localStorage.setItem('batray_tv_res', $('tvRes').value); } catch {}
+  const [w, h] = (opts.res || $('tvRes').dataset.value).split('x').map(Number);
   const t = new TvStream({ width: w, height: h, model: tvModel, log, onState: renderTv, ...opts });
   tv = t;
   try {
@@ -1125,7 +1130,10 @@ async function stopTv(why = 'card') {
   syncWake(); toast(T.tvStopped, 5000);
 }
 (function () {
-  try { const r = localStorage.getItem('batray_tv_res'); if (r && [...$('tvRes').options].some((o) => o.value === r)) $('tvRes').value = r; } catch {}
+  const RES_LABEL = { '1280x720': '720p', '1920x1080': '1080p' };
+  const setRes = (r) => { if (!RES_LABEL[r]) return; $('tvRes').dataset.value = r; $('tvRes').textContent = RES_LABEL[r]; try { localStorage.setItem('batray_tv_res', r); } catch {} };
+  try { setRes(localStorage.getItem('batray_tv_res')); } catch {}
+  $('tvRes').addEventListener('click', async () => { const r = await openSheet('res'); if (r) { setRes(r); log(`tv: resolution ${r}`); } });
   $('tv').dataset.title = $('tv').title; els.share.dataset.title = els.share.title;
   // the toolbar button: opens the card; sunk while streaming, and pressing it then stops the stream (toast)
   $('tv').addEventListener('click', () => {
@@ -1152,8 +1160,82 @@ if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
   shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), connState: () => (active && active.cs ? { ...active.cs } : null),
+  uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
+
+// ---- UI chrome (UI_GUIDELINES.md): bottom sheet, viewer tabs, Back, low power.
+// Decisions in ui-logic.js over uiS; this code paints and talks to the history API. ----
+const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+let sheetResolve = null, suppressPop = 0;
+function sheetCtx() {
+  const p = active;
+  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, label: p ? p.label : '', lang: langCode, langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode };
+}
+/** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
+function openSheet(kind) {
+  if (sheetResolve) { const r = sheetResolve; sheetResolve = null; r(null); }   // a sheet over a sheet: the first one is dismissed
+  const m = sheetModel(kind, sheetCtx(), T), d = sheetOpen(uiS, kind);
+  $('sheetTitle').textContent = m.title;
+  const lead = $('sheetLead'); lead.textContent = m.lead || ''; lead.className = 'lead' + (m.tone ? ' ' + m.tone : ''); lead.hidden = !m.lead;
+  $('sheetRows').innerHTML = m.rows.map(([k, v]) => `<div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>`).join('');
+  $('sheetOpts').innerHTML = m.options.map((o) => `<button type="button" data-opt="${esc(o.id)}"${o.on ? ' class="on"' : ''}>${esc(o.label)}</button>`).join('');
+  $('sheetActs').innerHTML = m.actions.map((x) => `<button type="button" data-act="${esc(x.id)}" class="${x.primary ? 'demobtn' : 'linkbtn'}"${x.primary ? ' style="padding:10px 18px"' : ''}>${esc(x.label)}</button>`).join('');
+  $('sheet').hidden = false; $('sheetBox').style.transform = ''; $('sheetBox').scrollTop = 0;
+  if (!d.replace) history.pushState({ sheet: kind }, '');
+  log(`ui: sheet ${kind}`);
+  return new Promise((ok) => { sheetResolve = ok; });
+}
+function closeSheet(result = null, why = 'dismiss') {
+  const d = sheetClose(uiS);
+  if (d.action !== 'close') return;
+  $('sheet').hidden = true;
+  const r = sheetResolve; sheetResolve = null; if (r) r(result);
+  log(`ui: sheet ${d.kind} closed (${why}${result !== null ? ': ' + result : ''})`);
+  if (history.state && history.state.sheet) { suppressPop++; history.back(); }   // drop the entry the open pushed
+}
+(function () {
+  $('sheetBack').addEventListener('click', () => closeSheet(null, 'tap outside'));
+  $('sheetOpts').addEventListener('click', (e) => { const b = e.target.closest('[data-opt]'); if (b) closeSheet(b.dataset.opt, 'pick'); });
+  $('sheetActs').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) closeSheet(b.dataset.act, 'action'); });
+  // drag down to dismiss, like a messenger's sheet
+  const box = $('sheetBox'); let y0 = null, dy = 0;
+  box.addEventListener('touchstart', (e) => { if (box.scrollTop > 0) return; y0 = e.touches[0].clientY; dy = 0; }, { passive: true });
+  box.addEventListener('touchmove', (e) => { if (y0 === null) return; dy = Math.max(0, e.touches[0].clientY - y0); box.style.transform = `translateY(${dy}px)`; }, { passive: true });
+  box.addEventListener('touchend', () => { if (y0 === null) return; y0 = null; if (dy > 80) closeSheet(null, 'drag'); else box.style.transform = ''; });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('sheet').hidden) closeSheet(null, 'escape'); });
+  window.addEventListener('popstate', () => {
+    if (suppressPop > 0) { suppressPop--; return; }
+    const d = backDecision(uiS);
+    log(`ui: back -> ${d.action}`);
+    if (d.action === 'close-sheet') { $('sheet').hidden = true; const r = sheetResolve; sheetResolve = null; if (r) r(null); }
+    else if (d.action === 'switch') renderTabs();
+  });
+  // tappable tiles: the battery, the flow, the chips, the cells
+  $('gBatt').addEventListener('click', () => openSheet('soc'));
+  for (const id of ['gSys', 'fPower', 'fAmps', 'fEta']) $(id).addEventListener('click', () => openSheet('flow'));
+  $('strip').addEventListener('click', () => openSheet('chips'));
+  $('cellsStat').addEventListener('click', () => openSheet('cells'));
+  $('cells').addEventListener('click', () => openSheet('cells'));
+  // viewer tabs
+  document.querySelectorAll('[data-tab-btn]').forEach((b) => b.addEventListener('click', () => {
+    const d = tabTap(uiS, b.dataset.tabBtn);
+    if (d.action !== 'switch') return;
+    if (history.state && history.state.tab) history.replaceState({ tab: d.tab }, ''); else history.pushState({ tab: d.tab }, '');   // one history entry for 'not on Now', so Back returns to Now once
+    log(`ui: tab ${d.tab}`); renderTabs();
+    $('main').scrollTop = 0;
+  }));
+  // low power: no decorative motion (the reader phone runs all day)
+  const lp = $('lowPower');
+  try { lp.checked = localStorage.getItem('batray_lowpower') === '1'; } catch {}
+  const applyLow = () => { document.body.classList.toggle('lowpower', lowPowerSet(uiS, lp.checked)); };
+  lp.addEventListener('change', () => { applyLow(); try { localStorage.setItem('batray_lowpower', lp.checked ? '1' : '0'); } catch {} log(`ui: low power ${lp.checked ? 'on' : 'off'}`); });
+  applyLow();
+})();
+function renderTabs() {
+  document.body.dataset.tab = uiS.tab;
+  document.querySelectorAll('[data-tab-btn]').forEach((b) => b.classList.toggle('on', b.dataset.tabBtn === uiS.tab));
+}
 
 // ---- misc UI ----
 async function copyLog(btn) {
@@ -1168,7 +1250,7 @@ els.copy.addEventListener('click', () => copyLog(els.copy));
 // Upload: the same log to clearevo.com, only after the warning is accepted.
 // The relay stores it for 90 days for the owner to read; the id is the handle.
 async function uploadLog(btn) {
-  if (!window.confirm(T.uploadWarn)) { log('log upload: declined at the warning'); return; }
+  if ((await openSheet('upload')) !== 'ok') { log('log upload: declined at the warning'); return; }
   const body = logHeaderLines().join('\n') + '\n---\n' + logLines.join('\n');
   const lbl = btn.querySelector('.lbl'); const was = lbl ? lbl.textContent : '';
   if (lbl) lbl.textContent = T.uploading;
@@ -1218,8 +1300,7 @@ setInterval(() => {
   if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
   log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
 }, 60000);
-$('lang').innerHTML = Object.keys(I18N).map((k) => `<option value="${k}">${I18N[k].langName}</option>`).join('');
-$('lang').addEventListener('change', () => { try { localStorage.setItem('batray_lang', $('lang').value); } catch {} log(`language: ${$('lang').value}`); applyLang($('lang').value); });
+$('langBtn').addEventListener('click', async () => { const code = await openSheet('lang'); if (code && I18N[code]) { try { localStorage.setItem('batray_lang', code); } catch {} log(`language: ${code}`); applyLang(code); } });
 
 if (!navigator.bluetooth && !viewMode) {
   setStatus(() => T.noWebBt, 'bad');

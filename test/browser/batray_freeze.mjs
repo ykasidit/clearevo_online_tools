@@ -187,7 +187,7 @@ check('a second drop starts the keep-awake video, unmuted at 1 % volume, with a 
 await sleep(4000);                                                         // 4 s back-off, then the lock is asked for again too
 wk = await wakeState();
 check('...and the lock itself is still asked for again', wk.lock && wk.locks === locks0 + 2, wk);
-const setKeep = (v) => evalJs(`{ const s = document.getElementById('keepAwake'); s.value = '${v}'; s.dispatchEvent(new Event('change')); } 1`);
+const setKeep = async (v) => { await evalJs(`document.getElementById('keepAwake').click(); 1`); await sleep(150); await evalJs(`document.querySelector('#sheetOpts [data-opt="${v}"]').click(); 1`); };   // the choice is a bottom sheet, not a select
 await setKeep('never'); await sleep(300); wk = await wakeState();
 check('"never" stops the video and is remembered', !wk.video && wk.paused && !wk.note && wk.saved === 'never', wk);
 await setKeep('always'); await sleep(500); wk = await wakeState();

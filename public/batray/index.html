@@ -21,6 +21,7 @@
 /* ClearEvo instrument dark theme - same chrome as the DICOM viewer (original UI, no vendor copy) */
 html,body{height:100%;margin:0;background:#070f18;color:#cdd9e5;font-family:'Segoe UI',Tahoma,'DejaVu Sans',Arial,sans-serif;font-size:12px}
 body{overflow:hidden}
+@supports (height:100dvh){html,body{height:100dvh}}
 button,select,input{font-family:inherit}
 #app{display:flex;flex-direction:column;position:absolute;inset:0}
 .title-bar{display:flex;align-items:center;gap:8px;background:#0d1f33;border-bottom:1px solid #1c3550;padding:6px 12px}
@@ -186,6 +187,41 @@ body.view #empty,body.view #oneApp{display:none}
 .agrp input[type=text],.agrp input[type=password],.agrp input[type=number],.agrp input:not([type]){background:#0b1a2b;color:#e6f0f8;border:1px solid #2a4258;border-radius:3px;padding:2px 5px;font:12px 'Segoe UI',Tahoma,sans-serif;max-width:min(220px,100%)}
 .agrp input[type=number]{width:5em}
 .arule .rl{min-width:14em}
+
+/* ---- UI_GUIDELINES.md: touch targets, bottom sheet, viewer tab bar, low power ---- */
+@media (max-width:700px),(pointer:coarse){
+  .tbtn,.linkbtn,.pchip,.demobtn,#stopDemo,.tabbar button,.sheetBox .opts button,.optbtn,#flowFull,details.card>summary,#etaLine input,.toolbar label.chk{min-height:48px}
+  .tbtn{min-width:48px}.fontbtn{min-height:40px;min-width:40px}.linkbtn{padding:10px 8px}.pchip{padding:6px 14px}
+  #demoBadge button{min-height:48px;padding:4px 14px}
+}
+.optbtn{background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:8px;padding:6px 12px;font:inherit;cursor:pointer;max-width:100%;text-align:left}
+.optbtn::after{content:' ▾';color:#4aa9e0}
+#gBatt,#gSys,#fPower,#fAmps,#fEta,#strip,#cellsStat,#cells{cursor:pointer}
+#sheet{position:fixed;inset:0;z-index:1800;display:flex;align-items:flex-end;justify-content:center}
+#sheet[hidden]{display:none}
+#sheet .sheetBack{position:absolute;inset:0;background:rgba(3,10,18,.62)}
+.sheetBox{position:relative;width:100%;max-width:560px;max-height:80dvh;overflow:auto;background:#0d1f33;border:1px solid #2f6a8f;border-bottom:none;border-radius:16px 16px 0 0;padding:8px 18px calc(16px + env(safe-area-inset-bottom));box-shadow:0 -8px 40px rgba(0,0,0,.6);color:#cdd9e5;font:14px/1.5 'Segoe UI',Tahoma,sans-serif;touch-action:pan-y;animation:sheetUp .18s ease-out}
+@keyframes sheetUp{from{transform:translateY(40px);opacity:.6}to{transform:none;opacity:1}}
+.sheetBox .grab{width:44px;height:5px;border-radius:3px;background:#3d6389;margin:4px auto 12px}
+.sheetBox h3{margin:0 0 6px;font-size:17px;color:#eaf4ff;font-weight:600}
+.sheetBox .lead{font-size:15px;color:#eaf4ff;margin:0 0 10px}
+.sheetBox .lead.ok{color:#5fd39a}.sheetBox .lead.watch{color:#ffd24a}.sheetBox .lead.act{color:#ff8a80}
+.sheetBox .rows{display:grid;grid-template-columns:1fr auto;gap:5px 14px;color:#8ea6bd;font-size:12px}
+.sheetBox .rows .v{color:#cdd9e5;font-family:'DejaVu Sans Mono',Consolas,monospace;text-align:right}
+.sheetBox .opts{display:flex;flex-direction:column;gap:8px;margin:6px 0}
+.sheetBox .opts button{display:flex;align-items:center;gap:10px;background:#12283f;border:1px solid #26476a;color:#cdd9e5;border-radius:10px;padding:12px 14px;font:15px 'Segoe UI',Tahoma,sans-serif;cursor:pointer;text-align:left}
+.sheetBox .opts button.on{border-color:#2aa9e0;background:#0d3a5c;color:#8fd8ff}
+.sheetBox .opts button.on::before{content:'✓';color:#5fd39a}
+.sheetBox .acts{display:flex;gap:12px;justify-content:flex-end;align-items:center;margin-top:12px}
+.tabbar{display:flex;justify-content:space-around;background:#0d1f33;border-top:1px solid #1c3550;padding:2px 0 calc(2px + env(safe-area-inset-bottom))}
+.tabbar[hidden]{display:none}
+.tabbar button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:none;border:none;color:#7fb0d8;font:11px 'Segoe UI',Tahoma,sans-serif;padding:6px 0;cursor:pointer;min-height:52px}
+.tabbar button svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.tabbar button.on{color:#8fd8ff}.tabbar button.on svg{stroke-width:2.4}
+body.view [data-tab]:not([hidden]){display:none}
+body.view[data-tab=now] [data-tab=now]:not([hidden]),body.view[data-tab=history] [data-tab=history]:not([hidden]),body.view[data-tab=more] [data-tab=more]:not([hidden]){display:block}
+body.view[data-tab=now] details[data-tab=now]:not([hidden]),body.view[data-tab=more] details[data-tab=more]:not([hidden]){display:block}
+body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,body.lowpower #loading .bar,body.lowpower .sheetBox{animation:none}
 </style>
 </head>
 <body>
@@ -201,7 +237,7 @@ body.view #empty,body.view #oneApp{display:none}
     <button class="tbtn" id="tv" title="show this picture on a TV (Chromecast, Google TV, TV browser, VLC)"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span class="lbl" data-i18n="tv">Show on TV</span></button>
     <button class="tbtn" id="copy" title="copy the raw-frame log to the clipboard"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></svg><span class="lbl" data-i18n="copyLog">Copy log</span></button>
     <button class="tbtn" id="upload" title="upload the debug log to clearevo.com (asks first)"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg><span class="lbl" data-i18n="uploadLog">Upload log</span></button>
-    <span title="language" style="align-self:center;font-size:14px;padding-left:6px">🌐</span><select id="lang" title="language" style="align-self:center;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:5px;padding:3px 6px;font-size:11px;margin-left:4px"></select>
+    <button class="tbtn" id="langBtn" title="language"><span style="font-size:18px;line-height:1">🌐</span><span class="lbl" id="langLbl">EN</span></button>
     <span id="stat">ready</span>
   </div>
   <div id="liveChip" class="chipbar" hidden><span class="dot"></span><span id="liveTxt"></span><button id="shareCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button><button id="qrShow" type="button" class="linkbtn" hidden data-i18n="qrShow">show QR</button><input id="shareLink" readonly hidden><button id="liveStop" type="button" class="linkbtn" data-i18n="shareStop">stop sharing</button></div>
@@ -225,8 +261,8 @@ body.view #empty,body.view #oneApp{display:none}
       </div>
     </div>
     <div class="panel">
-      <div id="viewName" class="chname" hidden></div>
-      <details class="card" id="sharePanel" hidden open>
+      <div id="viewName" class="chname" data-tab="now" hidden></div>
+      <details class="card" id="sharePanel" data-tab="more" hidden open>
         <summary><span data-i18n="shareH">Share live</span> <span class="note" data-i18n="shareSetupNote">a name for the viewers, and whether to keep the earlier link</span></summary>
         <div class="tvpanel">
           <div class="tvrow"><label><span data-i18n="shareNameLbl">name shown to viewers</span> <input id="shareName" type="text" maxlength="40" size="22"></label></div>
@@ -235,7 +271,7 @@ body.view #empty,body.view #oneApp{display:none}
           <div class="tvrow"><button id="shareGo" type="button" class="demobtn" style="padding:6px 16px" data-i18n="shareGo">Start sharing</button> <button id="shareCancel" type="button" class="linkbtn" data-i18n="cancel">Cancel</button></div>
         </div>
       </details>
-      <details class="card" id="qrPanel" hidden open>
+      <details class="card" id="qrPanel" data-tab="more" hidden open>
         <summary><span data-i18n="qrSummary">QR code of the live view</span> <span class="note" data-i18n="qrHint">Point the other phone's camera at this code to open the live view</span></summary>
         <div class="qrpanel">
           <div id="qrName" class="chname"></div>
@@ -244,12 +280,12 @@ body.view #empty,body.view #oneApp{display:none}
           <div class="qrrow"><button id="qrCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button> · <button id="qrHide" type="button" class="linkbtn" data-i18n="qrHide">hide QR</button></div>
         </div>
       </details>
-      <details class="card" id="tvPanel" hidden open>
+      <details class="card" id="tvPanel" data-tab="more" hidden open>
         <summary><span data-i18n="tvH">Show on TV</span> <span class="note" data-i18n="tvSummary">Chromecast / Google TV, TV browser or VLC - not encrypted</span> <button id="tvClose" type="button" class="linkbtn" data-i18n="close">Close</button></summary>
         <div class="tvpanel">
     <div class="tvnote" data-i18n="tvIntro">Turns this picture into a small video a TV can play, about 20 s behind: press Cast for a Chromecast or Google TV on this Wi-Fi (this loads Google's cast library, only then), or open the link in a TV browser or a player such as VLC.</div>
       <div class="tvnote warn" data-i18n="tvPrivacy">Not encrypted, unlike Share live: clearevo.com holds the last few seconds of the picture so the TV can fetch it, and anyone with the link can watch. Stop it when you are done.</div>
-      <div class="tvrow"><label><span data-i18n="tvRes">resolution</span> <select id="tvRes"><option value="1280x720">720p</option><option value="1920x1080" selected>1080p</option></select></label> <button id="tvStart" type="button" class="demobtn" style="padding:6px 16px" data-i18n="tvStart">Start TV stream</button> <button id="tvStop" type="button" class="linkbtn" hidden data-i18n="tvStop">stop TV stream</button></div>
+      <div class="tvrow"><label><span data-i18n="tvRes">resolution</span> <button id="tvRes" type="button" class="optbtn" data-value="1920x1080">1080p</button></label> <button id="tvStart" type="button" class="demobtn" style="padding:6px 16px" data-i18n="tvStart">Start TV stream</button> <button id="tvStop" type="button" class="linkbtn" hidden data-i18n="tvStop">stop TV stream</button></div>
       <div id="tvLive" hidden>
         <div class="tvnote" id="tvStat"></div>
         <div class="tvrow" id="tvPreviewRow"><video id="tvVideo" playsinline muted controls></video></div>
@@ -270,7 +306,7 @@ body.view #empty,body.view #oneApp{display:none}
         <button id="demoBtn" class="linkbtn" style="margin-top:14px" data-i18n="demoBtn">No BMS nearby? Try a DEMO (simulated BMS)</button>
       </div>
       <div id="readouts" hidden>
-        <div class="card" id="flowCard">
+        <div class="card" id="flowCard" data-tab="now">
           <button id="flowFull" type="button" class="linkbtn" aria-label="full screen" title="full screen">⛶</button>
           <!-- Battery and system are drawn once each at their own origin; app.js
                lays them out landscape (wide screens) or portrait (phones, full
@@ -303,41 +339,42 @@ body.view #empty,body.view #oneApp{display:none}
           </svg>
           <div class="chips" id="strip"></div>
         </div>
-        <div class="check warn" id="btNote" hidden data-i18n="btKeepOn">Keep Bluetooth on: with it off, a reconnect on this Chrome version can close the tab.</div>
-        <div class="card">
+        <div class="check warn" data-tab="now" id="btNote" hidden data-i18n="btKeepOn">Keep Bluetooth on: with it off, a reconnect on this Chrome version can close the tab.</div>
+        <div class="card" data-tab="more" id="cellsCard">
           <h2><span data-i18n="cellsH">Cell voltages</span> <span class="note" id="cellsNote" data-i18n="cellsNote">bar height exaggerates the spread: scale runs from the lowest cell - 50 mV to the highest + 50 mV</span></h2>
           <div class="check" id="cellsStat"></div>
           <div id="cellsWrap"><div id="cells"></div></div>
         </div>
-        <div class="card" id="trendCard" hidden>
+        <div class="card" id="trendCard" data-tab="history" hidden>
           <h2><span data-i18n="trendH">Trend</span> <span class="note" data-i18n="trendNote">since this tab opened - kept in memory only, nothing stored or sent</span></h2>
           <div class="check" id="trendEnergy"></div>
           <canvas id="trend" height="130" aria-label="power and battery percent since this tab opened"></canvas>
           <div class="check" data-i18n="trendLegend">power: green charge, amber discharge · battery %: blue line, right axis</div>
         </div>
-        <div class="card">
+        <div class="card" data-tab="more" id="moreCard">
           <h2><span data-i18n="moreH">More</span> <span class="note" data-i18n="moreNote">same frame as the meters, not covered by the cell-sum check; offsets verified against captured frames from 24-cell, 32-cell and JK-PB firmware (see how to use)</span></h2>
           <div class="grid" id="secondary"></div>
         </div>
-        <div class="card" id="settingsCard" hidden>
+        <div class="card" id="settingsCard" data-tab="more" hidden>
           <h2><span data-i18n="settingsH">BMS settings</span> <span class="note" data-i18n="settingsNote">as configured in the BMS (read-only here)</span></h2>
           <div class="grid" id="settings"></div>
         </div>
-        <div class="card" id="notesCard">
+        <div class="card" id="notesCard" data-tab="more">
           <h2><span data-i18n="notesH">Notes</span></h2>
           <div class="check" id="etaLine"><span id="cutoffPre" data-i18n="cutoffPre">Time to empty counts down to your inverter's low-battery cut-off at</span> <input id="cutoff" type="number" min="0" max="95" step="1" value="10" size="3" aria-label="inverter cut-off, percent of capacity"> % <span id="cutoffPost" data-i18n="cutoffPost">of capacity (default 10 %, set your inverter's value). Straight-line from the smoothed current; charging slows near full, so time to full is optimistic.</span></div>
           <div class="check"><span id="layout"></span></div>
           <div class="check" id="device" hidden></div>
           <div class="check" id="oneApp" hidden data-i18n-html="oneApp">A JK BMS accepts one app at a time - to use the JK app again, press <b>Disconnect</b> here first.</div>
-          <div class="check"><label><span data-i18n="keepAwakePre">Keep the screen on with a silent video:</span> <select id="keepAwake" style="max-width:100%"><option value="auto" data-i18n="keepAwakeAuto">only if the phone drops the screen lock</option><option value="always" data-i18n="keepAwakeAlways">always</option><option value="never" data-i18n="keepAwakeNever">never</option></select></label> <span data-i18n="keepAwakePost">Chrome keeps the screen on while media plays; some phones let go of the normal screen lock after hours (seen on an old Sony). The video is silent (1 % volume), but Android may lower other apps' sound while it plays.</span></div>
+          <div class="check"><label><span data-i18n="keepAwakePre">Keep the screen on with a silent video:</span> <button id="keepAwake" type="button" class="optbtn" data-value="auto" data-i18n="keepAwakeAuto">only if the phone drops the screen lock</button></label> <span data-i18n="keepAwakePost">Chrome keeps the screen on while media plays; some phones let go of the normal screen lock after hours (seen on an old Sony). The video is silent (1 % volume), but Android may lower other apps' sound while it plays.</span></div>
+          <div class="check"><label class="chk"><input type="checkbox" id="lowPower"> <span data-i18n="lowPower">Low power: nothing moves on screen (for a phone that runs all day)</span></label></div>
           <video id="keepVideo" loop playsinline preload="none" width="16" height="16" aria-hidden="true" tabindex="-1" style="position:fixed;left:0;bottom:0;width:2px;height:2px;opacity:0.02;pointer-events:none"></video>
         </div>
       </div>
-      <details class="card" id="alertsCard">
+      <details class="card" id="alertsCard" data-tab="more">
         <summary><span data-i18n="alertsH">Alerts</span> <span class="note" data-i18n="alertsNote">Chrome notifications when the battery needs you</span></summary>
         <div id="alertsBody"></div>
       </details>
-      <details class="card" id="debug">
+      <details class="card" id="debug" data-tab="more">
         <summary><span data-i18n="debugH">Debug</span> <span class="note" data-i18n="debugNote">raw frames - check these if the numbers look wrong</span></summary>
         <div class="hint"><button class="tbtn" id="copy2" title="copy the raw-frame log to the clipboard"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></svg><span class="lbl" data-i18n="copyLog">Copy log</span></button> <button class="tbtn" id="upload2" title="upload the debug log to clearevo.com (asks first)"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg><span class="lbl" data-i18n="uploadLog">Upload log</span></button> <span id="uploadId" class="tvnote" hidden></span><span data-i18n-html="debugHint"></span></div>
         <div class="tvnote" data-i18n="uploadNote">Upload sends this log to clearevo.com only after you confirm the warning: browser and device details, raw BMS frames and readings, the BMS name and serial. Never the share-link key. Kept 90 days, read by the site owner to fix what you report.</div>
@@ -345,8 +382,14 @@ body.view #empty,body.view #oneApp{display:none}
       </details>
     </div>
   </div>
+  <nav id="tabs" class="tabbar" hidden aria-label="sections">
+    <button type="button" data-tab-btn="now" class="on"><svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="2"/><path d="M10 1h4M8 12h8"/></svg><span data-i18n="tabNow">Now</span></button>
+    <button type="button" data-tab-btn="history"><svg viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 5-8 4 5"/><path d="M3 21h18"/></svg><span data-i18n="tabHistory">History</span></button>
+    <button type="button" data-tab-btn="more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span data-i18n="tabMore">More</span></button>
+  </nav>
   <div class="status-bar"><p><span data-i18n="privacy">Runs in your browser - battery data stays on this device unless you turn on Share live or Show on TV</span> (Google Analytics: visit stats only - <a href="/tools-privacy/" target="_blank" rel="noopener" data-i18n="verify">verify</a>) - <a href="/blog/2026/09/11/how_to_monitor_your_jk_bms_battery_in_your_browser/" target="_blank" rel="noopener" data-i18n="howto">how to use</a> - <a href="/tools/" target="_blank" rel="noopener" data-i18n="tools">tools</a> - <a href="https://www.clearevo.com/">clearevo</a> - © 2026 Kasidit Yusuf, GPL v2 - <span id="sbVer"></span><span id="wake" hidden> - ☀ <span data-i18n="wakeOn">screen kept awake while connected</span></span><span id="wakeVideo" hidden> - 🎞 <span data-i18n="wakeVideo">a silent video keeps the screen on</span></span><span id="alertNote" hidden> - 🔔 <span id="alertTxt"></span></span><span id="tvNote" hidden> - 📺 <span data-i18n="tvNote">showing on TV: the picture goes through clearevo.com unencrypted</span></span><span id="liveNote" hidden> - 🔒 <span data-i18n="liveNote">sharing live: readings are encrypted on this device with a key that exists only in the share link</span></span></p></div>
 </div>
+<div id="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheetTitle"><div class="sheetBack" id="sheetBack"></div><div class="sheetBox" id="sheetBox"><div class="grab"></div><h3 id="sheetTitle"></h3><p class="lead" id="sheetLead"></p><div class="rows" id="sheetRows"></div><div class="opts" id="sheetOpts"></div><div class="acts" id="sheetActs"></div></div></div>
 <div id="toast" hidden></div>
 <div id="about">
   <div class="box">
