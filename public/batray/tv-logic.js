@@ -92,7 +92,7 @@ export function isSegmentStart(frame, fps, segS) { return frame % Math.max(1, Ma
 export function tvUiState() { return { phase: 'off', panelOpen: false }; }
 export function tvTapDecision(ts) {
   if (ts.phase === 'on') return { action: 'stop', why: 'toolbar' };
-  if (ts.phase === 'starting') return { action: 'ignore', why: 'starting' };
+  if (ts.phase === 'starting') { ts.phase = 'off'; return { action: 'cancel', why: 'starting' }; }   // the busy button is a cancel
   ts.panelOpen = !ts.panelOpen;
   return { action: ts.panelOpen ? 'open-panel' : 'close-panel' };
 }

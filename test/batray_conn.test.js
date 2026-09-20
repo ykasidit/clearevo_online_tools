@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connState, connEvent, connCard, packChipState, wakeWantedByConn, CONNECT_TRIES, CONNECT_GAP_MS, RECONNECT_S, CONNECT_S } from '../public/batray/conn-logic.js';
+import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, CONNECT_TRIES, CONNECT_GAP_MS, RECONNECT_S, CONNECT_S } from '../public/batray/conn-logic.js';
 
 const A = (cs, ev, inp) => connEvent(cs, ev, { autoRe: true, now: 1000, ...inp }).action;
 
@@ -118,4 +118,14 @@ test('the card and the pack chip follow the state object', () => {
   A(cs, 'cancel');
   assert.deepEqual(connCard(cs, { gattConnected: false, hasData: true }), { offline: true, loading: false, countdown: false, idle: true, reNow: false, disconnectEnabled: false });
   assert.equal(packChipState(cs, false, true), 'offline'); assert.equal(wakeWantedByConn(cs, false), false);
+});
+
+test('the Disconnect button: greyed when idle, pulsing while connecting or counting down (a cancel), sunk when connected', () => {
+  const cs = connState();
+  assert.deepEqual(connButton(cs, false), { on: false, busy: false, disabled: true });
+  A(cs, 'tap-connect'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false });
+  A(cs, 'picked'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false });
+  A(cs, 'gatt-connected'); assert.deepEqual(connButton(cs, true), { on: true, busy: false, disabled: false });
+  A(cs, 'gatt-disconnected'); assert.equal(cs.phase, 'countdown'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false });
+  assert.equal(A(cs, 'cancel'), 'disconnect-gatt'); assert.deepEqual(connButton(cs, false), { on: false, busy: false, disabled: true });
 });

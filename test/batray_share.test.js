@@ -18,17 +18,18 @@ import { suggestChannelName } from '../public/batray/live-logic.js';
 
 test('the Share button: opens the setup, is sunk and stops on the next press, greyed while starting', () => {
   const ss = shareState();
-  assert.deepEqual(shareButton(ss), { on: false, disabled: false });
+  assert.deepEqual(shareButton(ss), { on: false, busy: false, disabled: false });
   assert.deepEqual(shareTapDecision(ss), { action: 'setup' }); assert.equal(ss.phase, 'setup');
   shareSetupCancelled(ss); assert.equal(ss.phase, 'off');
   shareTapDecision(ss);
   const b = shareBegin(ss, { typedName: '  Home bank  ', reuseChecked: true, saved: { room: 'r', pub: 'p', key: 'k', at: 1 }, suggest: suggestChannelName });
   assert.deepEqual(b, { action: 'start', name: 'Home bank', reuse: { room: 'r', pub: 'p', key: 'k', at: 1 } });
-  assert.deepEqual(shareButton(ss), { on: false, disabled: true });
-  assert.deepEqual(shareTapDecision(ss), { action: 'ignore', why: 'starting' });
+  assert.deepEqual(shareButton(ss), { on: false, busy: true, disabled: false });
+  assert.deepEqual(shareTapDecision(ss), { action: 'cancel' }); assert.equal(ss.phase, 'off');   // the busy button is a cancel
+  shareTapDecision(ss); shareBegin(ss, { typedName: 'Home bank', reuseChecked: true, saved: { room: 'r', pub: 'p', key: 'k', at: 1 }, suggest: suggestChannelName });
   assert.deepEqual(shareBegin(ss, { typedName: 'x', reuseChecked: false, saved: null, suggest: suggestChannelName }), { action: 'ignore', why: 'starting' });
   assert.deepEqual(shareStarted(ss, { link: 'https://x/?view=r#k=k', reused: false }), { toastNewLink: true });   // asked to reuse, relay had forgotten it
-  assert.deepEqual(shareButton(ss), { on: true, disabled: false });
+  assert.deepEqual(shareButton(ss), { on: true, busy: false, disabled: false });
   assert.deepEqual(shareTapDecision(ss), { action: 'stop' });
   shareStopped(ss); assert.equal(ss.phase, 'off'); assert.equal(ss.link, '');
 });

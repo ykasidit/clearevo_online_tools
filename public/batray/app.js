@@ -16,7 +16,7 @@ import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfter
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
 import { trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
-import { connState, connEvent, connCard, packChipState, wakeWantedByConn, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
+import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted } from './tv-logic.js';
@@ -30,7 +30,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.26';
+export const APP_VERSION = '0.9.27';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -259,7 +259,9 @@ function refreshCard() {
   const p = active;
   if (!p) return;
   const body = document.body.classList;
-  els.disconnect.disabled = !(p.bms && p.bms.connected);
+  const db = p.bms ? connButton(p.cs, !!p.bms.connected) : { on: false, busy: false, disabled: true };
+  els.disconnect.disabled = db.disabled; els.disconnect.classList.toggle('on', db.on); els.disconnect.classList.toggle('busy', db.busy); els.disconnect.setAttribute('aria-pressed', db.on);
+  els.disconnect.title = db.busy ? T.connBusyTitle : (els.disconnect.dataset.title || '');
   if (p.remote) { body.toggle('offline', !p.remoteLive); body.remove('loading'); $('reState').hidden = true; $('reIdle').hidden = true; $('offlineTxt').textContent = readerGone() ? T.viewOffline : T.viewReconnectingLong; return; }
   if (p.demo) { body.remove('offline', 'loading'); return; }
   const c = connCard(p.cs, { gattConnected: !!p.bms.connected, hasData: !!p.data });
@@ -778,7 +780,13 @@ function startConnect(p) {
 }
 $('connectBig').addEventListener('click', () => startConnect(null));
 $('connectAgain').addEventListener('click', () => startConnect(active && !active.remote && !active.demo ? active : null));
-els.disconnect.addEventListener('click', () => { const p = active; if (!p || !p.bms) return; connAct(p, 'disconnect'); });
+els.disconnect.dataset.title = els.disconnect.title;
+els.disconnect.addEventListener('click', () => {
+  const p = active; if (!p || !p.bms) return;
+  if (p.bms.connected) { connAct(p, 'disconnect'); return; }
+  p.plog('connect: cancelled from the toolbar');                     // the busy button is a cancel
+  connAct(p, 'cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); toast(T.cancelled, 4000);
+});
 $('reNow').addEventListener('click', () => { const p = active; if (!p || p.remote) return; p.plog('reconnect: user tapped Reconnect now'); connAct(p, 'reconnect-now'); });
 $('cancelRe').addEventListener('click', () => { const p = active; if (!p || p.remote) return; p.plog('reconnect: cancelled by user'); connAct(p, 'cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); });
 
@@ -789,8 +797,8 @@ $('cancelRe').addEventListener('click', () => { const p = active; if (!p || p.re
 // once the relay has reported it, so a full server is never a surprise.
 function renderLiveChip() {
   const b = shareButton(shareS);
-  els.share.classList.toggle('on', b.on); els.share.setAttribute('aria-pressed', b.on); els.share.disabled = b.disabled;
-  els.share.title = b.on ? T.shareOnTitle : (els.share.dataset.title || '');
+  els.share.classList.toggle('on', b.on); els.share.classList.toggle('busy', b.busy); els.share.setAttribute('aria-pressed', b.on); els.share.disabled = b.disabled;
+  els.share.title = b.on ? T.shareOnTitle : b.busy ? T.shareBusyTitle : (els.share.dataset.title || '');
   if (!publisher) { els.liveChip.hidden = true; $('liveNote').hidden = true; return; }
   const s = publisher.state;
   els.liveChip.hidden = false; $('liveNote').hidden = false;
@@ -840,6 +848,7 @@ function shareTap() {
   const d = shareTapDecision(shareS);
   log(`share: tap -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}`);
   if (d.action === 'stop') stopShare('toolbar');
+  else if (d.action === 'cancel') cancelShare();
   else if (d.action === 'setup') openSharePanel();
 }
 async function beginShare() {
@@ -854,8 +863,10 @@ async function beginShare() {
     const v = viewersChange(shareS, s.viewers);
     if (v && alerts) alerts.notify('viewers', v.joined ? T.evViewerJoined : T.evViewerLeft, T.evWatching(v.viewers));
   } });
+  const pub = publisher;
   try {
-    await publisher.start(b.reuse);
+    await pub.start(b.reuse);
+    if (publisher !== pub) return;                                    // cancelled from the toolbar meanwhile
     try { localStorage.setItem('batray_share_last', JSON.stringify(publisher.credentials)); } catch {}
     const st = shareStarted(shareS, { link: publisher.link, reused: publisher.reused });
     if (st.toastNewLink) toast(T.shareNewLink, 9000);
@@ -866,6 +877,7 @@ async function beginShare() {
     publisher.snapshotTimer = setInterval(sendSnapshots, 10000);
     sendSnapshots();
   } catch (err) {
+    if (publisher !== pub) return;                                    // cancelled: its own toast already said so
     log(`share failed: ${err.message}`);
     toast(T.shareFailed(err.message), 9000);
     publisher.stop(); publisher = null; shareFailed(shareS);
@@ -881,6 +893,13 @@ function sendSnapshots() {
     if (p.settings) publisher.publish(envelope('settings', p, p.settings));
     if (p.data) publisher.publish(envelope('data', p, p.data));
   }
+}
+function cancelShare() {
+  if (!publisher) return;
+  const pub = publisher; publisher = null;
+  log('share: cancelled while starting');
+  try { pub.stop(); } catch { /* never started */ }
+  renderLiveChip(); syncWake(); toast(T.cancelled, 4000);
 }
 async function stopShare(why = 'chip') {
   if (!publisher) return;
@@ -1106,7 +1125,7 @@ async function castToTv() {
 // every button and note of the TV card and the toolbar follow tvS (tv-logic.js)
 function renderTvButtons() {
   const b = tvButtons(tvS);
-  $('tv').classList.toggle('on', b.on); $('tv').setAttribute('aria-pressed', b.on); $('tv').title = b.on ? T.tvOnTitle : ($('tv').dataset.title || '');
+  $('tv').classList.toggle('on', b.on); $('tv').classList.toggle('busy', b.busy); $('tv').setAttribute('aria-pressed', b.on); $('tv').title = b.on ? T.tvOnTitle : b.busy ? T.tvBusyTitle : ($('tv').dataset.title || '');
   $('tvStart').hidden = b.startHidden; $('tvStart').disabled = b.startDisabled; $('tvStop').hidden = b.stopHidden; $('tvRes').disabled = b.resDisabled;
   $('tvLive').hidden = b.liveHidden; $('tvNote').hidden = b.noteHidden;
   $('tvPanel').hidden = b.panelHidden; if (!b.panelHidden) $('tvPanel').open = true;
@@ -1122,14 +1141,23 @@ async function startTv(opts = {}) {
   tv = t;
   try {
     const url = await t.start();
+    if (tv !== t) return null;                                          // cancelled from the toolbar meanwhile
     tvStarted(tvS); renderTvButtons(); castHint(T.tvCastLoads); renderTv(t.state); syncWake();
     toast(T.tvStarting, 9000);
     return url;
   } catch (e) {
+    if (tv !== t) return null;                                          // cancelled: its own toast already said so
     log(`tv failed: ${e.message}`); toast(e.code === 'nocodec' ? T.tvNoCodec : T.tvFailed(e.message), 9000);
     tv = null; tvStartFailed(tvS); renderTvButtons(); try { await t.stop(); } catch {}
     throw e;
   }
+}
+function cancelTv() {
+  if (!tv) return;
+  const t = tv; tv = null; renderTvButtons();
+  log('tv: cancelled while starting');
+  t.stop().catch(() => {});
+  syncWake(); toast(T.cancelled, 4000);
 }
 async function stopTv(why = 'card') {
   if (!tv) return;
@@ -1150,6 +1178,7 @@ async function stopTv(why = 'card') {
     const d = tvTapDecision(tvS);
     log(`tv: tap -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}`);
     if (d.action === 'stop') { stopTv('toolbar'); return; }
+    if (d.action === 'cancel') { cancelTv(); return; }
     renderTvButtons();
     if (d.action === 'open-panel') $('tvPanel').scrollIntoView({ block: 'start', behavior: 'smooth' });
   });

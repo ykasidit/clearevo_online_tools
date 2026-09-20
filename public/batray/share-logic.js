@@ -24,7 +24,7 @@ export function shareState() { return { phase: 'off', name: '', reuse: false, li
 /** The toolbar button: pressed while sharing means stop (with a toast), otherwise open the setup. */
 export function shareTapDecision(ss) {
   if (ss.phase === 'on') return { action: 'stop' };
-  if (ss.phase === 'starting') return { action: 'ignore', why: 'starting' };
+  if (ss.phase === 'starting') { ss.phase = 'off'; return { action: 'cancel' }; }   // the busy button is a cancel
   ss.phase = 'setup'; return { action: 'setup' };
 }
 /** What the setup card shows. `suggest` is suggestChannelName from live-logic.js. */
@@ -46,8 +46,8 @@ export function shareStarted(ss, { link, reused }) {
 }
 export function shareFailed(ss) { ss.phase = 'off'; ss.link = ''; }
 export function shareStopped(ss) { ss.phase = 'off'; ss.link = ''; ss.viewers = 0; }
-/** The toolbar button look: sunk while sharing, greyed while starting. */
-export function shareButton(ss) { return { on: ss.phase === 'on', disabled: ss.phase === 'starting' }; }
+/** The toolbar button look: sunk while sharing, pulsing (and tappable, as a cancel) while starting. */
+export function shareButton(ss) { return { on: ss.phase === 'on', busy: ss.phase === 'starting', disabled: false }; }
 /** A viewer count change worth telling the reader about. */
 export function viewersChange(ss, n) {
   if (n === ss.viewers) return null;

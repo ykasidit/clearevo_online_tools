@@ -36,6 +36,10 @@ button,select,input{font-family:inherit}
 .tbtn svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .tbtn:hover{background:#183350;color:#e9f2fb}
 .tbtn.on{background:#0d3a5c;border-color:#2aa9e0;color:#8fd8ff}
+.tbtn.busy{background:#0b2a44;border-color:#2aa9e0;border-style:dashed;color:#8fd8ff;animation:busyPulse 1.2s ease-in-out infinite}
+@keyframes busyPulse{50%{opacity:.55}}
+body.lowpower .tbtn.busy{animation:none}
+@media (prefers-reduced-motion:reduce){.tbtn.busy{animation:none}}
 .tbtn:disabled{opacity:.4;cursor:default;background:transparent}
 .tsep{width:1px;align-self:center;height:30px;background:#1c3550;margin:0 5px}
 .toolbar label.chk{align-self:center;color:#a7bccf;font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer;padding:0 6px}

@@ -32,6 +32,15 @@ const evalJs = async (expr) => { const r = await send('Runtime.evaluate', { expr
 let fails = 0;
 const check = (name, cond, got) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : ` - got ${JSON.stringify(got).slice(0, 600)}`}`); if (!cond) fails++; };
 
+// a relay that takes 1.5 s to make a room, so the Share button's busy state can be seen and cancelled
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+  const rf = window.fetch.bind(window);
+  window.fetch = async (u, i = {}) => {
+    const url = String(u);
+    if (url.endsWith('/batray/api/room') && (i.method || 'GET').toUpperCase() === 'POST') { await new Promise((r) => setTimeout(r, 1500)); return new Response(JSON.stringify({ room: 'testroom0000000000000A', pub: 'testpub00000000000000A' }), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
+    return rf(u, i);
+  };` });
+
 // ---- Reader at phone width, on the demo ----
 await send('Emulation.setDeviceMetricsOverride', { width: 500, height: 900, deviceScaleFactor: 1, mobile: true });
 await send('Page.navigate', { url: `${BASE}/batray/?test&demo` }); await sleep(3000);
@@ -81,6 +90,18 @@ sh = await evalJs(`({ v: document.getElementById('keepAwake').dataset.value, txt
 check('...and the choice shows on the button and in the state', sh.v === 'always' && sh.txt === 'always' && sh.mode === 'always', sh);
 await window_reset();
 async function window_reset() { await evalJs(`window.__batrayTest.setKeepAwake('auto'); 1`); }
+
+// share: pulsing while starting, and that tap cancels
+await evalJs(`localStorage.removeItem('batray_share_last'); document.getElementById('share').click(); 1`); await sleep(200);
+await evalJs(`document.getElementById('shareGo').click(); 1`); await sleep(300);
+let sb = await evalJs(`({ busy: document.getElementById('share').classList.contains('busy'), on: document.getElementById('share').classList.contains('on'), disabled: document.getElementById('share').disabled, title: document.getElementById('share').title, phase: window.__batrayTest.shareState().phase })`);
+check('while the share starts, the button pulses, stays tappable and says tap to cancel', sb.busy && !sb.on && !sb.disabled && /cancel/.test(sb.title) && sb.phase === 'starting', sb);
+await evalJs(`document.getElementById('share').click(); 1`); await sleep(300);
+sb = await evalJs(`({ busy: document.getElementById('share').classList.contains('busy'), on: document.getElementById('share').classList.contains('on'), phase: window.__batrayTest.shareState().phase, toast: document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent })`);
+check('tapping the busy button cancels the share with a toast', !sb.busy && !sb.on && sb.phase === 'off' && /Cancelled/.test(sb.toast), sb);
+await sleep(1800);
+sb = await evalJs(`({ on: document.getElementById('share').classList.contains('on'), chip: document.getElementById('liveChip').hidden, phase: window.__batrayTest.shareState().phase })`);
+check('...and the late room answer does not resurrect it', !sb.on && sb.chip && sb.phase === 'off', sb);
 
 // low power: no decorative motion
 await evalJs(`document.getElementById('lowPower').click(); 1`); await sleep(200);

@@ -77,8 +77,9 @@ test('Show on TV button: opens and closes the card; sunk while streaming; pressi
   tvTapDecision(ts);
   assert.deepEqual(tvStartDecision(ts), { action: 'start' });
   assert.deepEqual(tvStartDecision(ts), { action: 'ignore', why: 'starting' });
-  assert.deepEqual(tvTapDecision(ts), { action: 'ignore', why: 'starting' });
   let b = tvButtons(ts); assert.equal(b.on, false); assert.equal(b.busy, true); assert.equal(b.startDisabled, true); assert.equal(b.resDisabled, true);
+  assert.deepEqual(tvTapDecision(ts), { action: 'cancel', why: 'starting' }); assert.equal(ts.phase, 'off');   // the busy button is a cancel
+  tvStartDecision(ts);
   tvStarted(ts);
   b = tvButtons(ts);
   assert.deepEqual(b, { on: true, busy: false, startHidden: true, startDisabled: false, stopHidden: false, resDisabled: true, liveHidden: false, noteHidden: false, panelHidden: false });

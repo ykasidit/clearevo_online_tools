@@ -77,6 +77,10 @@ core"). The role is a layout decision, not a fork.
   (planned, uPlot vendored; downsample to ~2000 points in a logic module).
 - Events and alarms: a feed of cards, newest first, tap-to-refresh icon
   (planned).
+- Stateful toolbar buttons have three looks: plain (off), pulsing with a
+  dashed border (busy: starting or connecting, and a tap then cancels),
+  sunk (on, and a tap then stops with a toast). Share live, Show on TV and
+  the Bluetooth link (its Disconnect button) all follow this.
 - On/off: toggle switches with instant state. Setpoints: sliders with a
   value bubble. Destructive actions: press-and-hold with a filling ring.
 - Success: brief checkmark; error: red shake plus icon.
