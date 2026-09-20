@@ -120,12 +120,12 @@ test('the card and the pack chip follow the state object', () => {
   assert.equal(packChipState(cs, false, true), 'offline'); assert.equal(wakeWantedByConn(cs, false), false);
 });
 
-test('the Disconnect button: greyed when idle, pulsing while connecting or counting down (a cancel), sunk when connected', () => {
+test('the one Bluetooth button: Connect when idle, pulsing Connecting (a cancel) while connecting or counting down, sunk Disconnect when connected', () => {
   const cs = connState();
-  assert.deepEqual(connButton(cs, false), { on: false, busy: false, disabled: true });
-  A(cs, 'tap-connect'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false });
-  A(cs, 'picked'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false });
-  A(cs, 'gatt-connected'); assert.deepEqual(connButton(cs, true), { on: true, busy: false, disabled: false });
-  A(cs, 'gatt-disconnected'); assert.equal(cs.phase, 'countdown'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false });
-  assert.equal(A(cs, 'cancel'), 'disconnect-gatt'); assert.deepEqual(connButton(cs, false), { on: false, busy: false, disabled: true });
+  assert.deepEqual(connButton(cs, false), { on: false, busy: false, disabled: false, label: 'connect' });
+  A(cs, 'tap-connect'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false, label: 'connecting' });
+  A(cs, 'picked'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false, label: 'connecting' });
+  A(cs, 'gatt-connected'); assert.deepEqual(connButton(cs, true), { on: true, busy: false, disabled: false, label: 'disconnect' });
+  A(cs, 'gatt-disconnected'); assert.equal(cs.phase, 'countdown'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false, label: 'connecting' });
+  assert.equal(A(cs, 'cancel'), 'disconnect-gatt'); assert.deepEqual(connButton(cs, false), { on: false, busy: false, disabled: false, label: 'connect' });
 });

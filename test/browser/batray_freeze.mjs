@@ -175,17 +175,17 @@ check('...and the countdown brings it back once the BMS accepts', s.gatt === tru
 
 // --- the Disconnect button is the connection's state: sunk while connected, pulsing while counting down, and a tap then cancels ---
 let dbtn = await evalJs(`({ on: document.getElementById('disconnect').classList.contains('on'), busy: document.getElementById('disconnect').classList.contains('busy'), disabled: document.getElementById('disconnect').disabled })`);
-check('connected: the Disconnect button is sunk and enabled', dbtn.on && !dbtn.busy && !dbtn.disabled, dbtn);
+check('connected: the Bluetooth button is sunk and reads Disconnect', dbtn.on && !dbtn.busy && !dbtn.disabled, dbtn);
 await evalJs(`window.__dev.gatt.disconnect(); 1`); await sleep(500);
 dbtn = await evalJs(`({ busy: document.getElementById('disconnect').classList.contains('busy'), disabled: document.getElementById('disconnect').disabled, title: document.getElementById('disconnect').title, phase: window.__batrayTest.connState().phase })`);
 check('counting down: the button pulses, is enabled and says tap to cancel', dbtn.busy && !dbtn.disabled && /cancel/.test(dbtn.title) && dbtn.phase === 'countdown', dbtn);
 await evalJs(`document.getElementById('disconnect').click(); 1`); await sleep(300);
-dbtn = await evalJs(`({ busy: document.getElementById('disconnect').classList.contains('busy'), disabled: document.getElementById('disconnect').disabled, phase: window.__batrayTest.connState().phase, idle: !document.getElementById('reIdle').hidden, toast: document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent })`);
-check('tapping it cancels: greyed again, the idle card, a toast', !dbtn.busy && dbtn.disabled && dbtn.phase === 'idle' && dbtn.idle && /Cancelled/.test(dbtn.toast), dbtn);
-await evalJs(`document.getElementById('connectAgain').click(); 1`); await sleep(800);
+dbtn = await evalJs(`({ busy: document.getElementById('disconnect').classList.contains('busy'), disabled: document.getElementById('disconnect').disabled, lbl: document.querySelector('#disconnect .lbl').textContent, phase: window.__batrayTest.connState().phase, idle: !document.getElementById('reIdle').hidden, toast: document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent })`);
+check('tapping it cancels: the button reads Connect again, the idle card, a toast', !dbtn.busy && !dbtn.disabled && dbtn.lbl === 'Connect' && dbtn.phase === 'idle' && dbtn.idle && /Cancelled/.test(dbtn.toast), dbtn);
+await evalJs(`document.getElementById('disconnect').click(); 1`); await sleep(800);   // the same button connects again (known pack: chooser, then the fake accepts)
 await notify(OWNER_32S_CELL); await sleep(500);
 s = await state();
-check('...and Connect again brings it back for the next checks', s.gatt === true && /^connected/i.test(s.stat), s);
+check('...and the same button brings it back for the next checks', s.gatt === true && /^connected/i.test(s.stat), s);
 
 // --- the screen lock: asked for again when the phone lets go of it, then a silent video (old Sony slept after hours, 2026-09-19) ---
 const wakeState = () => evalJs(`({ locks: window.__locks.length, ...window.__batrayTest.wakeState(), plays: window.__plays.filter((p) => /keepawake/.test(p)), paused: document.getElementById('keepVideo').paused, muted: document.getElementById('keepVideo').muted, volume: document.getElementById('keepVideo').volume, note: !document.getElementById('wakeVideo').hidden, saved: localStorage.getItem('batray_keepawake') })`);

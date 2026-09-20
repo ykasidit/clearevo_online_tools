@@ -30,7 +30,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.27';
+export const APP_VERSION = '0.9.28';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -232,7 +232,7 @@ function setActive(pack) {
     els.readouts.hidden = true; els.empty.hidden = !!viewMode; els.device.hidden = true; els.settingsCard.hidden = true;
     document.body.classList.remove('offline', 'loading', 'demo');
     setStatus(() => (viewMode ? T.viewWaiting : T.ready));
-    renderPackBar(); return;
+    renderPackBar(); renderConnButton(); return;
   }
   els.empty.hidden = true; els.readouts.hidden = false;
   document.body.classList.toggle('demo', !!pack.demo);
@@ -254,14 +254,21 @@ function clearReadouts() {
   $('trendCard').hidden = true; renderTrendWait(null);
 }
 
+// The one Bluetooth button in the toolbar changes in place: Connect / Connecting (tap cancels) / Disconnect (sunk).
+function renderConnButton() {
+  const p = active, ble = p && p.bms && !p.demo ? p : null;
+  const db = ble ? connButton(ble.cs, !!ble.bms.connected) : { on: false, busy: false, disabled: !!(p && p.remote), label: 'connect' };
+  const b = els.disconnect;
+  b.disabled = db.disabled; b.classList.toggle('on', db.on); b.classList.toggle('busy', db.busy); b.setAttribute('aria-pressed', db.on);
+  b.querySelector('.lbl').textContent = { connect: T.btConnect, connecting: T.btConnecting, disconnect: T.disconnect }[db.label];
+  b.title = db.label === 'connect' ? T.btConnectTitle : db.label === 'connecting' ? T.connBusyTitle : (b.dataset.title || '');
+}
 // The offline / loading / reconnect card reflects the ACTIVE pack only.
 function refreshCard() {
   const p = active;
   if (!p) return;
   const body = document.body.classList;
-  const db = p.bms ? connButton(p.cs, !!p.bms.connected) : { on: false, busy: false, disabled: true };
-  els.disconnect.disabled = db.disabled; els.disconnect.classList.toggle('on', db.on); els.disconnect.classList.toggle('busy', db.busy); els.disconnect.setAttribute('aria-pressed', db.on);
-  els.disconnect.title = db.busy ? T.connBusyTitle : (els.disconnect.dataset.title || '');
+  renderConnButton();
   if (p.remote) { body.toggle('offline', !p.remoteLive); body.remove('loading'); $('reState').hidden = true; $('reIdle').hidden = true; $('offlineTxt').textContent = readerGone() ? T.viewOffline : T.viewReconnectingLong; return; }
   if (p.demo) { body.remove('offline', 'loading'); return; }
   const c = connCard(p.cs, { gattConnected: !!p.bms.connected, hasData: !!p.data });
@@ -302,7 +309,7 @@ function applyLang(code) {
   $('fSysLbl').textContent = T.system;
   setStatus(statusThunk, statusKind);
   if (active) { if (active.info) renderDevice(active.info); if (active.settings) renderSettings(active.settings); if (active.data) render(active.data, true); }
-  refreshCard(); renderPackBar(); renderLiveChip(); renderViewChip();
+  refreshCard(); renderPackBar(); renderLiveChip(); renderViewChip(); renderConnButton();
   if (alerts) alerts.rerender();
   if (!navigator.bluetooth) for (const id of ['connectBig', 'connectAgain']) $(id).textContent = T.noWebBtBtn;
   tickAge();
@@ -782,10 +789,14 @@ $('connectBig').addEventListener('click', () => startConnect(null));
 $('connectAgain').addEventListener('click', () => startConnect(active && !active.remote && !active.demo ? active : null));
 els.disconnect.dataset.title = els.disconnect.title;
 els.disconnect.addEventListener('click', () => {
-  const p = active; if (!p || !p.bms) return;
-  if (p.bms.connected) { connAct(p, 'disconnect'); return; }
-  p.plog('connect: cancelled from the toolbar');                     // the busy button is a cancel
-  connAct(p, 'cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); toast(T.cancelled, 4000);
+  const p = active && active.bms && !active.demo ? active : null;
+  const db = p ? connButton(p.cs, !!p.bms.connected) : { label: 'connect' };
+  if (db.label === 'disconnect') { connAct(p, 'disconnect'); return; }
+  if (db.label === 'connecting') {                                  // the busy button is a cancel
+    p.plog('connect: cancelled from the toolbar');
+    connAct(p, 'cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); toast(T.cancelled, 4000); return;
+  }
+  startConnect(p);                                                  // idle: the same button connects (a known pack, or the chooser for a new one)
 });
 $('reNow').addEventListener('click', () => { const p = active; if (!p || p.remote) return; p.plog('reconnect: user tapped Reconnect now'); connAct(p, 'reconnect-now'); });
 $('cancelRe').addEventListener('click', () => { const p = active; if (!p || p.remote) return; p.plog('reconnect: cancelled by user'); connAct(p, 'cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); });

@@ -118,10 +118,10 @@ export function packChipState(cs, connected, hasData) {
   if (connected) return hasData ? 'live' : 'waiting';
   return cs.phase === 'connecting' || cs.phase === 'countdown' ? 'connecting' : 'offline';
 }
-/** The toolbar's Disconnect button: sunk while connected, pulsing while connecting or counting down (a tap then cancels), greyed otherwise. */
+/** The one Bluetooth button: Connect when idle, pulsing Connecting while choosing / connecting / counting down (a tap cancels), sunk Disconnect when connected. */
 export function connButton(cs, connected) {
   const busy = !connected && (cs.phase === 'choosing' || cs.phase === 'connecting' || cs.phase === 'countdown');
-  return { on: !!connected, busy, disabled: !connected && !busy };
+  return { on: !!connected, busy, disabled: false, label: connected ? 'disconnect' : busy ? 'connecting' : 'connect' };
 }
 /** A pack that is up, connecting or counting down keeps the screen awake. */
 export function wakeWantedByConn(cs, connected) { return connected || cs.phase === 'connecting' || cs.phase === 'countdown'; }
