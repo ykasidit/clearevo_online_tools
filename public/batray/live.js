@@ -279,6 +279,7 @@ export class Publisher {
 
   /** Encrypt once, send to the SFU and to every direct peer. */
   async publish(env) {
+    if (!this.key) { this.state.dropped++; return; }        // start() has not imported the key yet (a BMS event can land first)
     const bytes = await encrypt(this.key, env);
     let sent = 0;
     if (this.dc && this.dc.readyState === 'open' && this.dc.bufferedAmount < 256 * 1024) { this.dc.send(bytes); sent++; }

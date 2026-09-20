@@ -31,7 +31,7 @@ const j = async (path, init = {}) => {
 export class TvStream {
   /** opts: { width, height, fps, segS, bitrate, model(), log, onState, codecs, texts } */
   constructor(o) {
-    this.width = o.width || 1920; this.height = o.height || 1080; this.fps = o.fps || 1; this.segS = o.segS || 4;
+    this.width = o.width || 1920; this.height = o.height || 1080; this.fps = o.fps || 1; this.segS = o.segS || 1;   // 1 s segments: a player needs 3 before it starts, so the first picture is ~3-4 s out
     this.bitrate = o.bitrate || Math.round(this.width * this.height * 0.25);   // ~500 kbps at 1080p: a near-static picture needs far less
     this.model = o.model || (() => ({ waiting: true })); this.log = o.log || (() => {}); this.onState = o.onState || (() => {});
     this.codecs = o.codecs || TV_CODECS;

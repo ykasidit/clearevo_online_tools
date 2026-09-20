@@ -135,3 +135,9 @@ test('publisher reuses an earlier room when the relay still has it, else makes a
     p.stop(); fetches.length = 0;
   }
 });
+
+test('publisher.publish before start() has imported the key drops the envelope instead of throwing', async () => {
+  const p = new Publisher({ log: () => {}, onState: () => {} });
+  await p.publish({ t: 'data', x: 1 });                    // the BMS can emit before start() resolves (live log 2026-09-20)
+  assert.equal(p.state.dropped, 1);
+});

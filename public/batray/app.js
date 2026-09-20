@@ -12,6 +12,8 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
+import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision } from './cast-logic.js';
+import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone, reconnectAllowed } from './jkbms.js';
 import { startDemo } from './demo.js';
 import { I18N, detectLang } from './i18n.js';
@@ -23,7 +25,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.20';
+export const APP_VERSION = '0.9.21';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -79,7 +81,7 @@ function logHeaderLines() {
     `net: online=${navigator.onLine} · type ${c.type || c.effectiveType || '?'} · downlink ${c.downlink ?? '?'} Mbps · rtt ${c.rtt ?? '?'} ms · saveData ${c.saveData ?? '?'}`,
     `lang: ui=${$('lang').value} · browser ${navigator.language} · ${(navigator.languages || []).join(',')}`,
     `features: secure=${yn(isSecureContext)} bluetooth=${yn(!!navigator.bluetooth)} adv=${yn(typeof BluetoothDevice !== 'undefined' && 'watchAdvertisements' in BluetoothDevice.prototype)} getDevices=${yn(navigator.bluetooth && navigator.bluetooth.getDevices)} availability=${yn(navigator.bluetooth && navigator.bluetooth.getAvailability)} wakeLock=${yn('wakeLock' in navigator)} notifications=${typeof Notification === 'undefined' ? 'none' : Notification.permission} sw=${navigator.serviceWorker && navigator.serviceWorker.controller ? 'controlled' : 'none'} webCodecs=${yn(typeof VideoEncoder !== 'undefined')} hls=${v.canPlayType('application/vnd.apple.mpegurl') || 'no'} remotePlayback=${yn('remote' in v)} storage=${yn(storageOk)} clipboard=${yn(navigator.clipboard && navigator.clipboard.writeText)}`,
-    `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutoffPct}% keepAwake=${keepAwakeMode} tvRes=${$('tvRes').value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
+    `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutoffPct}% keepAwake=${wakeS.mode} tvRes=${$('tvRes').value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
   ];
 }
 // what the header cannot know synchronously: battery, codec support, adapter state
@@ -316,82 +318,74 @@ function applyLang(code) {
 // > 0) on a visible page, or visible and >= 20 % of the viewport - so this
 // one must NOT be muted and keepawake.webm carries a silent opus track.
 // The Notes card sets it to auto (default) / always / never.
-let wakeLock = null, wakeWanted = false, wakeDrops = 0, wakeRefusals = 0, wakeRetryTimer = null;
-const KEEP_AWAKE_KEY = 'batray_keepawake', WAKE_DROPS_FOR_VIDEO = 2;
-let keepAwakeMode = 'auto', keepVideo = null, keepAwakeOn = false;
-try { const v = localStorage.getItem(KEEP_AWAKE_KEY); if (['auto', 'always', 'never'].includes(v)) keepAwakeMode = v; } catch {}
-$('keepAwake').value = keepAwakeMode;
+// All decisions are in wake-logic.js over the one `wakeS` object; this code
+// only acts on them (house rule 2026-09-20).
+const wakeS = wakeState('wakeLock' in navigator);
+const KEEP_AWAKE_KEY = 'batray_keepawake';
+let wakeLock = null, wakeRetryTimer = null, keepVideo = null;
+try { wakeS.mode = wakeMode(localStorage.getItem(KEEP_AWAKE_KEY)); } catch {}
+$('keepAwake').value = wakeS.mode;
 $('keepAwake').addEventListener('change', () => {
-  keepAwakeMode = $('keepAwake').value;
-  try { localStorage.setItem(KEEP_AWAKE_KEY, keepAwakeMode); } catch {}
-  log(`keep-awake video: ${keepAwakeMode}`); syncKeepAwake();
+  wakeS.mode = wakeMode($('keepAwake').value);
+  try { localStorage.setItem(KEEP_AWAKE_KEY, wakeS.mode); } catch {}
+  log(`keep-awake video: ${wakeS.mode}`); syncKeepAwake();
 });
-function wantVideo() {
-  if (!wakeWanted || keepAwakeMode === 'never') return false;
-  if (keepAwakeMode === 'always') return true;
-  return !('wakeLock' in navigator) || wakeRefusals > 0 || wakeDrops >= WAKE_DROPS_FOR_VIDEO;
-}
 async function syncKeepAwake() {
-  const want = wantVideo();
-  if (want && !keepAwakeOn) {
+  const want = wakeVideoWanted(wakeS);
+  if (want && !wakeS.videoOn) {
     if (!keepVideo) {
       keepVideo = $('keepVideo');
       keepVideo.src = 'keepawake.webm';                 // literal name: build.sh hashes it
       keepVideo.muted = false; keepVideo.volume = 0.01; // > 0: audible to Chrome, not to people
       keepVideo.addEventListener('pause', () => {       // paused by the browser (a call, audio focus): try again
-        if (!keepAwakeOn) return;
-        keepAwakeOn = false; $('wakeVideo').hidden = true; log('keep-awake video paused by the browser');
+        if (!wakeS.videoOn) return;
+        wakeS.videoOn = false; $('wakeVideo').hidden = true; log('keep-awake video paused by the browser');
         setTimeout(syncKeepAwake, 5000);
       });
     }
     try {
-      await keepVideo.play(); keepAwakeOn = true;
-      log(`keep-awake video playing (${keepAwakeMode}, lock=${!!wakeLock} drops=${wakeDrops} refusals=${wakeRefusals})`);
+      await keepVideo.play(); wakeS.videoOn = true;
+      log(`keep-awake video playing (${wakeS.mode}, lock=${wakeS.held} drops=${wakeS.drops} refusals=${wakeS.refusals})`);
     } catch (err) { log(`keep-awake video refused: ${err.name} ${err.message}`); }
-  } else if (!want && keepAwakeOn) {
-    keepAwakeOn = false; keepVideo.pause(); log('keep-awake video stopped');
+  } else if (!want && wakeS.videoOn) {
+    wakeS.videoOn = false; keepVideo.pause(); log('keep-awake video stopped');
   }
-  $('wakeVideo').hidden = !keepAwakeOn;
+  $('wakeVideo').hidden = !wakeS.videoOn;
 }
 function scheduleWakeRetry() {
   if (wakeRetryTimer) return;
-  const delay = Math.min(30000, 1000 * 2 ** Math.min(5, wakeDrops + wakeRefusals));
-  wakeRetryTimer = setTimeout(() => { wakeRetryTimer = null; if (wakeWanted && document.visibilityState === 'visible') syncWake(); }, delay);
+  wakeRetryTimer = setTimeout(() => { wakeRetryTimer = null; if (wakeS.wanted && document.visibilityState === 'visible') syncWake(); }, wakeRetryDelayMs(wakeS));
 }
 async function syncWake() {
-  wakeWanted = [...packs.values()].some((p) => p.connected || p.reconnecting || !!p.reTimer) || !!publisher || !!(viewer && viewer.state.live) || !!(tv && tv.state.live);
+  wakeS.wanted = [...packs.values()].some((p) => p.connected || p.reconnecting || !!p.reTimer) || !!publisher || !!(viewer && viewer.state.live) || !!(tv && tv.state.live);
   const el = $('wake');
-  if (!('wakeLock' in navigator)) el.hidden = true;
-  else {
-    if (wakeWanted && !wakeLock && document.visibilityState === 'visible') {
-      try {
-        const lock = await navigator.wakeLock.request('screen');
-        wakeLock = lock;
-        lock.addEventListener('release', () => {
-          if (wakeLock !== lock) return;
-          wakeLock = null; el.hidden = true;
-          if (wakeWanted && document.visibilityState === 'visible') {
-            wakeDrops++;
-            log(`screen wake lock dropped by the system while in front (${wakeDrops}) - asking again`);
-            scheduleWakeRetry();
-          } else log('screen wake lock released');
-          syncKeepAwake();
-        });
-        log('screen wake lock acquired');
-      } catch (err) {
-        wakeRefusals++;
-        log(`screen wake lock refused (${wakeRefusals}): ${err.name} ${err.message}`);
-        scheduleWakeRetry();
-      }
-    } else if (!wakeWanted && wakeLock) {
-      try { await wakeLock.release(); } catch { /* already gone */ }
-      wakeLock = null;
+  if (wakeShouldRequest(wakeS, document.visibilityState === 'visible')) {
+    try {
+      const lock = await navigator.wakeLock.request('screen');
+      wakeLock = lock; wakeAcquired(wakeS);
+      lock.addEventListener('release', () => {
+        if (wakeLock !== lock) return;
+        wakeLock = null; el.hidden = true;
+        if (wakeReleased(wakeS, document.visibilityState === 'visible') === 'dropped') {
+          log(`screen wake lock dropped by the system while in front (${wakeS.drops}) - asking again`);
+          scheduleWakeRetry();
+        } else log('screen wake lock released');
+        syncKeepAwake();
+      });
+      log('screen wake lock acquired');
+    } catch (err) {
+      wakeRefused(wakeS);
+      log(`screen wake lock refused (${wakeS.refusals}): ${err.name} ${err.message}`);
+      scheduleWakeRetry();
     }
-    el.hidden = !wakeLock;
+  } else if (!wakeS.wanted && wakeLock) {
+    try { await wakeLock.release(); } catch { /* already gone */ }
+    wakeLock = null; wakeS.held = false;
   }
+  el.hidden = !wakeLock;
   await syncKeepAwake();
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && wakeWanted) syncWake(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && wakeS.wanted) syncWake(); });
 
 // ---- flow picture layout: landscape on wide screens, portrait on phones and
 // in full screen when the viewport is taller than wide (owner ask 2026-09-17:
@@ -1140,6 +1134,13 @@ function loadCastSdk() {
   return castLoad;
 }
 function castHint(txt, disabled = false) { $('tvCastHint').textContent = txt; $('tvCast').disabled = disabled; }
+// Cast picker rules live in cast-logic.js over the one `castS` object (why: a
+// picker opened before Chrome finished discovering TVs never settles, and a
+// second request while one is pending fails with invalid_parameter until the
+// page reloads - both phones, 2026-09-20). This code loads the library, asks
+// the decision functions, acts, and logs the TV's own player state.
+const castS = castState();
+let castWaiters = [], castPlayer = null;
 function wireCastState() {
   if (castWired) return; castWired = true;
   const ctx = cast.framework.CastContext.getInstance();
@@ -1147,21 +1148,47 @@ function wireCastState() {
   ctx.addEventListener(cast.framework.CastContextEventType.CAST_STATE_CHANGED, (e) => {
     log(`cast: state ${e.castState}`);
     const S = cast.framework.CastState;
+    if (onCastStateEvent(castS, e.castState)) { for (const w of castWaiters) w(); castWaiters = []; }
     if (e.castState === S.NO_DEVICES_AVAILABLE) castHint(T.tvCastNone);
     else if (e.castState === S.NOT_CONNECTED) castHint(T.tvCastReady);
     else if (e.castState === S.CONNECTING) castHint(T.tvCastConnecting);
     else if (e.castState === S.CONNECTED) { const sess = ctx.getCurrentSession(); castHint(T.tvCastConnected(sess ? sess.getCastDevice().friendlyName : '')); }
   });
+  ctx.addEventListener(cast.framework.CastContextEventType.SESSION_STATE_CHANGED, (e) => log(`cast: session ${e.sessionState}${e.errorCode ? ' error=' + e.errorCode : ''}`));
+  castPlayer = new cast.framework.RemotePlayer();
+  const pc = new cast.framework.RemotePlayerController(castPlayer);
+  const E = cast.framework.RemotePlayerEventType;
+  const report = (why) => {
+    const sess = ctx.getCurrentSession(), ms = sess && sess.getMediaSession(), dev = sess ? sess.getCastDevice().friendlyName : '';
+    const st = castPlayer.playerState || '-', idle = ms && ms.idleReason ? ms.idleReason : '';
+    log(`cast: ${why} player=${st}${idle ? ' idle=' + idle : ''} loaded=${castPlayer.isMediaLoaded} t=${Math.round(castPlayer.currentTime || 0)}s${castPlayer.mediaInfo ? ' url=' + String(castPlayer.mediaInfo.contentId).slice(-40) : ''}`);
+    if (castPlayer.isConnected && sess) castHint(idle === 'ERROR' ? T.tvCastTvError(dev) : T.tvCastState(dev, st));
+  };
+  pc.addEventListener(E.PLAYER_STATE_CHANGED, () => report('player state'));
+  pc.addEventListener(E.IS_MEDIA_LOADED_CHANGED, () => report('media loaded change'));
+  pc.addEventListener(E.MEDIA_INFO_CHANGED, () => report('media info change'));
 }
+const castDiscovery = (ms) => new Promise((ok) => { if (discoveryKnown(castS)) return ok(); const t = setTimeout(ok, ms); castWaiters.push(() => { clearTimeout(t); ok(); }); });
 async function castToTv() {
   if (!tv || !tv.state.url) return;
+  const loadedBeforeTap = !!(window.cast && window.cast.framework);
   castHint(T.tvCastLoading, true);
   try {
     await loadCastSdk();
     wireCastState();
     const ctx = cast.framework.CastContext.getInstance();
-    let sess = ctx.getCurrentSession();
-    if (!sess) { castHint(T.tvCastPick, true); await ctx.requestSession(); sess = ctx.getCurrentSession(); }
+    const inp = () => ({ loadedBeforeTap, hasSession: !!ctx.getCurrentSession(), activationActive: navigator.userActivation ? navigator.userActivation.isActive : undefined, now: Date.now() });
+    let d = castTapDecision(castS, inp());
+    if (d.action === 'wait-discovery') { castHint(T.tvCastLooking, true); await castDiscovery(d.ms); d = castAfterDiscovery(castS, inp()); }
+    log(`cast: tap -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}${d.ageS !== undefined ? ' ' + d.ageS + ' s' : ''} (events=${castS.events} flipped=${castS.flipped} state=${castS.castState})`);
+    if (d.action === 'pending') { castHint(T.tvCastPending); return; }
+    if (d.action === 'no-devices') { castHint(T.tvCastNone); return; }
+    if (d.action === 'tap-again') { castHint(T.tvCastTapAgain); return; }
+    if (d.action === 'request') {
+      castHint(T.tvCastPick, true); castRequestStarted(castS, Date.now());
+      try { await ctx.requestSession(); } finally { castRequestEnded(castS); }
+    }
+    const sess = ctx.getCurrentSession();
     if (!sess) throw new Error('no cast session');
     const info = new chrome.cast.media.MediaInfo(tv.state.url, 'application/x-mpegURL');
     info.streamType = chrome.cast.media.StreamType.LIVE;
@@ -1171,13 +1198,15 @@ async function castToTv() {
     const req = new chrome.cast.media.LoadRequest(info); req.autoplay = true;
     await sess.loadMedia(req);
     const dev = sess.getCastDevice ? sess.getCastDevice().friendlyName : '';
-    log(`cast: playing on "${dev}"`);
+    log(`cast: load accepted by "${dev}" (${tv.state.segs} segments on the relay) - watching its player state`);
     castHint(T.tvCastConnected(dev));
     toast(T.tvCastConnected(dev), 8000);
   } catch (e) {
     const msg = e && (e.message || e.code || String(e));
-    if (/cancel/i.test(msg)) { castHint(T.tvCastReady); return; }
-    log(`cast: ${msg}`);
+    const kind = castErrorDecision(msg);
+    if (kind === 'closed') { log('cast: picker closed without a choice'); castHint(T.tvCastReady); return; }
+    log(`cast: ${msg}${e && e.description ? ' - ' + e.description : ''}`);
+    if (kind === 'stuck') { castHint(T.tvCastStuck); toast(T.tvCastStuck, 9000); return; }
     castHint(T.tvCastFailed(msg));
     toast(T.tvCastFailed(msg), 9000);
   }
@@ -1221,7 +1250,7 @@ async function stopTv() {
 })();
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
-  wakeState: () => ({ lock: !!wakeLock, drops: wakeDrops, refusals: wakeRefusals, video: keepAwakeOn, mode: keepAwakeMode }),
+  wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
 
@@ -1285,8 +1314,8 @@ setInterval(() => {
   const vw = viewer ? `view(live=${viewer.state.live} reader=${viewer.state.reader} path=${viewer.state.path.tier} received=${viewer.state.received} sig=${viewer.state.sig})` : '';
   const tvs = tv ? `tv(segs=${tv.state.segs} kb=${Math.round(tv.state.bytes / 1024)} pull=${tv.state.pullAgeS}s err=${tv.state.error || '-'})` : '';
   const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
-  if (wakeWanted && document.visibilityState === 'visible' && (!wakeLock || (keepAwakeOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
-  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} frameAge=${age === null ? '-' : age + 's'} wake=${!!wakeLock} keep=${keepAwakeOn ? keepAwakeMode : 'off'} drops=${wakeDrops}/${wakeRefusals} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
+  if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
+  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
 }, 60000);
 $('lang').innerHTML = Object.keys(I18N).map((k) => `<option value="${k}">${I18N[k].langName}</option>`).join('');
 $('lang').addEventListener('change', () => { try { localStorage.setItem('batray_lang', $('lang').value); } catch {} log(`language: ${$('lang').value}`); applyLang($('lang').value); });

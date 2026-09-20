@@ -41,6 +41,11 @@ const send = (method, params = {}) => new Promise((ok, err) => { const i = ++id;
 await new Promise((ok) => { ws.onopen = ok; });
 await send('Runtime.enable'); await send('Page.enable'); await send('Log.enable');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const evalGesture = async (expr) => {
+  const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true, userGesture: true });
+  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
+  return r.result.value;
+};
 const evalJs = async (expr) => {
   const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
@@ -91,17 +96,51 @@ check('the state counts segments and shows the fake TV pull', s.live && s.segs >
 const ui = await evalJs(`({ stat: document.getElementById('tvStat').textContent, note: !document.getElementById('tvNote').hidden, link: document.getElementById('tvLink').textContent, videoSrc: document.getElementById('tvVideo').getAttribute('src'), canHls: !!document.getElementById('tvVideo').canPlayType('application/vnd.apple.mpegurl'), noPreview: !document.getElementById('tvNoPreview').hidden, castRow: !document.getElementById('tvCastRow').hidden, castHint: document.getElementById('tvCastHint').textContent })`);
 check('status line, status-bar note and link are set; the preview follows the browser\'s own HLS support; Cast is always offered', /segments/.test(ui.stat) && ui.note && ui.link === url && ui.castRow && /Google/.test(ui.castHint) && (ui.canHls ? ui.videoSrc === url && !ui.noPreview : ui.videoSrc === null && ui.noPreview), ui);
 
-// Cast: with a fake cast library in place, the button loads our playlist as live HLS on the default receiver
+// Cast: a fake of Google's cast library that behaves like the Android sender
+// read on 2026-09-20 - availability goes NOT_CONNECTED -> NO_DEVICES -> NOT_CONNECTED
+// after init, a picker request can hang, and the receiver reports player states.
 await evalJs(`
-  window.__castLoads = []; const dev = { friendlyName: 'Living room TV' };
-  const sess = { getCastDevice: () => dev, loadMedia: async (req) => { window.__castLoads.push({ url: req.media.contentId, type: req.media.contentType, stream: req.media.streamType, seg: req.media.hlsSegmentFormat, autoplay: req.autoplay, title: req.media.metadata && req.media.metadata.title }); } };
-  const ctx = { opts: null, setOptions(o) { this.opts = o; }, addEventListener() {}, getCurrentSession: () => sess, requestSession: async () => {} };
+  window.__castLoads = []; window.__castReq = 0; window.__castScript = 0; window.__castNoSession = true; window.__castHang = false; window.__castMedia = null;
+  const dev = { friendlyName: 'Living room TV' };
+  const sess = { getCastDevice: () => dev, getMediaSession: () => window.__castMedia, loadMedia: async (req) => { window.__castLoads.push({ url: req.media.contentId, type: req.media.contentType, stream: req.media.streamType, seg: req.media.hlsSegmentFormat, vseg: req.media.hlsVideoSegmentFormat, autoplay: req.autoplay, title: req.media.metadata && req.media.metadata.title }); } };
+  const listeners = {};
+  const ctx = { opts: null, state: 'NOT_CONNECTED',
+    setOptions(o) { this.opts = o; setTimeout(() => ctx.emit('NOT_CONNECTED'), 0); setTimeout(() => ctx.emit('NO_DEVICES_AVAILABLE'), 300); setTimeout(() => ctx.emit('NOT_CONNECTED'), 400); },
+    addEventListener(t, f) { (listeners[t] = listeners[t] || []).push(f); },
+    emit(st) { this.state = st; for (const f of listeners.CAST_STATE_CHANGED || []) f({ castState: st }); },
+    getCastState() { return this.state; },
+    getCurrentSession: () => (window.__castNoSession ? null : sess),
+    requestSession() { window.__castReq++; return window.__castHang ? new Promise(() => {}) : new Promise((ok) => setTimeout(() => { window.__castNoSession = false; ok(); }, 100)); } };
+  const player = { playerState: null, isMediaLoaded: false, isConnected: true, currentTime: 0, mediaInfo: null }, pcl = {};
+  function RemotePlayer() { return player; }
+  function RemotePlayerController() { return { addEventListener(t, f) { (pcl[t] = pcl[t] || []).push(f); } }; }
+  window.__castPlayer = (st, idle) => { player.playerState = st; player.isMediaLoaded = st !== 'IDLE'; window.__castMedia = { idleReason: idle || null }; for (const f of pcl.PLAYER_STATE_CHANGED || []) f({}); };
   window.chrome = window.chrome || {}; window.chrome.cast = { media: { DEFAULT_MEDIA_RECEIVER_APP_ID: 'CC1AD845', StreamType: { LIVE: 'LIVE' }, HlsSegmentFormat: { FMP4: 'fmp4' }, HlsVideoSegmentFormat: { FMP4: 'fmp4' }, MediaInfo: function (id, type) { this.contentId = id; this.contentType = type; }, GenericMediaMetadata: function () {}, LoadRequest: function (m) { this.media = m; } }, AutoJoinPolicy: { ORIGIN_SCOPED: 'origin_scoped' } };
-  window.cast = { framework: { CastContext: { getInstance: () => ctx }, CastContextEventType: { CAST_STATE_CHANGED: 'x' }, CastState: {} } };
+  const fw = { CastContext: { getInstance: () => ctx }, CastContextEventType: { CAST_STATE_CHANGED: 'CAST_STATE_CHANGED', SESSION_STATE_CHANGED: 'SESSION_STATE_CHANGED' }, CastState: { NO_DEVICES_AVAILABLE: 'NO_DEVICES_AVAILABLE', NOT_CONNECTED: 'NOT_CONNECTED', CONNECTING: 'CONNECTING', CONNECTED: 'CONNECTED' }, RemotePlayer, RemotePlayerController, RemotePlayerEventType: { PLAYER_STATE_CHANGED: 'PLAYER_STATE_CHANGED', IS_MEDIA_LOADED_CHANGED: 'IS_MEDIA_LOADED_CHANGED', MEDIA_INFO_CHANGED: 'MEDIA_INFO_CHANGED' } };
+  // first-load path: the page appends Google's script tag; the fake stands in for it (nothing is fetched)
+  const realAppend = document.head.appendChild.bind(document.head);
+  document.head.appendChild = (el) => { if (el.tagName === 'SCRIPT' && /gstatic/.test(el.src)) { window.__castScript++; setTimeout(() => { window.cast = { framework: fw }; window.__onGCastApiAvailable(true); }, 50); return el; } return realAppend(el); };
   1`);
-await evalJs(`document.getElementById('tvCast').click(); 1`); await sleep(500);
-const cst = await evalJs(`({ loads: window.__castLoads, hint: document.getElementById('tvCastHint').textContent, opts: window.cast.framework.CastContext.getInstance().opts, scripts: [...document.scripts].filter((s) => /gstatic/.test(s.src)).length })`);
-check('Cast loads the playlist as live HLS (fmp4) on the default media receiver and names the TV', cst.loads.length === 1 && cst.loads[0].url === url && cst.loads[0].type === 'application/x-mpegURL' && cst.loads[0].stream === 'LIVE' && cst.loads[0].seg === 'fmp4' && cst.loads[0].autoplay === true && /BatRay/.test(cst.loads[0].title) && cst.opts.receiverApplicationId === 'CC1AD845' && /Living room TV/.test(cst.hint) && cst.scripts === 0, cst);
+// A: the tap that loads the library waits for discovery to flip, then opens the picker and loads the playlist
+await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(1500);
+const cst = await evalJs(`({ loads: window.__castLoads, req: window.__castReq, script: window.__castScript, hint: document.getElementById('tvCastHint').textContent, opts: window.cast.framework.CastContext.getInstance().opts, scripts: [...document.scripts].filter((s) => /gstatic/.test(s.src)).length, log: window.__batrayTest.logLines().filter((l) => /cast:/.test(l)).slice(-8) })`);
+check('Cast loads the playlist as live HLS (fmp4) on the default media receiver and names the TV', cst.loads.length === 1 && cst.loads[0].url === url && cst.loads[0].type === 'application/x-mpegURL' && cst.loads[0].stream === 'LIVE' && cst.loads[0].seg === 'fmp4' && cst.loads[0].vseg === 'fmp4' && cst.loads[0].autoplay === true && /BatRay/.test(cst.loads[0].title) && cst.opts.receiverApplicationId === 'CC1AD845' && /Living room TV/.test(cst.hint) && cst.scripts === 0 && cst.script === 1, cst);
+check('...the picker opened only after the availability flipped (NO_DEVICES seen first), one request', cst.req === 1 && cst.log.some((l) => /state NO_DEVICES_AVAILABLE/.test(l)) && cst.log.some((l) => /load accepted by "Living room TV"/.test(l)), cst.log);
+// B: a request the library never settles: a second tap must not ask again (that is the invalid_parameter trap)
+await evalJs(`window.__castNoSession = true; window.__castHang = true; 1`);
+await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(300);
+const h1 = await evalJs(`document.getElementById('tvCastHint').textContent`);
+// on the phones a later state event re-enabled the button while the request hung; same here
+await evalJs(`window.cast.framework.CastContext.getInstance().emit('NOT_CONNECTED'); 1`);
+await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(300);
+const b2 = await evalJs(`({ req: window.__castReq, hint: document.getElementById('tvCastHint').textContent, log: window.__batrayTest.logLines().filter((l) => /cast:/.test(l)).slice(-3) })`);
+check('a pending picker request blocks a second one and says what to do', /pick your TV/.test(h1) && b2.req === 2 && /reload the page/.test(b2.hint) && b2.log.some((l) => /tap -> pending/.test(l)), { h1, ...b2 });
+// C: the TV's own player state reaches the hint and the log
+await evalJs(`window.__castNoSession = false; window.__castPlayer('PLAYING'); 1`); await sleep(100);
+const c1 = await evalJs(`document.getElementById('tvCastHint').textContent`);
+await evalJs(`window.__castPlayer('IDLE', 'ERROR'); 1`); await sleep(100);
+const c2 = await evalJs(`({ hint: document.getElementById('tvCastHint').textContent, log: window.__batrayTest.logLines().filter((l) => /cast: player state/.test(l)).slice(-2) })`);
+check("the receiver's player state shows under the button and an IDLE/ERROR is called out", /TV player: playing/.test(c1) && /could not play/.test(c2.hint) && c2.log.some((l) => /player=PLAYING/.test(l)) && c2.log.some((l) => /player=IDLE idle=ERROR/.test(l)), { c1, ...c2 });
 
 // stop: the last fragment is flushed and the relay is told
 await evalJs(`window.__batrayTest.stopTv()`);
