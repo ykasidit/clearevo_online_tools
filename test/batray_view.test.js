@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fmt, fmtWh, fmtRuntime, fmtSpan, socClass, socLevel, flowDir, maxAmps, flowModel, etaModel, chipList, cellsStat, ageLabel, buildTvModel, LEVEL_TOP, LEVEL_H } from '../public/batray/view-logic.js';
+import { trendProgress, TREND_MIN_MS, fmt, fmtWh, fmtRuntime, fmtSpan, socClass, socLevel, flowDir, maxAmps, flowModel, etaModel, chipList, cellsStat, ageLabel, buildTvModel, LEVEL_TOP, LEVEL_H } from '../public/batray/view-logic.js';
 import { decodeCellInfo } from '../public/batray/jkbms.js';
 import { I18N } from '../public/batray/i18n.js';
 import * as F from './batray_frames.js';
@@ -101,4 +101,11 @@ test('the TV frame model: waiting without a reading; with one, the same numbers 
   assert.equal(m.soc, owner.soc); assert.equal(m.cutoffPct, 12); assert.equal(m.dir, f.dir); assert.equal(m.powerTxt, f.powerTxt); assert.equal(m.ampsTxt, f.ampsTxt); assert.equal(m.battLine, f.battLine);
   assert.equal(m.etaTxt, etaModel({ remainAh: owner.remainAh, nominalAh: owner.nominalAh, currentA: -3.2, cutoffPct: 12 }, T).text);   // the smoothed current, not the raw one
   assert.deepEqual(m.chips, chipList(owner, T)); assert.equal(m.stale, true); assert.equal(m.updatedTxt, T.agoS(20)); assert.equal(m.footer, ''); assert.equal(m.brand, 'BatRay by ClearEvo.com');
+});
+
+test('the trend progress: waiting without readings, a percentage until 30 s, ready after', () => {
+  assert.deepEqual(trendProgress(0, false), { ready: false, pct: 0, haveS: 0, needS: 30, waiting: true });
+  assert.deepEqual(trendProgress(0, true), { ready: false, pct: 0, haveS: 0, needS: 30, waiting: false });
+  assert.deepEqual(trendProgress(12000, true), { ready: false, pct: 40, haveS: 12, needS: 30, waiting: false });
+  assert.equal(trendProgress(TREND_MIN_MS, true).ready, true); assert.equal(trendProgress(90000, true).pct, 100);
 });

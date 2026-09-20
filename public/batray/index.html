@@ -85,6 +85,7 @@ body.offline #fDash{animation:none}
 .chip.ok{color:#5fd39a;border-color:#2b5a45}.chip.bad{color:#ff8a80;border-color:#7a2f2a;font-weight:700}.chip.warn{color:#ffd24a;border-color:#6b5a1a}
 #etaLine{display:block;line-height:1.8}
 #etaLine input{width:52px;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:4px;padding:1px 4px;font:inherit}
+.prog{height:8px;background:#12283f;border:1px solid #1c3550;border-radius:5px;overflow:hidden;margin-top:8px}.prog .bar{height:100%;background:#2aa9e0;transition:width .5s linear}
 #trend{width:100%;height:130px;display:block;background:#0a1626;border:1px solid #1c3550;border-radius:6px}
 .check{margin:10px 0 0;font:11px 'DejaVu Sans Mono',monospace;color:#6f8aa6;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
 .check .ok{color:#5fd39a}.check .warn{color:#ffd24a}
@@ -358,6 +359,11 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           <h2><span data-i18n="cellsH">Cell voltages</span> <span class="note" id="cellsNote" data-i18n="cellsNote">bar height exaggerates the spread: scale runs from the lowest cell - 50 mV to the highest + 50 mV</span></h2>
           <div class="check" id="cellsStat"></div>
           <div id="cellsWrap"><div id="cells"></div></div>
+        </div>
+        <div class="card" id="trendWait" data-tab="history">
+          <h2><span data-i18n="trendH">Session trend</span></h2>
+          <div class="check" id="trendWaitTxt"></div>
+          <div class="prog"><div class="bar" id="trendWaitBar" style="width:0%"></div></div>
         </div>
         <div class="card" id="trendCard" data-tab="history" hidden>
           <h2><span data-i18n="trendH">Trend</span> <span class="note" data-i18n="trendNote">since this tab opened - kept in memory only, nothing stored or sent</span></h2>

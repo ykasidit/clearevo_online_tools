@@ -15,7 +15,7 @@
 import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision } from './cast-logic.js';
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
-import { fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
+import { trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { connState, connEvent, connCard, packChipState, wakeWantedByConn, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
@@ -30,7 +30,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.25';
+export const APP_VERSION = '0.9.26';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -251,7 +251,7 @@ function clearReadouts() {
   els.layout.innerHTML = ''; els.secondary.innerHTML = ''; els.cells.innerHTML = ''; $('strip').innerHTML = ''; $('cellsStat').textContent = '';
   for (const id of ['fSoc', 'fPower', 'fAmps']) $(id).textContent = '-';
   $('fEta').textContent = ''; $('fSoh').textContent = T.battLbl(null, null);
-  $('trendCard').hidden = true;
+  $('trendCard').hidden = true; renderTrendWait(null);
 }
 
 // The offline / loading / reconnect card reflects the ACTIVE pack only.
@@ -488,9 +488,18 @@ function renderStrip(d) {
 
 function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 
+// while the trend has too little to draw, say so with a bar instead of a blank History tab (owner, 2026-09-20)
+function renderTrendWait(p) {
+  const pr = trendProgress(p ? p.trend.spanMs : 0, !!(p && p.data));
+  const w = $('trendWait'); w.hidden = pr.ready;
+  if (pr.ready) return pr;
+  $('trendWaitTxt').textContent = pr.waiting ? T.trendWaitNone : T.trendWait(pr.haveS, pr.needS);
+  $('trendWaitBar').style.width = `${pr.pct}%`;
+  return pr;
+}
 function renderTrend(p) {
   const card = $('trendCard');
-  if (!p || p.trend.spanMs < 30000) { card.hidden = true; return; }
+  if (!renderTrendWait(p).ready) { card.hidden = true; return; }
   card.hidden = false;
   const tr = p.trend;
   $('trendEnergy').textContent = T.trendEnergy(fmtSpan(tr.spanMs / 3600000), fmtWh(tr.chargedWh), fmtWh(tr.dischargedWh));
@@ -630,6 +639,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function tickAge() {
+  if ($('trendCard').hidden) renderTrendWait(active);       // the bar moves every second, not only per reading
   const a = ageLabel(active && active.lastFrameAt ? Math.round((Date.now() - active.lastFrameAt) / 1000) : null, T);
   els.updated.textContent = a.text;
   els.updated.setAttribute('fill', a.stale ? '#ffd24a' : '#6f8aa6');

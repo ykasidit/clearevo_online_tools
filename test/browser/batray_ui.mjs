@@ -46,6 +46,8 @@ const audit = await evalJs(`(() => {
 })()`);
 check('every visible control on the reader is at least 48 px tall, and there is no <select>', audit.small.length === 0 && audit.selects === 0 && audit.sheetHidden, audit);
 
+const tw = await evalJs(`({ shown: getComputedStyle(document.getElementById('trendWait')).display !== 'none', txt: document.getElementById('trendWaitTxt').textContent, w: document.getElementById('trendWaitBar').style.width })`);
+check('the trend placeholder counts the seconds collected with a bar', tw.shown && /\d+ s of 30 s/.test(tw.txt) && parseInt(tw.w, 10) > 0, tw);
 await evalJs(`document.getElementById('gBatt').dispatchEvent(new Event('click', { bubbles: true })); 1`); await sleep(250);
 let sh = await evalJs(`({ shown: !document.getElementById('sheet').hidden, title: document.getElementById('sheetTitle').textContent, lead: document.getElementById('sheetLead').textContent, rows: document.querySelectorAll('#sheetRows .k').length, state: history.state, ui: window.__batrayTest.uiState() })`);
 check('tapping the battery opens a sheet: plain sentence with the time to go, technical rows below, a history entry', sh.shown && sh.title === 'Battery' && /% full\./.test(sh.lead) && sh.rows >= 3 && sh.state && sh.state.sheet === 'soc' && sh.ui.sheet && sh.ui.sheet.kind === 'soc', sh);
@@ -104,6 +106,9 @@ check('History then More: the More tab shows the detail cards and hides the pict
 await evalJs(`history.back(); 1`); await sleep(400);
 vw = await evalJs(`({ tab: document.body.dataset.tab, on: document.querySelector('[data-tab-btn].on').dataset.tabBtn, flowShown: getComputedStyle(document.getElementById('flowCard')).display !== 'none' })`);
 check('Back returns to Now once', vw.tab === 'now' && vw.on === 'now', vw);
+await evalJs(`document.querySelector('[data-tab-btn=history]').click(); 1`); await sleep(200);
+const hw = await evalJs(`({ waitShown: getComputedStyle(document.getElementById('trendWait')).display !== 'none', txt: document.getElementById('trendWaitTxt').textContent, cardHidden: document.getElementById('trendCard').hidden })`);
+check('History never shows blank: without readings it says the trend starts once they arrive', hw.waitShown && /once readings arrive/.test(hw.txt) && hw.cardHidden, hw);
 
 const thrown = events.filter((e) => e.method === 'Runtime.exceptionThrown').map((e) => e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text);
 check('no page exceptions', thrown.length === 0, thrown);

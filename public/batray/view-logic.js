@@ -113,6 +113,14 @@ export function ageLabel(ageS, T) {
   return { text: ageS < 2 ? T.justNow : T.agoS(ageS), stale: ageS > STALE_AGE_S };
 }
 
+/** The session trend needs TREND_MIN_MS of readings before it draws; until then, how far along it is. */
+export const TREND_MIN_MS = 30000;
+export function trendProgress(spanMs, hasData) {
+  if (!hasData) return { ready: false, pct: 0, haveS: 0, needS: TREND_MIN_MS / 1000, waiting: true };
+  const s = Math.max(0, spanMs || 0);
+  return { ready: s >= TREND_MIN_MS, pct: Math.min(100, Math.round((s / TREND_MIN_MS) * 100)), haveS: Math.min(TREND_MIN_MS / 1000, Math.round(s / 1000)), needS: TREND_MIN_MS / 1000, waiting: false };
+}
+
 /** The model tv-draw paints: the picture's numbers laid out for a TV. */
 export function buildTvModel({ label, demo, data: d, settings, iEmaV, lastFrameAt, now, cutoffPct, T }) {
   const clock = new Date(now).toTimeString().slice(0, 8);
