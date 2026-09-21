@@ -645,7 +645,7 @@ function histSum() { return historySummary(histS.days, histS.todayRows, { usage:
 function renderHistNote() {
   const sum = histSum(), mem = histS.backend === 'memory';
   const headroom = Math.round(HEADROOM_BYTES / 1048576);
-  $('histNote').textContent = mem ? T.histNoStore : !sum.days ? T.histNoteEmpty(headroom) : (viewMode ? T.histNoteViewer : T.histNote)(sum.days, fmtSize(sum.bytes), sum.oldest, sum.quota ? fmtSize(sum.quota) : '?', sum.estDays === null ? '?' : sum.estDays.toLocaleString(), headroom);
+  $('histNote').textContent = mem ? T.histNoStore : !sum.days ? T.histNoteEmpty(headroom) : (viewMode ? T.histNoteViewer : T.histNote)(sum.days, fmtSize(sum.bytes), sum.oldest, sum.quota ? fmtSize(sum.quota) : '?', sum.estDays === null ? T.histEstUnknown : sum.estDays - sum.days > 3650 ? T.histEstYears : T.histEstDays((sum.estDays - sum.days).toLocaleString()), headroom);
   $('histClear').hidden = mem || !sum.days; $('histBackup').hidden = mem || !sum.days; $('histRestore').hidden = mem; $('histBackupNote').hidden = mem;
 }
 // past days for the 7 d / all ranges: read once, thinned to a row a minute, cached per day
@@ -960,7 +960,7 @@ async function permittedIds() {
 async function renderKnown() {
   const k = knownDevice(savedDevice(), await permittedIds());
   const b = $('connectKnown'); b.hidden = !k.show;
-  if (k.show) { b.textContent = T.connectKnown(k.name); b.dataset.id = k.id; }
+  if (k.show) { $('connectKnownTxt').textContent = T.connectKnown(k.name); b.dataset.id = k.id; }
   else if (k.why) log(`known device: button hidden (${k.why})`);
   return k;
 }

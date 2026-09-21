@@ -79,7 +79,7 @@ check('a past day is compacted to .ndjson.gz by maintenance, today stays raw', p
 const pastText = await evalJs(`window.__batrayTest.histRead('${past[0].day}')`);
 check('the gzipped day reads back inflated', pastText.split('\n').filter(Boolean).length >= 100 && /"soc":70/.test(pastText), { len: pastText.length });
 const note = await evalJs(`document.getElementById('histNote').textContent`);
-check('the History card says days, used vs the browser maximum, the estimated days left and the auto-delete rule', /Stored on this device: \d+ days? since \d{4}-\d{2}-\d{2}, \d+ KB of the [\d.]+ (GB|MB) this browser allows, room for about [\d,]+ days .* less than 100 MB stay free/.test(note), note);
+check('the History card says days, used vs the browser maximum, the estimated days left and the auto-delete rule', /Stored on this device: \d+ days? since \d{4}-\d{2}-\d{2}, \d+ KB of the [\d.]+ (GB|MB) this browser allows, room for (about [\d,]+ more days|more than ten years) .* less than 100 MB stay free/.test(note), note);
 
 // ---- 2b. torn tail: a half-written last line is never joined to the next rows, read, gzipped or sent ----
 await evalJs(`(async () => { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('batray-history'); const fh = await d.getFileHandle('${today}.ndjson'); const w = await fh.createWritable({ keepExistingData: true }); const f = await fh.getFile(); await w.seek(f.size); await w.write('{"t":1,"p":"n11","soc":'); await w.close(); })()`);
