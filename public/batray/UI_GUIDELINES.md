@@ -64,6 +64,9 @@ core"). The role is a layout decision, not a fork.
 - Substance over motion: nothing ever delays or covers the first reading.
   Reader: CSS animation only, paused while hidden, off in low-power mode.
 - Thai and English from day one; the parity test keeps the tables in step.
+- Dark theme only (owner decision 2026-09-21): LFP banks live in dark rooms,
+  not outdoors, and a phone on 24 h a day uses less power staying dark. No
+  light theme, no theme toggle; do not re-propose.
 
 ## Widget vocabulary (use these, do not invent)
 
