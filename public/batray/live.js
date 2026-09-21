@@ -129,9 +129,10 @@ function countdown(seconds, tick, fn) {
 }
 
 export class Publisher {
-  /** opts: { log(msg), onState(state) } - state: { viewers, live, path, p2p, server, retryIn, error } */
+  /** opts: { log(msg), onState(state), onRequest(msg) } - state: { viewers, live, path, p2p, server, retryIn, error };
+   *  onRequest gets a viewer's `hist-req` ({ from, have }) */
   constructor(opts) {
-    this.log = opts.log || (() => {}); this.onState = opts.onState || (() => {});
+    this.log = opts.log || (() => {}); this.onState = opts.onState || (() => {}); this.onRequest = opts.onRequest || (() => {});
     this.room = null; this.pubToken = null; this.keyB64 = null; this.key = null; this.link = null;
     this.pc = null; this.dc = null; this.sid = null; this.ac = null; this.sig = null;
     this.peers = new Map();          // viewerId -> { pc, dc }
@@ -194,6 +195,7 @@ export class Publisher {
       return;
     }
     if (m.type === 'join') { this.offerP2P(m.from).catch((e) => this.log(`p2p offer to ${m.from.slice(0, 6)} failed: ${e.message}`)); return; }
+    if (m.type === 'hist-req') { this.onRequest(m); return; }            // a viewer lists the day files it has; the app answers over publish()
     if (m.type === 'leave') { this.dropPeer(m.from); return; }
     const peer = this.peers.get(m.from);
     if (!peer) return;
@@ -277,6 +279,12 @@ export class Publisher {
     if (this.cancelRetry) { this.log('live: tab resumed, retrying now'); this.connectSfu(); }
   }
 
+  /** Bytes still queued on the busiest open channel: a big transfer waits while this is high instead of dropping. */
+  backlog() {
+    let b = this.dc && this.dc.readyState === 'open' ? this.dc.bufferedAmount : 0;
+    for (const p of this.peers.values()) if (p.open && p.dc.readyState === 'open') b = Math.max(b, p.dc.bufferedAmount);
+    return b;
+  }
   /** Encrypt once, send to the SFU and to every direct peer. */
   async publish(env) {
     if (!this.key) { this.state.dropped++; return; }        // start() has not imported the key yet (a BMS event can land first)
@@ -330,6 +338,8 @@ export class Viewer {
     watchNet(this);
   }
 
+  /** Ask the reader for the history files this device lacks (0.9.30); `have` = this device's day listing. */
+  request(have) { if (!this.sig) return false; this.sig.send({ type: 'hist-req', have }); return true; }
   onSignal(m) {
     if (m.type === 'status') { this.onStatus(m); return; }
     if (m.type === 'offer' && m.sdp) { this.answerP2P(m.sdp).catch((e) => this.log('p2p: ' + e.message)); return; }

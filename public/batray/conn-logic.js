@@ -49,6 +49,10 @@ export function connEvent(cs, ev, inp = {}) {
     case 'picked':
       cs.hasDevice = true; cs.origin = 'chooser';
       return beginAttempt(cs);
+    case 'known':                                        // the remembered BMS, no chooser (0.9.30): retries like an auto reconnect
+      if (cs.phase === 'connecting') return { action: 'ignore', why: 'an attempt is in progress' };
+      cs.userDisconnect = false; cs.hasDevice = true; cs.origin = 'known'; cs.count = 0;
+      return beginAttempt(cs);
     case 'chooser-cancelled':
       cs.phase = 'idle'; return { action: 'idle' };
     case 'connect-tick':
@@ -125,3 +129,12 @@ export function connButton(cs, connected) {
 }
 /** A pack that is up, connecting or counting down keeps the screen awake. */
 export function wakeWantedByConn(cs, connected) { return connected || cs.phase === 'connecting' || cs.phase === 'countdown'; }
+
+/** The green "Connect to NAME" button (owner ask 2026-09-21): shown when a BMS was picked before on this device and the
+ *  browser still lists it as permitted (getDevices), so a tap connects without the chooser. `permitted` = the ids
+ *  getDevices() returned, or null when the browser has no getDevices (older Chrome Android: the chooser it is). */
+export function knownDevice(saved, permitted) {
+  if (!saved || typeof saved.id !== 'string' || !saved.id) return { show: false };
+  if (!Array.isArray(permitted) || !permitted.includes(saved.id)) return { show: false, why: permitted === null ? 'no getDevices' : 'not permitted any more' };
+  return { show: true, id: saved.id, name: saved.name || saved.id };
+}

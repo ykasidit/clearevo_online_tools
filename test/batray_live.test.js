@@ -51,7 +51,8 @@ test('envelope validation', () => {
   const ok = envelope('info', { id: 'a', name: 'x' }, {});
   assert.ok(validEnvelope(ok));
   assert.ok(!validEnvelope({ k: 'exec', p: { id: 'a' }, t: 1 }));
-  assert.ok(validEnvelope(envelope('hist', { id: '*', name: '*' }, { n: 0, of: 2, rows: [] })), 'history chunks travel as hist');
+  assert.ok(validEnvelope(envelope('hist-file', { id: '*', name: '*' }, { day: '2026-09-20', n: 0, of: 2, b64: 'AA==' })), 'history day files travel as hist-file chunks');
+  assert.ok(!validEnvelope(envelope('hist', { id: '*', name: '*' }, {})), 'the 0.9.29 row chunks are gone');
   assert.equal(envelope('data', { id: 'p', name: 'BMS 1', label: 'JK-B2A24S' }, {}).p.name, 'JK-B2A24S', 'the envelope carries the pack label the reader shows, so viewer rows match');
   assert.ok(!validEnvelope({ k: 'data', p: { id: 'x'.repeat(65) }, t: 1 }));
   assert.ok(!validEnvelope(null));

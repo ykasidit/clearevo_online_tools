@@ -39,7 +39,11 @@ const FAKE = `
   const char = new EventTarget(); char.startNotifications = async () => char; char.writeValueWithoutResponse = async () => {};
   const gatt = { connected: false, connect: async () => { gatt.connected = true; return { getPrimaryService: async () => ({ getCharacteristic: async () => char }) }; }, disconnect: () => { if (!gatt.connected) return; gatt.connected = false; window.__dev.dispatchEvent(new Event('gattserverdisconnected')); } };
   const dev = new EventTarget(); dev.id = 'fake-1'; dev.name = 'n11'; dev.gatt = gatt; window.__dev = dev;
-  navigator.bluetooth = { requestDevice: async () => dev, getAvailability: async () => true, getDevices: async () => [dev] };
+  window.__requestDevices = 0;
+  navigator.bluetooth = { requestDevice: async () => { window.__requestDevices++; return dev; }, getAvailability: async () => true, getDevices: async () => [dev] };
+  // the backup download: keep the blob instead of navigating
+  const cou = URL.createObjectURL.bind(URL); URL.createObjectURL = (b) => { window.__backupBlob = b; return cou(b); };
+  HTMLAnchorElement.prototype.click = function () { window.__downloadName = this.download; };
   window.__notify = (bytes) => { char.value = new DataView(Uint8Array.from(bytes).buffer); char.dispatchEvent(new Event('characteristicvaluechanged')); };
 `;
 await send('Page.addScriptToEvaluateOnNewDocument', { source: FAKE });
@@ -75,13 +79,56 @@ check('a past day is compacted to .ndjson.gz by maintenance, today stays raw', p
 const pastText = await evalJs(`window.__batrayTest.histRead('${past[0].day}')`);
 check('the gzipped day reads back inflated', pastText.split('\n').filter(Boolean).length >= 100 && /"soc":70/.test(pastText), { len: pastText.length });
 const note = await evalJs(`document.getElementById('histNote').textContent`);
-check('the History card says what is stored, for how long, and that it leaves only when sharing', /Stored on this device: \d+ days?, \d+ KB, since \d{4}-\d{2}-\d{2}\. Files are kept 30 days/.test(note), note);
+check('the History card says days, used vs the browser maximum, the estimated days left and the auto-delete rule', /Stored on this device: \d+ days? since \d{4}-\d{2}-\d{2}, \d+ KB of the [\d.]+ (GB|MB) this browser allows, room for about [\d,]+ days .* less than 100 MB stay free/.test(note), note);
+
+// ---- 2b. torn tail: a half-written last line is never joined to the next rows, read, gzipped or sent ----
+await evalJs(`(async () => { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('batray-history'); const fh = await d.getFileHandle('${today}.ndjson'); const w = await fh.createWritable({ keepExistingData: true }); const f = await fh.getFile(); await w.seek(f.size); await w.write('{"t":1,"p":"n11","soc":'); await w.close(); })()`);
+await evalJs(`window.__batrayTest.histSeed([{ t: Date.now() - 100, p: 'n11', soc: 51, v: 52, i: 1, w: 50, ah: 1, tm: 1, t1: 1, t2: 1, ch: 1, ds: 1, bal: 0, err: 0, c: null }])`);
+await evalJs('window.__batrayTest.flushHistory()');
+const torn = await evalJs(`window.__batrayTest.histRead('${today}')`);
+const tornLines = torn.split('\n');
+check('a torn tail is closed with a newline before the next append and is skipped when reading', tornLines.every((l) => !l || l.startsWith('{"t":')) && torn.endsWith('\n') && !/"soc":\{"t"/.test(torn) && /"soc":51/.test(torn), { tail: torn.slice(-160) });
+
+// ---- 2c. backup: a .tar of the daily gzip files; restore after delete brings the days back ----
+const bk = await evalJs('window.__batrayTest.backupHistory()');
+const bkParsed = await evalJs(`(async () => { const b = window.__backupBlob; const bytes = new Uint8Array(await b.arrayBuffer()); const m = window.__batrayTest.tarParse(bytes); return { size: bytes.length, name: window.__downloadName, members: m.map((e) => e.name), ok: m.every((e) => e.bytes[0] === 0x1f && e.bytes[1] === 0x8b) }; })()`);
+check('Back up history downloads batray-history-<day>.tar with one gzip member per day', bk && bk.days === list.length && /^batray-history-\d{4}-\d{2}-\d{2}\.tar$/.test(bkParsed.name) && bkParsed.members.length === list.length && bkParsed.members.every((n) => /^batray-history\/\d{4}-\d{2}-\d{2}\.ndjson\.gz$/.test(n)) && bkParsed.ok && bkParsed.size % 512 === 0, { bk, bkParsed });
+await evalJs('window.__batrayTest.clearHistory()'); await sleep(300);
+const rs = await evalJs(`(async () => { const bytes = new Uint8Array(await window.__backupBlob.arrayBuffer()); return window.__batrayTest.restoreHistory(bytes, 'test'); })()`);
+list = await evalJs('window.__batrayTest.histList()'); h = await hist();
+const restoredToday = await evalJs(`window.__batrayTest.histRead('${today}')`);
+check('Restore from that backup brings every day back (past days as gz, today too) and reloads memory', rs && rs.written === bkParsed.members.length && rs.failed === 0 && list.length === bkParsed.members.length && h.mem >= 120 && /"soc":51/.test(restoredToday), { rs, list, mem: h.mem });
+const rs2 = await evalJs(`(async () => { const bytes = new Uint8Array(await window.__backupBlob.arrayBuffer()); return window.__batrayTest.restoreHistory(bytes, 'again'); })()`);
+check('restoring the same backup again writes nothing (every day already here)', rs2.written === 0 && rs2.skipped === bkParsed.members.length, rs2);
+const bad = await evalJs(`window.__batrayTest.restoreHistory(new Uint8Array(2048).fill(9), 'junk')`);
+const badToast = await evalJs(`document.getElementById('toast').textContent`);
+check('junk is refused with a toast', bad === null && /Not a BatRay backup/.test(badToast), badToast);
+
+// ---- 2d. a day file received from the reader (viewer path) is verified, stored and shows in the listing ----
+const rx = await evalJs(`(async () => {
+  const text = Array.from({ length: 300 }, (_, i) => JSON.stringify({ t: new Date('2026-09-10T00:00:00').getTime() + i * 60000, p: 'n11', soc: 33, v: 51, w: -100 })).join('\\n') + '\\n';
+  const gz = new Uint8Array(await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+  let b = ''; for (const x of gz) b += String.fromCharCode(x);
+  await window.__batrayTest.storeReceived({ day: '2026-09-10', live: false, b64: btoa(b) });
+  const l = await window.__batrayTest.histList(); const d = l.find((x) => x.day === '2026-09-10');
+  const back = await window.__batrayTest.histRead('2026-09-10');
+  return { d, rows: back.split('\\n').filter(Boolean).length, gzLen: gz.length };
+})()`);
+check('a gzipped day from the reader is stored as that day\'s .gz and reads back', rx.d && rx.d.gz && !rx.d.raw && rx.d.bytes === rx.gzLen && rx.rows === 300, rx);
+const badRx = await evalJs(`window.__batrayTest.storeReceived({ day: '2026-09-11', live: false, b64: btoa('not gzip') }).then(() => 'stored', (e) => 'refused: ' + e.message)`);
+check('a broken file is refused, never stored', /^refused/.test(badRx) && !(await evalJs('window.__batrayTest.histList()')).some((d) => d.day === '2026-09-11'), badRx);
+const plan = await evalJs(`(async () => { const before = window.__batrayTest.logLines().length; await window.__batrayTest.histRequest({ from: 'v1abcd', have: [] }); return window.__batrayTest.logLines().slice(before).join(' | '); })()`);
+check('a history request while not sharing is logged and ignored', /request from v1abcd ignored \(not sharing\)/.test(plan), plan);
 
 // ---- 3. reload: rows come back from the files and the chart draws at once ----
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 h = await hist();
 check('after a reload the last 24 h are back in memory from the day files', h.backend === 'opfs' && h.mem >= 120 && h.todayRows >= 120, h);
-await connect();
+const known = await evalJs(`({ shown: !document.getElementById('connectKnown').hidden, txt: document.getElementById('connectKnown').textContent, green: getComputedStyle(document.getElementById('connectKnown')).backgroundImage.includes('linear-gradient'), above: document.getElementById('connectKnown').nextElementSibling.id, saved: localStorage.getItem('batray_known_dev') })`);
+check('the remembered BMS shows as a green "Connect to n11" button above Connect after a reload', known.shown && known.txt === 'Connect to n11' && known.green && known.above === 'connectBig' && /"name":"n11"/.test(known.saved), known);
+await evalJs(`document.getElementById('connectKnown').click(); 1`); await sleep(1500); await notify(AIO_32S_DEV); await notify(OWNER_32S_CELL); await sleep(800);
+const kc = await evalJs(`({ choosers: window.__requestDevices, stat: document.getElementById('stat').textContent, gatt: window.__dev.gatt.connected, origin: window.__batrayTest.connState().origin })`);
+check('...and it connects without opening the chooser', kc.choosers === 0 && kc.gatt === true && /^connected/i.test(kc.stat) && kc.origin === 'known', kc);
 await sleep(400);
 let card = await evalJs(`({ shown: !document.getElementById('trendCard').hidden, wait: !document.getElementById('trendWait').hidden, energy: document.getElementById('trendEnergy').textContent, cw: (document.querySelector('#trend canvas') || {}).width || 0, on: (document.querySelector('#histRanges button.on') || { dataset: {} }).dataset.range, plot: window.__batrayTest.histState().plot })`);
 check('with stored history the chart shows on the first reading, no 30 s wait, drawn by uPlot', card.shown && !card.wait && card.plot && card.cw > 100 && /charged .* · discharged/.test(card.energy) && card.on === '6h', card);

@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { historyState, dayKey, rowFromReading, rowLine, parseLines, rolloverDecision, retentionDecision, historySummary, recentSlice, chunkRows, recentSendDecision, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_KEEP_DAYS, RANGES, MEM_MS } from '../public/batray/history-logic.js';
+import { historyState, dayKey, rowFromReading, rowLine, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, cleanLen, recentSlice, transferPlan, histReqDecision, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HEADROOM_BYTES, XFER_CHUNK, HIST_REQ_MS, RANGES, MEM_MS } from '../public/batray/history-logic.js';
 import { decodeCellInfo } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -51,30 +51,50 @@ test('retention: past raw days get compacted, days beyond the keep window delete
   for (let i = 0; i < 33; i++) { const day = `2026-08-${String(i + 1).padStart(2, '0')}`; days.push({ day, raw: i === 31, gz: i !== 31, bytes: 100 }); }
   days.push({ day: '2026-09-02', raw: true, gz: false, bytes: 50 });      // today, still being written
   days.push({ day: '2026-09-03', raw: true, gz: false, bytes: 5 });       // a clock that jumped: leave it
-  assert.equal(HISTORY_KEEP_DAYS, 30);
-  const dd = retentionDecision(days, '2026-09-02', HISTORY_KEEP_DAYS);
-  assert.equal(dd.compact.length, 1); assert.equal(dd.compact[0], '2026-08-32');
-  assert.ok(dd.delete.length >= 4, dd.delete.length);
-  assert.ok(dd.delete.every((x) => x.day < '2026-08-06'), dd.delete.map((x) => x.day));
-  assert.ok(!dd.delete.some((x) => x.day >= '2026-09-02'));
-  const s = historySummary(days, 7);
+  // no day limit: the oldest past days go only while the browser's free space is under the headroom
+  const MB = 1048576;
+  const plenty = retentionDecision(days, '2026-09-02', { usage: 10 * MB, quota: 2000 * MB });
+  assert.deepEqual(plenty.delete, []); assert.deepEqual(plenty.compact, ['2026-08-32']);
+  const tight = retentionDecision(days, '2026-09-02', { usage: 1990 * MB, quota: 2000 * MB, headroom: 100 * MB });   // 10 MB free, 100 B per day: everything past goes
+  assert.ok(tight.delete.length === 33 && tight.delete[0].day === '2026-08-01' && !tight.delete.some((x) => x.day >= '2026-09-02'), tight.delete.length);
+  assert.deepEqual(tight.compact, [], 'a day being deleted is not compacted');
+  const some = retentionDecision([{ day: '2026-08-01', gz: true, bytes: 60 * MB }, { day: '2026-08-02', gz: true, bytes: 60 * MB }, { day: '2026-09-02', raw: true, bytes: 1 }], '2026-09-02', { usage: 1950 * MB, quota: 2000 * MB, headroom: 100 * MB });
+  assert.deepEqual(some.delete.map((x) => x.day), ['2026-08-01'], 'deleting the oldest 60 MB day makes 110 MB free: enough');
+  assert.deepEqual(retentionDecision(days, '2026-09-02', { usage: 0, quota: 0 }).delete, [], 'no quota figure: nothing is deleted');
+  assert.deepEqual(quotaDecision(days, '2026-09-02'), { action: 'delete', day: '2026-08-01' });
+  assert.deepEqual(quotaDecision([{ day: '2026-09-02', raw: true, bytes: 5 }], '2026-09-02'), { action: 'give-up' });
+  const s = historySummary(days, 7, { usage: 50 * MB, quota: 1000 * MB, headroom: 100 * MB, today: '2026-09-02' });
   assert.equal(s.days, 35); assert.equal(s.bytes, 3355); assert.equal(s.oldest, '2026-08-01'); assert.equal(s.todayRows, 7);
+  assert.equal(s.perDay, 100); assert.equal(s.free, 950 * MB); assert.equal(s.estDays, 35 + Math.floor(850 * MB / 100));
+  assert.equal(historySummary([], 0, { usage: 0, quota: 0 }).estDays, null);
+  assert.equal(cleanLen(new TextEncoder().encode('{"t":1}\n{"t":2}\n{"t":3')), 16, 'a torn last line is cut');
+  assert.equal(cleanLen(new Uint8Array([65, 66])), 0);
 });
 
-test('recent slice for the wire: one row a minute, newest kept, cells dropped; chunks of 60; sent to a new viewer, at start and every 10 min', () => {
+test('recent slice thins to a row a minute keeping the newest; transfer plan sends gz days the viewer lacks, today when the reader has more, newest first, capped', () => {
   const rows = []; for (let i = 0; i < 3000; i++) rows.push({ t: 1000 + i * 3000, p: 'n11', w: i, c: [1, 2, 3] });
   const s = recentSlice(rows, 1000 + 1000 * 3000, 60000, 1500);
   assert.ok(s.length > 90 && s.length <= 101, s.length); assert.equal(s[0].c, undefined); assert.equal(s[s.length - 1].t, rows[rows.length - 1].t);
   assert.ok(s.every((r, i) => i === 0 || r.t - s[i - 1].t >= 60000));
   const many = recentSlice(rows, 0, 3000, 100); assert.equal(many.length, 100); assert.equal(many[99].t, rows[2999].t);
-  const ch = chunkRows(s, 60); assert.equal(ch.length, Math.ceil(s.length / 60)); assert.equal(ch[0].of, ch.length); assert.equal(ch[0].n, 0);
+  const reader = [{ day: '2026-09-18', gz: true, bytes: 900 }, { day: '2026-09-19', gz: true, bytes: 1000 }, { day: '2026-09-20', raw: true, bytes: 5000 }, { day: '2026-09-21', raw: true, bytes: 700 }];
+  const plan = transferPlan(reader, [{ day: '2026-09-18', gz: true, bytes: 900 }, { day: '2026-09-21', raw: true, bytes: 300 }], '2026-09-21');
+  assert.deepEqual(plan, [{ day: '2026-09-21', live: true }, { day: '2026-09-19', live: false }], 'today (more here) then the missing gz day; the raw past day waits for compaction; the equal gz day is skipped');
+  assert.deepEqual(transferPlan(reader, [{ day: '2026-09-21', raw: true, bytes: 700 }, { day: '2026-09-19', gz: true, bytes: 999 }, { day: '2026-09-18', gz: true, bytes: 900 }], '2026-09-21'), [{ day: '2026-09-19', live: false }], 'a different size means a different copy');
+  assert.deepEqual(transferPlan(reader, [], '2026-09-21', 1500), [{ day: '2026-09-21', live: true }], 'the cap stops after the first day that fits');
+  assert.deepEqual(transferPlan([], [], '2026-09-21'), []);
   const hs = historyState();
-  assert.deepEqual(recentSendDecision(hs, { viewers: 0, now: 1000, live: false }), { action: 'noop' });
-  assert.deepEqual(recentSendDecision(hs, { viewers: 0, now: 2000, live: true }), { action: 'send', why: 'start' });
-  assert.equal(recentSendDecision(hs, { viewers: 0, now: 3000, live: true }).action, 'noop');
-  assert.deepEqual(recentSendDecision(hs, { viewers: 1, now: 4000, live: true }), { action: 'send', why: 'new viewer' });
-  assert.equal(recentSendDecision(hs, { viewers: 1, now: 4000 + 599e3, live: true }).action, 'noop');
-  assert.deepEqual(recentSendDecision(hs, { viewers: 1, now: 4000 + 600e3, live: true }), { action: 'send', why: 'periodic' });
+  assert.deepEqual(histReqDecision(hs, { live: false, now: 1000 }), { action: 'noop' });
+  assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 }), { action: 'request' });
+  assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 + HIST_REQ_MS - 1 }), { action: 'noop' });
+  assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 + HIST_REQ_MS }), { action: 'request' });
+  histReqDecision(hs, { live: false, now: 3e6 }); assert.deepEqual(histReqDecision(hs, { live: true, now: 3e6 + 1 }), { action: 'request' }, 'a link that came back asks again at once');
+  const b64 = 'A'.repeat(40000); const ch = chunkB64(b64); assert.equal(ch.length, Math.ceil(40000 / Math.ceil(XFER_CHUNK * 4 / 3))); assert.equal(ch.join(''), b64);
+  const vs = historyState(); const env = (n, of, day = '2026-09-19') => ({ k: 'hist-file', v: { day, n, of, b64: 'p' + n, live: false } });
+  assert.equal(rxChunk(vs, env(0, 3)), null); assert.equal(rxChunk(vs, env(1, 3)), null);
+  assert.deepEqual(rxChunk(vs, env(2, 3)), { day: '2026-09-19', live: false, b64: 'p0p1p2' }); assert.equal(vs.rx, null);
+  rxChunk(vs, env(0, 3)); assert.equal(rxChunk(vs, env(2, 3)), null, 'a lost chunk voids the file'); assert.equal(vs.rx, null);
+  assert.equal(rxChunk(vs, { k: 'hist-file', v: { day: 'x' } }), null);
 });
 
 test('merge replaces same-time rows and sorts; LTTB keeps the peaks and both ends', () => {

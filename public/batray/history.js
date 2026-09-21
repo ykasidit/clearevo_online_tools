@@ -26,6 +26,10 @@ class MemoryBackend {
   async list() { return { days: [...this.files.entries()].map(([day, f]) => ({ day, raw: f.raw !== '', gz: f.gz !== null, bytes: f.raw.length + (f.gz ? f.gz.length : 0) })).sort((a, b) => (a.day < b.day ? -1 : 1)) }; }
   async read({ day }) { const f = this.files.get(day); return { text: f ? (f.gz || '') + f.raw : '' }; }
   async compact({ day }) { const f = this.files.get(day); if (!f || f.raw === '') return { done: false }; f.gz = (f.gz || '') + f.raw; f.raw = ''; return { done: true, from: f.gz.length, to: f.gz.length }; }
+  async note() { return { bytes: 0 }; }
+  async readGz() { return { bytes: null, gz: false, rawBytes: 0 }; }          // nothing leaves a memory-only session as a file
+  async writeGz() { throw new Error('this browser cannot store files'); }
+  async readAllGz() { return { files: [] }; }
   async remove({ day }) { return { removed: this.files.delete(day) }; }
   async clear() { const n = this.files.size; this.files.clear(); return { removed: n }; }
   async estimate() { return { usage: 0, quota: 0 }; }
@@ -40,7 +44,7 @@ class WorkerBackend {
   }
   call(op, args) { return new Promise((res, rej) => { const id = ++this.seq; this.waiting.set(id, { res, rej }); this.w.postMessage({ id, op, args }); }); }
 }
-for (const op of ['ping', 'append', 'list', 'read', 'compact', 'remove', 'clear', 'estimate']) WorkerBackend.prototype[op] = function (args) { return this.call(op, args); };
+for (const op of ['ping', 'append', 'note', 'list', 'read', 'readGz', 'writeGz', 'readAllGz', 'compact', 'remove', 'clear', 'estimate']) WorkerBackend.prototype[op] = function (args) { return this.call(op, args); };
 
 export class HistoryStore {
   /** opts: { log(msg), forceMemory } */
@@ -72,4 +76,8 @@ export class HistoryStore {
   async remove(day) { await this.ready; return this.b.remove({ day }); }
   async clear() { await this.ready; return this.b.clear(); }
   async estimate() { await this.ready; return this.b.estimate(); }
+  async note(name, line) { await this.ready; return this.b.note({ name, text: line + '\n' }); }
+  async readGz(day) { await this.ready; return this.b.readGz({ day }); }
+  async writeGz(day, bytes, asRaw = false) { await this.ready; return this.b.writeGz({ day, bytes, asRaw }); }
+  async readAllGz() { await this.ready; return (await this.b.readAllGz()).files; }
 }

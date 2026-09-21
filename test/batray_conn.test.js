@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, CONNECT_TRIES, CONNECT_GAP_MS, RECONNECT_S, CONNECT_S } from '../public/batray/conn-logic.js';
+import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, CONNECT_TRIES, CONNECT_GAP_MS, RECONNECT_S, CONNECT_S, knownDevice } from '../public/batray/conn-logic.js';
 
 const A = (cs, ev, inp) => connEvent(cs, ev, { autoRe: true, now: 1000, ...inp }).action;
 
@@ -128,4 +128,18 @@ test('the one Bluetooth button: Connect when idle, pulsing Connecting (a cancel)
   A(cs, 'gatt-connected'); assert.deepEqual(connButton(cs, true), { on: true, busy: false, disabled: false, label: 'disconnect' });
   A(cs, 'gatt-disconnected'); assert.equal(cs.phase, 'countdown'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false, label: 'connecting' });
   assert.equal(A(cs, 'cancel'), 'disconnect-gatt'); assert.deepEqual(connButton(cs, false), { on: false, busy: false, disabled: false, label: 'connect' });
+});
+
+test('the remembered BMS: a green Connect-to-NAME button only while the browser still lists the saved id as permitted; the known event connects without a chooser and retries like an auto reconnect', () => {
+  const saved = { id: 'abc123', name: 'JK-B2A24S', at: 1 };
+  assert.deepEqual(knownDevice(saved, ['xyz', 'abc123']), { show: true, id: 'abc123', name: 'JK-B2A24S' });
+  assert.equal(knownDevice(saved, ['xyz']).show, false); assert.equal(knownDevice(saved, ['xyz']).why, 'not permitted any more');
+  assert.equal(knownDevice(saved, null).why, 'no getDevices'); assert.equal(knownDevice(null, ['abc123']).show, false); assert.equal(knownDevice({ id: '' }, ['']).show, false);
+  assert.equal(knownDevice({ id: 'abc123' }, ['abc123']).name, 'abc123', 'a device without a name is shown by its id');
+  const cs = connState();
+  const d = connEvent(cs, 'known', { now: 0 });
+  assert.equal(d.action, 'connect'); assert.equal(cs.phase, 'connecting'); assert.equal(cs.origin, 'known'); assert.equal(cs.hasDevice, true);
+  assert.equal(connEvent(cs, 'known', { now: 1 }).action, 'ignore', 'a double tap is ignored');
+  for (let i = 0; i < 3; i++) connEvent(cs, 'attempt-failed', { msg: 'Connection attempt failed', autoRe: true, now: 1000 * (i + 1) });
+  assert.equal(cs.phase, 'countdown'); assert.equal(cs.count, RECONNECT_S.auto, 'a known device counts down the auto 10 s, not the chooser 5 s');
 });
