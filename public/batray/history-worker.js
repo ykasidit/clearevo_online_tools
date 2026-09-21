@@ -55,6 +55,23 @@ const ops = {
       return { bytes: size + bytes.length };
     } finally { h.close(); }
   },
+  /** Close a torn tail (a crash mid write) with a newline and report the raw file's size and row count, so row
+   *  numbers and offsets continue exactly from the file. */
+  async seal({ day }) {
+    const d = await dir();
+    let b = await fileBytes(d, rawName(day)); if (b === null) return { bytes: 0, rows: 0 };
+    if (b.length && b[b.length - 1] !== 10) { const fh = await d.getFileHandle(rawName(day)); const h = await fh.createSyncAccessHandle(); try { h.write(enc.encode('\n'), { at: b.length }); h.flush(); } finally { h.close(); } b = await fileBytes(d, rawName(day)); }
+    let rows = 0; for (const x of b) if (x === 10) rows++;
+    return { bytes: b.length, rows };
+  },
+  /** Append a received tail of today's file exactly at `at`: the file must end there, or the copy has moved. */
+  async appendAt({ day, text, at }) {
+    const d = await dir(); const fh = await d.getFileHandle(rawName(day), { create: true }); const h = await fh.createSyncAccessHandle();
+    try {
+      const size = h.getSize(); if (size !== at) throw new Error(`offset moved: file is ${size} B, tail starts at ${at}`);
+      const bytes = enc.encode(text); h.write(bytes, { at }); h.flush(); return { bytes: at + bytes.length };
+    } finally { h.close(); }
+  },
   /** Append to a side file (devices.ndjson: the remembered BMS ids and names). */
   async note({ name, text }) {
     if (!/^[a-z]+\.ndjson$/.test(name)) throw new Error('bad note name');
@@ -82,13 +99,14 @@ const ops = {
     return { text: parts.map((b) => dec.decode(b)).join('') };
   },
   /** The day as one gzip: a past day's file as is; a day still raw (today) gzipped from its clean prefix. */
-  async readGz({ day }) {
+  async readGz({ day, from = 0 }) {
     const d = await dir();
     const raw = clean(await fileBytes(d, rawName(day)));
     const g = await fileBytes(d, gzName(day));
-    if (raw === null || raw.length === 0) return { bytes: g, gz: g !== null, rawBytes: 0 };
+    if (raw === null || raw.length === 0) return { bytes: g, gz: g !== null, rawBytes: 0, from: 0 };
+    if (g === null && from > 0) { if (from > raw.length) return { bytes: null, gz: false, rawBytes: raw.length, from }; const tail = raw.subarray(from); return { bytes: tail.length ? await gzip(tail) : null, gz: false, rawBytes: raw.length, from }; }
     const all = g ? new Uint8Array([...clean(await gunzip(g)), ...raw]) : raw;
-    return { bytes: await gzip(all), gz: g !== null, rawBytes: raw.length };
+    return { bytes: await gzip(all), gz: g !== null, rawBytes: raw.length, from: 0 };
   },
   /** Gzip a past day's raw file into <day>.ndjson.gz and remove the raw one. */
   async compact({ day }) {
@@ -109,9 +127,18 @@ const ops = {
     let rows = 0; for (const line of text.split('\n')) { if (!line) continue; try { const r = JSON.parse(line); if (r && typeof r.t === 'number') rows++; } catch { /* torn */ } }
     if (!rows) throw new Error('no rows in ' + day);
     const d = await dir();
-    if (asRaw) { await writeBytes(d, rawName(day), enc.encode(text)); }
+    let lastN = null; if (asRaw) { for (const line of text.trimEnd().split('\n').reverse()) { try { const r = JSON.parse(line); if (typeof r.n === 'number') { lastN = r.n; break; } } catch { /* torn */ } } }
+    if (asRaw) { await writeBytes(d, rawName(day), enc.encode(text)); await remove(d, gzName(day)); }
     else { await writeBytes(d, gzName(day), bytes); await remove(d, rawName(day)); }
-    return { rows, bytes: asRaw ? text.length : bytes.length };
+    return { rows, lastN, bytes: asRaw ? enc.encode(text).length : bytes.length };
+  },
+  /** A gzipped tail of today's file from the reader, appended exactly at `at` after inflating and checking it. */
+  async appendGzAt({ day, bytes, at }) {
+    const text = dec.decode(clean(await gunzip(bytes)));
+    let rows = 0, lastN = null; for (const line of text.split('\n')) { if (!line) continue; try { const r = JSON.parse(line); if (r && typeof r.t === 'number') { rows++; if (typeof r.n === 'number') lastN = r.n; } } catch { /* torn */ } }
+    if (!rows) throw new Error('no rows in the tail of ' + day);
+    const r = await ops.appendAt({ day, text, at });
+    return { rows, lastN, bytes: r.bytes };
   },
   /** Every day as {day, bytes (gzip)} for a backup; today gzipped from its clean prefix. */
   async readAllGz() {

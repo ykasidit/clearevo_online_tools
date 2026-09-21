@@ -77,13 +77,24 @@ only while the browser reports less than 100 MB free (`HEADROOM_BYTES`), a
 `QuotaExceededError` deletes the oldest day and retries once, and the card
 shows days, used of the browser's maximum and the estimated days left.
 Every append lands on a newline boundary (a torn tail from a crash is
-closed first) and reads, compaction and transfers cut at the last newline.
-Viewers keep their own copy as the reader's files: the viewer sends
-`hist-req` with its day listing over the signalling socket, the relay
-forwards it, and the reader answers with the gzipped day files it lacks
-(newest first, today as a gzip of its clean prefix, 40 MB per request)
-in `hist-file` base64 chunks over the encrypted link, paced by the data
-channels' backlog and only while live; then every live reading. Backup is
+closed at startup and before any append) and reads, compaction and
+transfers cut at the last newline. Every day key is UTC; only the chart
+adds the browser's offset. Each stored row carries `n` (its row number in
+the day file) and `o` (the byte offset where its line starts), so the file
+length and the logging rate are visible in the rows themselves and a
+viewer can say exactly how far its copy goes. Viewers keep a byte-for-byte
+copy of the reader's files: a live reading travels with the reader's
+stored row (`r` in the `data` envelope) and is appended only when it
+starts where the copy ends; a row that does not fit is held, and the
+viewer sends `hist-req` (its day listing, with today's length and row
+count) over the signalling socket - at link-up, every 10 min, and 5 s
+after a hole. The relay forwards it and the reader answers with the
+gzipped day files the viewer lacks (newest first, 40 MB per request) and,
+for today, the gzipped tail from the viewer's offset (or the whole file
+when the viewer has more than the reader) in `hist-file` base64 chunks
+over the encrypted link, paced by the data channels' backlog and only
+while live. The worker appends a tail only at the exact offset; the held
+rows are then placed in order. Backup is
 one `.tar` (ustar, verified against system tar) of the daily gz files, up
 to 512 MB; restore adds missing days and never replaces a fuller one. The
 picked BMS's id and name are remembered (localStorage + `devices.ndjson`;

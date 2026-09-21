@@ -27,6 +27,9 @@ class MemoryBackend {
   async read({ day }) { const f = this.files.get(day); return { text: f ? (f.gz || '') + f.raw : '' }; }
   async compact({ day }) { const f = this.files.get(day); if (!f || f.raw === '') return { done: false }; f.gz = (f.gz || '') + f.raw; f.raw = ''; return { done: true, from: f.gz.length, to: f.gz.length }; }
   async note() { return { bytes: 0 }; }
+  async seal({ day }) { const f = this.files.get(day); return { bytes: f ? f.raw.length : 0, rows: f ? f.raw.split('\n').length - 1 : 0 }; }
+  async appendGzAt() { throw new Error('this browser cannot store files'); }
+  async appendAt({ day, text, at }) { const f = this.files.get(day) || { raw: '', gz: null }; if (f.raw.length !== at) throw new Error('offset moved'); f.raw += text; this.files.set(day, f); return { bytes: f.raw.length }; }
   async readGz() { return { bytes: null, gz: false, rawBytes: 0 }; }          // nothing leaves a memory-only session as a file
   async writeGz() { throw new Error('this browser cannot store files'); }
   async readAllGz() { return { files: [] }; }
@@ -44,7 +47,7 @@ class WorkerBackend {
   }
   call(op, args) { return new Promise((res, rej) => { const id = ++this.seq; this.waiting.set(id, { res, rej }); this.w.postMessage({ id, op, args }); }); }
 }
-for (const op of ['ping', 'append', 'note', 'list', 'read', 'readGz', 'writeGz', 'readAllGz', 'compact', 'remove', 'clear', 'estimate']) WorkerBackend.prototype[op] = function (args) { return this.call(op, args); };
+for (const op of ['ping', 'append', 'appendAt', 'appendGzAt', 'seal', 'note', 'list', 'read', 'readGz', 'writeGz', 'readAllGz', 'compact', 'remove', 'clear', 'estimate']) WorkerBackend.prototype[op] = function (args) { return this.call(op, args); };
 
 export class HistoryStore {
   /** opts: { log(msg), forceMemory } */
@@ -77,7 +80,10 @@ export class HistoryStore {
   async clear() { await this.ready; return this.b.clear(); }
   async estimate() { await this.ready; return this.b.estimate(); }
   async note(name, line) { await this.ready; return this.b.note({ name, text: line + '\n' }); }
-  async readGz(day) { await this.ready; return this.b.readGz({ day }); }
+  async readGz(day, from = 0) { await this.ready; return this.b.readGz({ day, from }); }
+  async seal(day) { await this.ready; return this.b.seal({ day }); }
+  async appendAt(day, text, at) { await this.ready; return this.b.appendAt({ day, text, at }); }
+  async appendGzAt(day, bytes, at) { await this.ready; return this.b.appendGzAt({ day, bytes, at }); }
   async writeGz(day, bytes, asRaw = false) { await this.ready; return this.b.writeGz({ day, bytes, asRaw }); }
   async readAllGz() { await this.ready; return (await this.b.readAllGz()).files; }
 }

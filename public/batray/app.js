@@ -26,7 +26,7 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
-import { historyState, dayKey, rowFromReading, rowLine, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, recentSlice, transferPlan, histReqDecision, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, RECENT_STEP_MS, XFER_BACKLOG, RANGES } from './history-logic.js';
+import { historyState, dayKey, dayStartMs, rowFromReading, rowLine, lineBytes, nextPos, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, recentSlice, transferPlan, histReqDecision, replicaDecision, releaseHeld, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, RECENT_STEP_MS, XFER_BACKLOG, REPLICA_GIVE_UP, RANGES } from './history-logic.js';
 import { tarPack, tarParse, backupDays, restorePlan, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { makeChart, drawChart } from './history-chart.js';
@@ -34,7 +34,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.30';
+export const APP_VERSION = '0.9.31';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -192,18 +192,18 @@ class Pack {
       }
     });
   }
-  take(d, rowT = null) {
+  take(d, rowT = null, remoteRow = null) {
     this.data = d; this.lastFrameAt = Date.now();
     this.iEma.push(d.current, this.lastFrameAt);
-    recordRow(this, d, rowT || this.lastFrameAt);           // rowT: the reader's own time on a viewer, so its copy matches the reader's files
+    return recordRow(this, d, rowT || this.lastFrameAt, remoteRow);   // a viewer gets the reader's stored row itself (remoteRow), so its file is a byte copy
   }
   onData(d) {
     const first = !this.lastFrameAt;
     if (first) this.plog(`first reading ${this.cs.connectedAt ? Math.round((Date.now() - this.cs.connectedAt) + '') + ' ms after connect' : ''}: soc=${d.soc} V=${d.packV} A=${d.current} cells=${d.cells.length} variant=${d.variant}`);
-    this.take(d);
+    const row = this.take(d);
     if (this.isActive) scheduleRender(this);
     schedulePackBar();
-    if (publisher) publisher.publish(envelope('data', this, d));
+    if (publisher) publisher.publish(envelope('data', this, d, row && row.o !== null ? { r: row } : null));
     if (connEvent(this.cs, 'data').action === 'back' && this.isActive) setStatus(() => T.connectedTo(this.label), 'good');   // back after a gap: say so instead of staying amber
     if (first) syncWake();
   }
@@ -507,8 +507,14 @@ function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 // The history logic module decides; this block stores, loads and draws. ----
 const histS = historyState();
 const hist = new HistoryStore({ log });
-const histMem = { rows: [], keys: new Set(), pending: new Map(), dayCache: new Map(), loading: new Set(), plot: null };
+const histMem = { rows: [], keys: new Set(), pending: new Map(), held: [], dayCache: new Map(), loading: new Set(), plot: null };
 const rowKey = (r) => `${r.p}|${r.t}`;
+const utf8 = new TextEncoder();
+/** Queue a row's line for its day file; today's queued bytes are counted so the next row knows its offset. */
+function queueLine(row) {
+  const day = dayKey(row.t); const l = histMem.pending.get(day) || []; l.push(rowLine(row)); histMem.pending.set(day, l);
+  if (day === histS.day) histS.pendBytes += lineBytes(row);
+}
 /** Rows into memory (deduplicated); store=true also queues them for the day files. Returns the new rows. */
 function memAdd(rows, store) {
   const fresh = [];
@@ -517,18 +523,36 @@ function memAdd(rows, store) {
   const last = histMem.rows[histMem.rows.length - 1];
   if (fresh.length === 1 && (!last || fresh[0].t >= last.t)) histMem.rows.push(fresh[0]);   // the common case: one new reading
   else histMem.rows = mergeRows(histMem.rows, fresh);
-  if (store) for (const r of fresh) { const day = dayKey(r.t); const l = histMem.pending.get(day) || []; l.push(rowLine(r)); histMem.pending.set(day, l); }
+  if (store) for (const r of fresh) queueLine(r);
   return fresh;
 }
-function recordRow(p, d, t) {
-  const store = !p.demo;                          // DEMO readings stay in memory: never a file that looks like a real bank
-  if (!memAdd([rowFromReading(p.label, d, t)], store).length) return;
-  if (store) {
-    const ro = rolloverDecision(histS, dayKey(t));
-    if (ro.action !== 'noop') { log(`history: ${ro.action} ${ro.day}`); if (ro.action === 'compact') flushHistory().then(maintainHistory); }
-    histS.todayRows++;
+/** One reading -> one row. The reader numbers it and gives it its byte offset in today's file (both travel in the
+ *  row); a viewer stores the reader's row itself, at the offset it names, so its file is a byte-for-byte copy. */
+function recordRow(p, d, t, remoteRow = null) {
+  // DEMO readings stay in memory (never a file that looks like a real bank); a remote reading without the reader's
+  // row (the 10 s snapshot resend) is memory only too
+  const store = !p.demo && !(p.remote && !remoteRow);
+  if (!store) { memAdd([remoteRow || rowFromReading(p.label, d, t)], false); if (histMem.rows.length % 500 === 0) trimMem(t); return null; }
+  const ro = rolloverDecision(histS, dayKey(t));
+  if (ro.action !== 'noop') { histMem.held = []; log(`history: ${ro.action} ${ro.day}`); if (ro.action === 'compact') flushHistory().then(maintainHistory); }
+  let row;
+  if (p.remote) {
+    row = remoteRow;
+    if (!memAdd([row], false).length) return row;                      // seen already
+    const rd = replicaDecision(histS, row);
+    if (rd.action === 'append') { queueLine(row); histS.todayRows = row.n; }
+    else if (rd.action === 'hold') {
+      histMem.held.push(row);
+      if (histMem.held.length === 1 || rd.why === 'behind') log(`history: live row ${row.n} starts at ${row.o} B but this copy ends at ${rd.expected} B (${rd.why}): holding it, asking the reader for the rest`);
+      if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') requestHistory();
+    }
+  } else {
+    row = rowFromReading(p.label, d, t, nextPos(histS));
+    if (!memAdd([row], false).length) return row;
+    queueLine(row); histS.todayRows = row.n;
   }
   if (histMem.rows.length % 500 === 0) trimMem(t);
+  return row;
 }
 function trimMem(now) {
   const before = histMem.rows.length;
@@ -542,7 +566,15 @@ async function flushHistory() {
   if (hist.persistent === null) { const ok = await hist.persist(); histS.persistent = ok; log(`history: ${hist.backend}, persistent=${ok}`); }
   for (const [day, lines] of batch) {
     for (let attempt = 0; attempt < 2; attempt++) {
-      try { const r = await hist.append(day, lines); if (day === histS.day) histS.todayBytes = r.bytes; histWriteFailed = false; break; }
+      try {
+        const r = await hist.append(day, lines);
+        if (day === histS.day) {
+          const flushed = lines.reduce((a, l) => a + utf8.encode(l).length + 1, 0), expected = histS.todayBytes + flushed;
+          if (r.bytes !== expected) log(`history: file offset drift on ${day}: expected ${expected} B, file is ${r.bytes} B (rows from here use the file)`);
+          histS.todayBytes = r.bytes; histS.pendBytes = Math.max(0, histS.pendBytes - flushed);
+        }
+        histWriteFailed = false; break;
+      }
       catch (e) {
         if (e.name === 'QuotaExceededError' && attempt === 0) {           // full: the oldest past day goes, then one more try
           const q = quotaDecision(await hist.list().catch(() => histS.days), histS.day);
@@ -587,7 +619,7 @@ async function initHistory() {
   try {
     histS.days = await hist.list();
     await loadRecentIntoMem(now);
-    const t = histS.days.find((d) => d.day === today); histS.todayBytes = t && t.raw ? t.bytes : 0;
+    const sl = await hist.seal(today); histS.todayBytes = sl.bytes; histS.todayRows = sl.rows; histS.pendBytes = 0;   // a torn tail is closed before any row takes an offset
     const sum = historySummary(histS.days, histS.todayRows);
     log(`history: ${histS.backend}, ${sum.days} days, ${Math.round(sum.bytes / 1024)} KB, oldest ${sum.oldest || '-'}, ${histMem.rows.length} rows loaded`);
   } catch (e) { log(`history: load failed: ${e.message}`); }
@@ -612,10 +644,16 @@ async function restoreHistory(bytes, from = 'file') {
   let days;
   try { days = backupDays(tarParse(bytes)); } catch (e) { toast(T.histRestoreBad, 8000); log(`history: restore (${from}) failed: ${e.message}`); return null; }
   if (!days.length) { toast(T.histRestoreBad, 8000); log(`history: restore (${from}): no day files in the archive`); return null; }
-  const plan = restorePlan(await hist.list(), days);
+  const existing = await hist.list(), today = dayKey(Date.now());
+  const plan = restorePlan(existing, days);
   let written = 0, failed = 0;
   for (const d of plan.write) {
-    try { const r = await hist.writeGz(d.day, d.bytes, false); written++; histMem.dayCache.delete(d.day); log(`history: restored ${d.day}: ${r.rows} rows`); }
+    if (d.day === today && existing.some((x) => x.day === today && x.raw)) { plan.skip.push(d.day); log(`history: restore keeps today's live file over the backup's copy`); continue; }
+    try {
+      const r = await hist.writeGz(d.day, d.bytes, d.day === today);   // today stays a raw file (rows keep being appended to it)
+      if (d.day === today) { histS.todayBytes = r.bytes; histS.todayRows = r.lastN !== null && r.lastN !== undefined ? r.lastN : r.rows; histS.pendBytes = 0; histMem.pending.delete(today); }
+      written++; histMem.dayCache.delete(d.day); log(`history: restored ${d.day}: ${r.rows} rows`);
+    }
     catch (e) { failed++; log(`history: restore ${d.day} failed: ${e.message}`); }
   }
   histS.days = await hist.list();
@@ -636,7 +674,7 @@ $('histFile').addEventListener('change', async () => {
 async function clearHistory() {
   histMem.pending = new Map();
   try { const r = await hist.clear(); log(`history: cleared (${r.removed} files)`); } catch (e) { log(`history: clear failed: ${e.message}`); }
-  histMem.rows = []; histMem.keys = new Set(); histMem.dayCache.clear(); histS.days = []; histS.todayRows = 0;
+  histMem.rows = []; histMem.keys = new Set(); histMem.held = []; histMem.dayCache.clear(); histS.days = []; histS.todayRows = 0; histS.todayBytes = 0; histS.pendBytes = 0; histS.gap = null;
   toast(T.histCleared, 5000);
   if (active) { renderTrend(active); if ($('trendCard').hidden) renderHistNote(); }
 }
@@ -687,7 +725,7 @@ function renderTrend(p) {
 }
 function drawHistory(p) {
   const now = Date.now(), range = histS.range;
-  const fromGuess = RANGES[range] ? now - RANGES[range] : (histS.days[0] ? new Date(`${histS.days[0].day}T00:00:00`).getTime() : 0);
+  const fromGuess = RANGES[range] ? now - RANGES[range] : (histS.days[0] ? dayStartMs(histS.days[0].day) : 0);
   const rows = histRowsFor(p.label, fromGuess, now);
   const { from, to } = chartRange(rows, range, now);
   const win = rowsBetween(rows, from, to);
@@ -1102,14 +1140,14 @@ async function histRequest(m) {
   try {
     while (histS.xfer && histS.xfer.queue.length && publisher === pub && pub.state.live) {
       const item = histS.xfer.queue.shift();
-      const r = await hist.readGz(item.day); if (!r.bytes) continue;
+      const r = await hist.readGz(item.day, item.from || 0); if (!r.bytes) continue;
       const chunks = chunkB64(b64(r.bytes));
-      log(`history: sending ${item.day} (${r.bytes.length} B gz${item.live ? ', today so far' : ''}) in ${chunks.length} chunks`);
+      log(`history: sending ${item.day} (${r.bytes.length} B gz${item.live ? `, today from ${item.from || 0} B of ${r.rawBytes}` : ''}) in ${chunks.length} chunks`);
       for (let i = 0; i < chunks.length; i++) {
         let waited = 0;
         while (pub.backlog() > XFER_BACKLOG && waited < 30000 && publisher === pub) { await new Promise((res) => setTimeout(res, 100)); waited += 100; }
         if (publisher !== pub || !pub.state.live) { log('history: transfer stopped (link gone)'); return; }
-        await pub.publish(envelope('hist-file', { id: '*', name: '*' }, { day: item.day, n: i, of: chunks.length, b64: chunks[i], live: item.live, bytes: r.bytes.length }));
+        await pub.publish(envelope('hist-file', { id: '*', name: '*' }, { day: item.day, n: i, of: chunks.length, b64: chunks[i], live: item.live, from: item.from || 0, replace: !!item.replace, bytes: r.bytes.length }));
         histS.xfer.sent += chunks[i].length;
         await new Promise((res) => setTimeout(res, 20));
       }
@@ -1191,21 +1229,46 @@ async function requestHistory() {
   if (!viewer || histS.backend === 'memory') return;
   await flushHistory();
   try { histS.days = await hist.list(); } catch { /* keep the old listing */ }
-  const have = histS.days.map((d) => ({ day: d.day, bytes: d.bytes, gz: d.gz }));
-  if (viewer.request(have)) log(`history: asked the reader (this device has ${have.length} days)`);
+  const have = histS.days.map((d) => ({ day: d.day, bytes: d.bytes, gz: d.gz, rows: d.day === histS.day ? histS.todayRows : undefined }));
+  if (viewer.request(have)) log(`history: asked the reader (this device has ${have.length} days; today ${histS.todayBytes} B, row ${histS.todayRows}${histMem.held.length ? `, ${histMem.held.length} live rows held` : ''})`);
 }
 async function storeReceived(file) {
   const bytes = unb64(file.b64);
-  const r = await hist.writeGz(file.day, bytes, file.live);          // today's file replaces this device's raw copy; a past day is stored as the gz it is
   histMem.dayCache.delete(file.day);
-  if (file.live) {
-    // rows that arrived live while the snapshot travelled are only in memory now: queue them again for the file
-    const fileRows = parseLines(await hist.read(file.day)); const lastT = fileRows.length ? fileRows[fileRows.length - 1].t : 0;
-    const late = histMem.rows.filter((row) => dayKey(row.t) === file.day && row.t > lastT);
-    for (const row of late) { const l = histMem.pending.get(file.day) || []; l.push(rowLine(row)); histMem.pending.set(file.day, l); }
-    memAdd(fileRows, false);
-    log(`history: got ${file.day} (today so far): ${r.rows} rows, ${late.length} live rows re-queued`);
-  } else log(`history: got ${file.day}: ${r.rows} rows, ${r.bytes} B`);
+  if (!file.live && file.day === histS.day) {
+    // today sent whole as a past day (the reader's today is gz + raw after a restore): our copy cannot mirror its
+    // offsets, so today is written raw as it came and further live rows stay in memory until the day changes
+    await flushHistory();
+    const r = await hist.writeGz(file.day, bytes, true);
+    histMem.pending.delete(file.day); histS.pendBytes = 0; histS.todayBytes = r.bytes; histS.todayRows = r.lastN !== null && r.lastN !== undefined ? r.lastN : r.rows; histS.gap = null; histMem.held = []; histS.replicaOff = file.day;
+    memAdd(parseLines(await hist.read(file.day)), false);
+    log(`history: got ${file.day} whole (the reader's today is not a plain file): ${r.rows} rows; today's live rows stay in memory`);
+  } else if (!file.live) {
+    const r = await hist.writeGz(file.day, bytes, false);            // a past day is stored as the gz it is
+    log(`history: got ${file.day}: ${r.rows} rows, ${r.bytes} B`);
+  } else if (file.day !== histS.day) {
+    log(`history: a tail for ${file.day} arrived but today is ${histS.day}: ignored`);
+  } else {
+    // today: this device's file is a byte copy of the reader's. A whole file replaces ours; a tail lands exactly
+    // where our copy ends (the worker refuses it otherwise), then the live rows held meanwhile are placed.
+    await flushHistory();
+    let r;
+    if (file.replace || file.from === 0) {
+      const was = histS.gap;
+      r = await hist.writeGz(file.day, bytes, true);
+      histMem.pending.delete(file.day); histS.pendBytes = 0;
+      if (was === 'behind') { histS.behind++; if (histS.behind >= REPLICA_GIVE_UP) { histS.replicaOff = file.day; log(`history: today's copy fell behind ${histS.behind} times: keeping today in memory only until the day changes`); } }
+    } else {
+      r = await hist.appendGzAt(file.day, bytes, file.from);
+    }
+    histS.todayBytes = r.bytes; histS.todayRows = r.lastN !== null && r.lastN !== undefined ? r.lastN : histS.todayRows + r.rows; histS.gap = null;
+    memAdd(parseLines(await hist.read(file.day)), false);
+    const rel = releaseHeld(histS, histMem.held); histMem.held = rel.keep;
+    for (const row of rel.append) { queueLine(row); histS.todayRows = row.n; }
+    if (rel.keep.length) histS.gap = 'gap';
+    log(`history: got ${file.day} (today${file.from ? ` from ${file.from} B` : ', whole file'}): ${r.rows} rows, file now ${r.bytes} B, row ${histS.todayRows}; held rows: ${rel.append.length} placed, ${rel.drop.length} already in, ${rel.keep.length} still waiting`);
+    if (rel.keep.length && viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') requestHistory();
+  }
   histS.days = await hist.list();
   if (active) renderTrend(active); else renderHistNote();
 }
@@ -1249,7 +1312,7 @@ function startView() {
       p.remoteLive = true; viewerDataSeen(viewS);
       if (env.k === 'info') { p.info = env.v; if (p.isActive) renderDevice(env.v); }
       else if (env.k === 'settings') { p.settings = env.v; if (p.isActive) renderSettings(env.v); }
-      else if (env.k === 'data') { p.take(env.v, env.t); if (p.isActive) { render(env.v); refreshCard(); } renderPackBar(); }
+      else if (env.k === 'data') { p.take(env.v, env.t, env.r && typeof env.r === 'object' && typeof env.r.t === 'number' ? env.r : null); if (p.isActive) { render(env.v); refreshCard(); } renderPackBar(); }
     },
   });
   renderViewChip();
@@ -1462,7 +1525,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, histHeld: () => histMem.held.slice(), remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, lineBytes, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
@@ -1603,7 +1666,7 @@ setInterval(() => {
   const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
   if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
   if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now() }).action === 'request') requestHistory();
-  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} hist=${histS.backend}/${histS.days.length}d/${histS.todayRows}r/${histS.todayBytes}B/${histMem.rows.length}mem/${[...histMem.pending.values()].reduce((a, l) => a + l.length, 0)}pend/${Math.round(histS.usage / 1048576)}of${Math.round(histS.quota / 1048576)}MB${histS.xfer ? '/xfer' : ''} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
+  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} hist=${histS.backend}/${histS.days.length}d/${histS.todayRows}r/${histS.todayBytes}+${histS.pendBytes}B/${histMem.rows.length}mem/${[...histMem.pending.values()].reduce((a, l) => a + l.length, 0)}pend/${histMem.held.length}held${histS.gap ? '/' + histS.gap : ''}/${Math.round(histS.usage / 1048576)}of${Math.round(histS.quota / 1048576)}MB${histS.xfer ? '/xfer' : ''} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
 }, 60000);
 $('langBtn').addEventListener('click', async () => { const code = await openSheet('lang'); if (code && I18N[code]) { try { localStorage.setItem('batray_lang', code); } catch {} log(`language: ${code}`); applyLang(code); } });
 

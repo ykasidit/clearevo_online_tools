@@ -26,24 +26,33 @@ export const XFER_CHUNK = 12 * 1024;            // gz bytes per envelope (16 KB 
 export const XFER_MAX_BYTES = 40 * 1048576;     // per request, newest days first
 export const XFER_BACKLOG = 128 * 1024;         // send the next chunk only when the channels have less queued than this
 export const HIST_REQ_MS = 10 * 60e3;           // a viewer asks again this often (it asks at once when the link comes up)
+export const GAP_REQ_MS = 5000;                 // ... and this soon after a live row shows a hole in its copy of today's file
+export const REPLICA_GIVE_UP = 3;               // 'behind' resyncs of the same day before the viewer keeps that day in memory only
 export const CHART_MAX_POINTS = 2000;
 export const MEM_MS = RECENT_HOURS * 3600e3;          // rows kept in memory at full resolution; older days are read from their files
 export const RANGES = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 24 * 3600e3, '7d': 7 * 86400e3, all: 0 };
 
 export function historyState() {
-  return { day: null, todayRows: 0, todayBytes: 0, days: [], backend: 'none', persistent: null, range: '6h', usage: 0, quota: 0, reqAt: 0, xfer: null, rx: null };
+  return { day: null, todayRows: 0, todayBytes: 0, pendBytes: 0, days: [], backend: 'none', persistent: null, range: '6h', usage: 0, quota: 0, reqAt: 0, xfer: null, rx: null, gap: null, behind: 0, replicaOff: null };
 }
 
-/** Local calendar day of a time, YYYY-MM-DD (the reader's own clock: a day file is the phone's day). */
-export function dayKey(tMs) {
-  const d = new Date(tMs);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
+/** UTC calendar day of a time, YYYY-MM-DD (owner rule 2026-09-21: every stored date is GMT; only the drawing adds
+ *  the browser's offset). A day file is the same day on the reader, its viewers and any later analysis. */
+export function dayKey(tMs) { return new Date(tMs).toISOString().slice(0, 10); }
+/** Start of a UTC day key, ms. */
+export function dayStartMs(day) { const [y, m, d] = day.split('-').map(Number); return Date.UTC(y, m - 1, d); }
+const utf8 = new TextEncoder();
+/** Bytes a row takes in the file: its JSON line plus the newline. */
+export const lineBytes = (row) => utf8.encode(JSON.stringify(row)).length + 1;
+/** Where the next stored row of today lands: its row number and its byte offset (file length at the last flush plus
+ *  what is queued). Both travel inside the row, so a viewer's copy can say exactly how far it got and the log can
+ *  show the file growing. */
+export const nextPos = (hs) => ({ n: hs.todayRows + 1, o: hs.todayBytes + hs.pendBytes });
 const nz = (v) => (v === undefined || v === null || Number.isNaN(v) ? null : v);
 /** One stored row from a decoded reading. Short keys: the file is written every 3 s for years. */
-export function rowFromReading(label, d, t) {
+export function rowFromReading(label, d, t, pos = null) {
   return {
-    t, p: label, soc: nz(d.soc), v: nz(d.packV), i: nz(d.current), w: nz(d.power), ah: nz(d.remainAh),
+    t, n: pos ? pos.n : null, o: pos ? pos.o : null, p: label, soc: nz(d.soc), v: nz(d.packV), i: nz(d.current), w: nz(d.power), ah: nz(d.remainAh),
     tm: nz(d.tempMos), t1: nz(d.temp1), t2: nz(d.temp2), ch: d.chgMos === undefined ? null : (d.chgMos ? 1 : 0), ds: d.dsgMos === undefined ? null : (d.dsgMos ? 1 : 0),
     bal: d.balancing === undefined || d.balancing === null ? null : (d.balancing ? 1 : 0), err: nz(d.errors),
     c: Array.isArray(d.cells) ? d.cells.map((c) => Math.round(c.v * 1000)) : null,
@@ -63,7 +72,7 @@ export function parseLines(text) {
 /** The day changed (or the first row of the run): what to do with the previous day's file. */
 export function rolloverDecision(hs, nowDay) {
   if (hs.day === nowDay) return { action: 'noop' };
-  const prev = hs.day; hs.day = nowDay; hs.todayRows = 0;
+  const prev = hs.day; hs.day = nowDay; hs.todayRows = 0; hs.todayBytes = 0; hs.pendBytes = 0; hs.gap = null; hs.behind = 0;
   return prev ? { action: 'compact', day: prev } : { action: 'start', day: nowDay };
 }
 /** From a listing of day files, what to compact (raw files of past days) and what to delete: the oldest past
@@ -117,19 +126,52 @@ export function transferPlan(readerDays, have, today, maxBytes = XFER_MAX_BYTES)
   const out = []; let total = 0;
   for (const d of [...readerDays].sort((x, y) => (x.day < y.day ? 1 : -1))) {
     const h = mine.get(d.day);
-    if (d.day === today) { if (h && h.bytes >= d.bytes) continue; }
-    else if (!d.gz) continue;                                             // a past day still raw is compacted first, then sent next time
+    let item = null, cost = d.bytes || 0;
+    if (d.day === today) {
+      // today's file is a byte replica on the viewer: send from the offset it has, or the whole file when it has
+      // more than this reader (a reset, or another reader's day) or when this day is not a plain raw file
+      const replica = d.raw && !d.gz;
+      const from = !replica || !h || h.bytes > d.bytes ? 0 : h.bytes;
+      if (h && h.bytes === d.bytes && (replica || h.gz)) continue;
+      item = { day: d.day, live: replica, from, replace: from === 0 }; cost = Math.max(0, (d.bytes || 0) - from);
+    } else if (!d.gz) continue;                                          // a past day still raw is compacted first, then sent next time
     else if (h && h.gz && h.bytes === d.bytes) continue;
-    if (total + (d.bytes || 0) > maxBytes && out.length) break;
-    out.push({ day: d.day, live: d.day === today }); total += d.bytes || 0;
+    else item = { day: d.day, live: false, from: 0, replace: true };
+    if (total + cost > maxBytes && out.length) break;
+    out.push(item); total += cost;
   }
   return out;
 }
+/** A live row on the viewer against its copy of today's file (an exact byte replica of the reader's):
+ *  append when the row starts where the copy ends, hold on a hole (a dropped row: the tail is fetched from the
+ *  reader), hold on a row behind the copy (this copy is not the reader's file any more: refetch the whole day). */
+export function replicaDecision(hs, row) {
+  if (row.o === null || row.o === undefined || row.n === null || row.n === undefined) return { action: 'mem' };
+  if (hs.replicaOff === hs.day) return { action: 'mem', why: 'replica off for this day' };
+  const expected = hs.todayBytes + hs.pendBytes;
+  if (row.o === expected) return { action: 'append' };
+  if (row.o > expected) { hs.gap = hs.gap || 'gap'; return { action: 'hold', why: 'gap', expected }; }
+  hs.gap = 'behind';
+  return { action: 'hold', why: 'behind', expected };
+}
+/** Held rows after the tail landed: the ones that now fit are appended in order, older ones are in the tail already. */
+export function releaseHeld(hs, held) {
+  const append = [], drop = [], keep = [];
+  let pos = hs.todayBytes + hs.pendBytes;
+  for (const row of [...held].sort((a, b) => a.o - b.o)) {
+    if (row.o < pos) drop.push(row);
+    else if (row.o === pos) { append.push(row); pos += lineBytes(row); }
+    else keep.push(row);
+  }
+  return { append, drop, keep };
+}
 /** Should the viewer ask the reader for history now? When the link comes up, then every HIST_REQ_MS. */
-export function histReqDecision(hs, { live, now }) {
+export function histReqDecision(hs, { live, now, gap = false }) {
   if (!live) { hs.reqAt = 0; return { action: 'noop' }; }
-  if (hs.reqAt && now - hs.reqAt < HIST_REQ_MS) return { action: 'noop' };
-  hs.reqAt = now; return { action: 'request' };
+  const wait = gap ? GAP_REQ_MS : HIST_REQ_MS;
+  if (hs.reqAt && now - hs.reqAt < wait) return { action: 'noop' };
+  const why = gap ? 'gap' : hs.reqAt ? 'periodic' : 'link up';
+  hs.reqAt = now; return { action: 'request', why };
 }
 /** Base64 chunks of a file for the wire. */
 export function chunkB64(b64, size = Math.ceil(XFER_CHUNK * 4 / 3)) {
@@ -141,11 +183,11 @@ export function chunkB64(b64, size = Math.ceil(XFER_CHUNK * 4 / 3)) {
 export function rxChunk(hs, env) {
   const c = env.v || {};
   if (!c.day || typeof c.n !== 'number' || typeof c.of !== 'number' || typeof c.b64 !== 'string') return null;
-  if (!hs.rx || hs.rx.day !== c.day || hs.rx.of !== c.of) hs.rx = { day: c.day, of: c.of, live: !!c.live, parts: [] };
+  if (!hs.rx || hs.rx.day !== c.day || hs.rx.of !== c.of) hs.rx = { day: c.day, of: c.of, live: !!c.live, from: c.from || 0, replace: !!c.replace, parts: [] };
   if (c.n !== hs.rx.parts.length) { hs.rx = null; return null; }        // a lost chunk voids this file; the next request fetches it again
   hs.rx.parts.push(c.b64);
   if (hs.rx.parts.length < c.of) return null;
-  const done = { day: hs.rx.day, live: hs.rx.live, b64: hs.rx.parts.join('') }; hs.rx = null;
+  const done = { day: hs.rx.day, live: hs.rx.live, from: hs.rx.from, replace: hs.rx.replace, b64: hs.rx.parts.join('') }; hs.rx = null;
   return done;
 }
 /** Merge incoming rows into an existing sorted array; a row with the same t and pack replaces the old one. */

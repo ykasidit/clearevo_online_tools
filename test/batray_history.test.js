@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { historyState, dayKey, rowFromReading, rowLine, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, cleanLen, recentSlice, transferPlan, histReqDecision, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HEADROOM_BYTES, XFER_CHUNK, HIST_REQ_MS, RANGES, MEM_MS } from '../public/batray/history-logic.js';
+import { historyState, dayKey, dayStartMs, lineBytes, nextPos, replicaDecision, releaseHeld, rowFromReading, rowLine, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, cleanLen, recentSlice, transferPlan, histReqDecision, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HEADROOM_BYTES, XFER_CHUNK, HIST_REQ_MS, GAP_REQ_MS, RANGES, MEM_MS } from '../public/batray/history-logic.js';
 import { decodeCellInfo } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -79,20 +79,25 @@ test('recent slice thins to a row a minute keeping the newest; transfer plan sen
   const many = recentSlice(rows, 0, 3000, 100); assert.equal(many.length, 100); assert.equal(many[99].t, rows[2999].t);
   const reader = [{ day: '2026-09-18', gz: true, bytes: 900 }, { day: '2026-09-19', gz: true, bytes: 1000 }, { day: '2026-09-20', raw: true, bytes: 5000 }, { day: '2026-09-21', raw: true, bytes: 700 }];
   const plan = transferPlan(reader, [{ day: '2026-09-18', gz: true, bytes: 900 }, { day: '2026-09-21', raw: true, bytes: 300 }], '2026-09-21');
-  assert.deepEqual(plan, [{ day: '2026-09-21', live: true }, { day: '2026-09-19', live: false }], 'today (more here) then the missing gz day; the raw past day waits for compaction; the equal gz day is skipped');
-  assert.deepEqual(transferPlan(reader, [{ day: '2026-09-21', raw: true, bytes: 700 }, { day: '2026-09-19', gz: true, bytes: 999 }, { day: '2026-09-18', gz: true, bytes: 900 }], '2026-09-21'), [{ day: '2026-09-19', live: false }], 'a different size means a different copy');
-  assert.deepEqual(transferPlan(reader, [], '2026-09-21', 1500), [{ day: '2026-09-21', live: true }], 'the cap stops after the first day that fits');
+  assert.deepEqual(plan, [{ day: '2026-09-21', live: true, from: 300, replace: false }, { day: '2026-09-19', live: false, from: 0, replace: true }], 'today from the offset the viewer has, then the missing gz day; the raw past day waits for compaction; the equal gz day is skipped');
+  assert.deepEqual(transferPlan(reader, [{ day: '2026-09-21', raw: true, bytes: 700 }, { day: '2026-09-19', gz: true, bytes: 999 }, { day: '2026-09-18', gz: true, bytes: 900 }], '2026-09-21'), [{ day: '2026-09-19', live: false, from: 0, replace: true }], 'a different size means a different copy');
+  assert.deepEqual(transferPlan(reader, [], '2026-09-21', 1500), [{ day: '2026-09-21', live: true, from: 0, replace: true }], 'the cap stops after the first day that fits');
+  assert.deepEqual(transferPlan(reader, [{ day: '2026-09-21', raw: true, bytes: 900 }], '2026-09-21', 1e9)[0], { day: '2026-09-21', live: true, from: 0, replace: true }, 'a viewer with MORE of today than the reader gets the whole file again');
+  assert.deepEqual(transferPlan([{ day: '2026-09-21', raw: true, gz: true, bytes: 700 }], [{ day: '2026-09-21', raw: true, bytes: 300 }], '2026-09-21')[0], { day: '2026-09-21', live: false, from: 0, replace: true }, 'a today that is gz + raw (restored) is not a replica: sent whole, as a past day');
   assert.deepEqual(transferPlan([], [], '2026-09-21'), []);
   const hs = historyState();
   assert.deepEqual(histReqDecision(hs, { live: false, now: 1000 }), { action: 'noop' });
-  assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 }), { action: 'request' });
+  assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 }), { action: 'request', why: 'link up' });
   assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 + HIST_REQ_MS - 1 }), { action: 'noop' });
-  assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 + HIST_REQ_MS }), { action: 'request' });
-  histReqDecision(hs, { live: false, now: 3e6 }); assert.deepEqual(histReqDecision(hs, { live: true, now: 3e6 + 1 }), { action: 'request' }, 'a link that came back asks again at once');
+  assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 + GAP_REQ_MS - 1, gap: true }), { action: 'noop' }, 'a hole waits the short gap interval');
+  assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 + GAP_REQ_MS, gap: true }), { action: 'request', why: 'gap' });
+  assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 + GAP_REQ_MS + HIST_REQ_MS }), { action: 'request', why: 'periodic' });
+  histReqDecision(hs, { live: false, now: 3e6 }); assert.deepEqual(histReqDecision(hs, { live: true, now: 3e6 + 1 }), { action: 'request', why: 'link up' }, 'a link that came back asks again at once');
   const b64 = 'A'.repeat(40000); const ch = chunkB64(b64); assert.equal(ch.length, Math.ceil(40000 / Math.ceil(XFER_CHUNK * 4 / 3))); assert.equal(ch.join(''), b64);
   const vs = historyState(); const env = (n, of, day = '2026-09-19') => ({ k: 'hist-file', v: { day, n, of, b64: 'p' + n, live: false } });
   assert.equal(rxChunk(vs, env(0, 3)), null); assert.equal(rxChunk(vs, env(1, 3)), null);
-  assert.deepEqual(rxChunk(vs, env(2, 3)), { day: '2026-09-19', live: false, b64: 'p0p1p2' }); assert.equal(vs.rx, null);
+  assert.deepEqual(rxChunk(vs, env(2, 3)), { day: '2026-09-19', live: false, from: 0, replace: false, b64: 'p0p1p2' }); assert.equal(vs.rx, null);
+  assert.deepEqual(rxChunk(vs, { k: 'hist-file', v: { day: '2026-09-21', n: 0, of: 1, b64: 'x', live: true, from: 4200, replace: false } }), { day: '2026-09-21', live: true, from: 4200, replace: false, b64: 'x' }, 'a tail carries its offset');
   rxChunk(vs, env(0, 3)); assert.equal(rxChunk(vs, env(2, 3)), null, 'a lost chunk voids the file'); assert.equal(vs.rx, null);
   assert.equal(rxChunk(vs, { k: 'hist-file', v: { day: 'x' } }), null);
 });
@@ -131,4 +136,27 @@ test('window slicing, memory trim, past-day lookup and the signed power columns'
   assert.deepEqual(daysNeeded(days, new Date('2026-09-21T01:00:00').getTime(), '2026-09-21'), []);
   const cs = chartSeries([{ t: 0, w: 120, soc: 50, v: 52 }, { t: 1000, w: -80, soc: 49 }, { t: 2000, w: null }]);
   assert.deepEqual(cs.wc, [120, 0, null]); assert.deepEqual(cs.wd, [0, -80, null]); assert.deepEqual(cs.v, [52, null, null]);
+});
+
+test('every stored date is UTC; rows carry their row number and byte offset; a viewer keeps a byte copy of today and holds rows that do not fit', () => {
+  const t = Date.UTC(2026, 8, 21, 23, 30);                       // 23:30 UTC = 06:30 Bangkok the next day: the file is still the 21st
+  assert.equal(dayKey(t), '2026-09-21'); assert.equal(dayStartMs('2026-09-21'), Date.UTC(2026, 8, 21)); assert.equal(dayKey(dayStartMs('2026-09-22') - 1), '2026-09-21');
+  const hs = historyState(); hs.day = '2026-09-21'; hs.todayRows = 41; hs.todayBytes = 9000; hs.pendBytes = 120;
+  assert.deepEqual(nextPos(hs), { n: 42, o: 9120 });
+  const row = rowFromReading('n11', { soc: 50, packV: 52.1, current: 1.5, power: 78, cells: [{ v: 3.271 }] }, t, nextPos(hs));
+  assert.equal(row.n, 42); assert.equal(row.o, 9120); assert.deepEqual(Object.keys(row).slice(0, 4), ['t', 'n', 'o', 'p'], 'row number and offset right after the time');
+  assert.equal(lineBytes(row), JSON.stringify(row).length + 1); assert.equal(lineBytes({ t: 1, p: 'แบต' }), new TextEncoder().encode(JSON.stringify({ t: 1, p: 'แบต' })).length + 1, 'UTF-8 bytes, not characters');
+  assert.equal(rowFromReading('n11', { soc: 1 }, t).o, null, 'a demo / memory-only row has no position');
+  // the viewer: its copy ends at 9120 B
+  assert.deepEqual(replicaDecision(hs, { t, n: 42, o: 9120 }), { action: 'append' });
+  assert.deepEqual(replicaDecision(hs, { t, n: 44, o: 9400 }), { action: 'hold', why: 'gap', expected: 9120 }); assert.equal(hs.gap, 'gap');
+  assert.deepEqual(replicaDecision(hs, { t, n: 40, o: 8800 }), { action: 'hold', why: 'behind', expected: 9120 }); assert.equal(hs.gap, 'behind');
+  assert.deepEqual(replicaDecision(hs, { t, n: null, o: null }), { action: 'mem' });
+  hs.replicaOff = '2026-09-21'; assert.equal(replicaDecision(hs, { t, n: 42, o: 9120 }).action, 'mem'); hs.replicaOff = null;
+  // the tail landed: the copy now ends at 9500 B; held rows are placed in order, older ones dropped, a later hole kept
+  const a = { t, n: 45, o: 9500, p: 'n11' }, la = lineBytes(a); const b = { t: t + 1, n: 46, o: 9500 + la, p: 'n11' }; const c = { t: t + 2, n: 48, o: 9500 + la + lineBytes(b) + 70, p: 'n11' };
+  hs.todayBytes = 9500; hs.pendBytes = 0;
+  const rel = releaseHeld(hs, [c, b, { t, n: 44, o: 9400 }, a]);
+  assert.deepEqual(rel.append.map((r) => r.n), [45, 46]); assert.deepEqual(rel.drop.map((r) => r.n), [44]); assert.deepEqual(rel.keep.map((r) => r.n), [48]);
+  const ro = rolloverDecision(hs, '2026-09-22'); assert.equal(ro.action, 'compact'); assert.equal(hs.todayBytes, 0); assert.equal(hs.pendBytes, 0); assert.equal(hs.gap, null);
 });

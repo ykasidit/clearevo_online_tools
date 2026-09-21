@@ -62,7 +62,10 @@ const today = list.length ? list[list.length - 1].day : null;
 check("readings become rows in today's NDJSON file (OPFS backend, persistence asked)", h.backend === 'opfs' && h.mem >= 6 && h.pending === 0 && list.length === 1 && list[0].raw && !list[0].gz && list[0].bytes > 200 && h.persistent !== null, { h, list });
 const text = await evalJs(`window.__batrayTest.histRead('${today}')`);
 const lines = text.trim().split('\n');
-check('each row is one JSON line with short keys and the cell millivolts', lines.length === h.mem && lines.every((l) => /^\{"t":\d+,"p":"n11","soc":/.test(l)) && /"c":\[\d+/.test(lines[0]), { n: lines.length, mem: h.mem, first: lines[0].slice(0, 120) });
+const parsedRows = lines.map((l) => JSON.parse(l));
+const offsetsOk = parsedRows.every((r, i) => r.n === i + 1 && r.o === lines.slice(0, i).reduce((a, l) => a + new TextEncoder().encode(l).length + 1, 0));
+check('each row is one JSON line with its row number and byte offset in the file, short keys and the cell millivolts', lines.length === h.mem && lines.every((l) => /^\{"t":\d+,"n":\d+,"o":\d+,"p":"n11","soc":/.test(l)) && offsetsOk && /"c":\[\d+/.test(lines[0]) && h.todayBytes === text.length && h.todayRows === lines.length, { n: lines.length, mem: h.mem, first: lines[0].slice(0, 120), h });
+check('the day file is the UTC day', today === new Date().toISOString().slice(0, 10), today);
 
 // ---- 2. seed two hours of today plus a day of yesterday, flush, maintain -> yesterday gzipped ----
 await evalJs(`(() => {
@@ -88,6 +91,43 @@ await evalJs('window.__batrayTest.flushHistory()');
 const torn = await evalJs(`window.__batrayTest.histRead('${today}')`);
 const tornLines = torn.split('\n');
 check('a torn tail is closed with a newline before the next append and is skipped when reading', tornLines.every((l) => !l || l.startsWith('{"t":')) && torn.endsWith('\n') && !/"soc":\{"t"/.test(torn) && /"soc":51/.test(torn), { tail: torn.slice(-160) });
+
+// ---- 2b2. a viewer's copy of today: the reader's rows land at the offsets they name; a hole holds rows and asks for the tail ----
+const rep = await evalJs(`(async () => {
+  const T = window.__batrayTest; const hs0 = T.histState();
+  const day = hs0.day; const base = Date.now();
+  const mk = (n, o, i) => ({ t: base + i, n, o, p: 'rem', soc: 40, v: 52, w: 10 });
+  let o = hs0.todayBytes + hs0.pending * 0;                       // after flush: pending 0
+  const rows = []; for (let i = 0; i < 3; i++) { const r = mk(hs0.todayRows + 1 + i, o, i); rows.push(r); o += T.lineBytes(r); }
+  for (const r of rows) T.remoteTake('rem', { soc: r.soc }, r.t, r);
+  const afterAppend = T.histState();
+  const gapRow = mk(hs0.todayRows + 5, o + 80, 10);                 // row 4 never arrived
+  const before = T.logLines().length;
+  T.remoteTake('rem', { soc: 1 }, gapRow.t, gapRow);
+  const held = T.histHeld(); const hs1 = T.histState(); const logs = T.logLines().slice(before).join(' | ');
+  await T.flushHistory();
+  const text = await T.histRead(day); const tail = text.trim().split('\\n').slice(-3).map((l) => JSON.parse(l));
+  return { day, expected: o, afterAppend, held: held.map((r) => r.n), gap: hs1.gap, logs, tailN: tail.map((r) => r.n), tailO: tail.map((r) => r.o), fileLen: text.length, storedRows: hs1.todayRows };
+})()`);
+check('rows from the reader are appended exactly at the offsets they name, and a hole holds the row and logs it', rep.afterAppend.pendBytes === 0 || rep.afterAppend.pending > 0, rep);
+check('...the three rows sit at the end of the file with their numbers, the file ends where the next row was expected', rep.tailN.join() === rep.tailN.map((_, i) => rep.tailN[0] + i).join() && rep.fileLen === rep.expected && rep.gap === 'gap' && rep.held.length === 1 && /starts at \d+ B but this copy ends at \d+ B \(gap\): holding it/.test(rep.logs), rep);
+const tailIn = await evalJs(`(async () => {
+  const T = window.__batrayTest; const hs = T.histState(); const held = T.histHeld()[0];
+  const missing = { t: held.t - 5, n: held.n - 1, o: hs.todayBytes, p: 'rem', soc: 2, v: 52, w: 10 };
+  missing.x = ''; let line = JSON.stringify(missing);
+  missing.x = 'p'.repeat(held.o - hs.todayBytes - (new TextEncoder().encode(line).length + 1)); line = JSON.stringify(missing);
+  const text = line + '\\n';
+  const gz = new Uint8Array(await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+  let b = ''; for (const x of gz) b += String.fromCharCode(x);
+  const before = T.logLines().length;
+  await T.storeReceived({ day: hs.day, live: true, from: hs.todayBytes, replace: false, b64: btoa(b) });
+  await T.flushHistory();
+  const after = T.histState(); const file = await T.histRead(hs.day); const last = JSON.parse(file.trim().split('\\n').pop());
+  return { fits: new TextEncoder().encode(text).length === held.o - hs.todayBytes, heldAfter: T.histHeld().length, gap: after.gap, lastN: last.n, heldN: held.n, fileLen: file.length, expectedLen: held.o + T.lineBytes(held), logs: T.logLines().slice(before).join(' | ') };
+})()`);
+check('a tail from the reader lands at the copy\'s end, the held row is placed after it and the copy is whole again', tailIn.fits && tailIn.heldAfter === 0 && tailIn.gap === null && tailIn.lastN === tailIn.heldN && tailIn.fileLen === tailIn.expectedLen && /held rows: 1 placed/.test(tailIn.logs), tailIn);
+const wrongTail = await evalJs(`window.__batrayTest.storeReceived({ day: window.__batrayTest.histState().day, live: true, from: 7, replace: false, b64: btoa('x') }).then(() => 'stored', (e) => 'refused: ' + e.message)`);
+check('a tail for the wrong offset is refused', /^refused/.test(wrongTail), wrongTail);
 
 // ---- 2c. backup: a .tar of the daily gzip files; restore after delete brings the days back ----
 const bk = await evalJs('window.__batrayTest.backupHistory()');
@@ -123,7 +163,8 @@ check('a history request while not sharing is logged and ignored', /request from
 // ---- 3. reload: rows come back from the files and the chart draws at once ----
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 h = await hist();
-check('after a reload the last 24 h are back in memory from the day files', h.backend === 'opfs' && h.mem >= 120 && h.todayRows >= 120, h);
+const sealed = await evalJs(`window.__batrayTest.histRead(window.__batrayTest.histState().day).then((t) => ({ len: t.length, rows: t.split('\\n').length - 1, endsNl: t.endsWith('\\n') }))`);
+check('after a reload the last 24 h are back in memory from the day files, and row numbering continues from the sealed file', h.backend === 'opfs' && h.mem >= 120 && h.todayRows === sealed.rows && h.todayBytes === sealed.len && sealed.endsNl, { h, sealed });
 const known = await evalJs(`({ shown: !document.getElementById('connectKnown').hidden, txt: document.getElementById('connectKnown').textContent, green: getComputedStyle(document.getElementById('connectKnown')).backgroundImage.includes('linear-gradient'), above: document.getElementById('connectKnown').nextElementSibling.id, saved: localStorage.getItem('batray_known_dev') })`);
 check('the remembered BMS shows as a green "Connect to n11" button above Connect after a reload', known.shown && known.txt === 'Connect to n11' && known.green && known.above === 'connectBig' && /"name":"n11"/.test(known.saved), known);
 await evalJs(`document.getElementById('connectKnown').click(); 1`); await sleep(1500); await notify(AIO_32S_DEV); await notify(OWNER_32S_CELL); await sleep(800);
