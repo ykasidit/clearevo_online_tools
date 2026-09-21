@@ -111,6 +111,10 @@ export function sheetModel(kind, ctx, T) {
       m.title = T.uploadLog; m.lead = T.uploadWarn;
       m.actions = [{ id: 'cancel', label: T.cancel, primary: false }, { id: 'ok', label: T.uploadGo, primary: true }];
       break;
+    case 'clearHist':
+      m.title = T.histClear; m.lead = T.histClearBody(ctx.histDays || 0, ctx.histSize || '0 KB'); m.tone = 'act';
+      m.actions = [{ id: 'cancel', label: T.cancel, primary: false }, { id: 'ok', label: T.histClearGo, primary: true }];
+      break;
     default:
       m.title = String(kind);
   }

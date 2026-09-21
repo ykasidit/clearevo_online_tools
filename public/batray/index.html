@@ -12,6 +12,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BatRay by ClearEvo.com - JK BMS battery monitor over Bluetooth, in Chrome</title>
 <meta name="description" content="Read your JiKong (JK) BMS from Chrome over Web Bluetooth: pack voltage, state of charge, current, power, per-cell voltages, temperatures, capacity, cycles and the configured protection settings. Nothing to install, nothing uploaded; frame layout chosen from the firmware version and cross-checked against the cell sum.">
+<link rel="stylesheet" href="uplot.css">
 <link rel="icon" href="data:image/svg+xml,<svg viewBox='0 0 64 64' xmlns='http://www.w3.org/2000/svg'><rect width='64' height='64' rx='13' fill='%230c2035'/><path d='M32 14 C24 14 12 20 5 29 C15 29 23 34 28 41 L32 46 L36 41 C41 34 49 29 59 29 C52 20 40 14 32 14 Z' fill='%231c5680' stroke='%235bb6e6' stroke-width='3' stroke-linejoin='round'/><path d='M32 46 C33.5 51 30.5 55 33 60' fill='none' stroke='%235bb6e6' stroke-width='3' stroke-linecap='round'/><path d='M27 15 C25 12.5 24 10 25.5 7.5 M37 15 C39 12.5 40 10 38.5 7.5' fill='none' stroke='%235bb6e6' stroke-width='3' stroke-linecap='round'/><g fill='%23cdefff'><circle cx='27.5' cy='21' r='2'/><circle cx='36.5' cy='21' r='2'/></g><path d='M23 28 H29 M35 28 H41 M25 32 H29 M35 32 H39' stroke='%230a2338' stroke-width='2' stroke-linecap='round'/></svg>">
 <meta name="theme-color" content="#0c2035">
 <!-- Google tag (gtag.js) -->
@@ -89,6 +90,7 @@ body.offline #fDash{animation:none}
 .chip.ok{color:#5fd39a;border-color:#2b5a45}.chip.bad{color:#ff8a80;border-color:#7a2f2a;font-weight:700}.chip.warn{color:#ffd24a;border-color:#6b5a1a}
 #etaLine{display:block;line-height:1.8}
 #etaLine input{width:52px;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:4px;padding:1px 4px;font:inherit}
+.ranges{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.ranges button{background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:8px;padding:4px 12px;font:inherit;cursor:pointer}.ranges button.on{background:#1c5680;border-color:#2aa9e0;color:#fff}#trend{width:100%;min-height:200px}#trend .uplot{font-family:'Segoe UI',Tahoma,sans-serif}#trend .u-select{background:rgba(74,169,224,.25)}
 .prog{height:8px;background:#12283f;border:1px solid #1c3550;border-radius:5px;overflow:hidden;margin-top:8px}.prog .bar{height:100%;background:#2aa9e0;transition:width .5s linear}
 #trend{width:100%;height:130px;display:block;background:#0a1626;border:1px solid #1c3550;border-radius:6px}
 .check{margin:10px 0 0;font:11px 'DejaVu Sans Mono',monospace;color:#6f8aa6;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
@@ -206,7 +208,7 @@ body.view #empty,body.view #oneApp{display:none}
 
 /* ---- UI_GUIDELINES.md: touch targets, bottom sheet, viewer tab bar, low power ---- */
 @media (max-width:700px),(pointer:coarse){
-  .tbtn,.linkbtn,.pchip,.demobtn,#stopDemo,.tabbar button,.sheetBox .opts button,.optbtn,#flowFull,details.card>summary,#etaLine input,.toolbar label.chk{min-height:48px}
+  .tbtn,.linkbtn,.pchip,.demobtn,#stopDemo,.tabbar button,.sheetBox .opts button,.optbtn,.ranges button,#flowFull,details.card>summary,#etaLine input,.toolbar label.chk{min-height:48px}
   .tbtn{min-width:48px}.fontbtn{min-height:40px;min-width:40px}.linkbtn{padding:10px 8px}.pchip{padding:6px 14px}
   #demoBadge button{min-height:48px;padding:4px 14px}
 }
@@ -365,15 +367,18 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           <div id="cellsWrap"><div id="cells"></div></div>
         </div>
         <div class="card" id="trendWait" data-tab="history">
-          <h2><span data-i18n="trendH">Session trend</span></h2>
+          <h2><span data-i18n="trendH">History</span></h2>
           <div class="check" id="trendWaitTxt"></div>
           <div class="prog"><div class="bar" id="trendWaitBar" style="width:0%"></div></div>
         </div>
         <div class="card" id="trendCard" data-tab="history" hidden>
-          <h2><span data-i18n="trendH">Trend</span> <span class="note" data-i18n="trendNote">since this tab opened - kept in memory only, nothing stored or sent</span></h2>
+          <h2><span data-i18n="trendH">History</span> <span class="note" data-i18n="trendNote">one row per reading, stored on this device for 30 days; sent only to your viewers while you share</span></h2>
+          <div class="ranges" id="histRanges" role="group" aria-label="time range"><button type="button" data-range="1h" data-i18n="r1h">1 h</button><button type="button" data-range="6h" class="on" data-i18n="r6h">6 h</button><button type="button" data-range="24h" data-i18n="r24h">24 h</button><button type="button" data-range="7d" data-i18n="r7d">7 d</button><button type="button" data-range="all" data-i18n="rAll">all</button></div>
           <div class="check" id="trendEnergy"></div>
-          <canvas id="trend" height="130" aria-label="power and battery percent since this tab opened"></canvas>
-          <div class="check" data-i18n="trendLegend">power: green charge, amber discharge · battery %: blue line, right axis</div>
+          <div id="trend" aria-label="power and battery percent over time"></div>
+          <div class="check" data-i18n="trendLegend">power: green charge, amber discharge · battery %: blue line, right axis · red dashes: inverter cut-off · two fingers zoom, a mouse drags a window</div>
+          <div class="check" id="histNote"></div>
+          <div class="tvrow"><button type="button" id="histClear" class="linkbtn" data-i18n="histClear" hidden>Clear history</button></div>
         </div>
         <div class="card" data-tab="more" id="moreCard">
           <h2><span data-i18n="moreH">More</span> <span class="note" data-i18n="moreNote">same frame as the meters, not covered by the cell-sum check; offsets verified against captured frames from 24-cell, 32-cell and JK-PB firmware (see how to use)</span></h2>
@@ -429,6 +434,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
   </div>
 </div>
 <script src="qrcode.js"></script>
+<script src="uplot.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

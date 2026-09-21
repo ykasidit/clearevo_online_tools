@@ -155,9 +155,9 @@ await notify(OWNER_32S_CELL);
 await sleep(5000);
 s = await state();
 check('...and stays up once its first frame arrives', s.gatt === true && /^connected/i.test(s.stat), s);
-// the session trend appears once the pack has been read for 30 s (frames above span more than that)
-const tr = await evalJs(`({ shown: !document.getElementById('trendCard').hidden, energy: document.getElementById('trendEnergy').textContent, w: document.getElementById('trend').width })`);
-check('the session trend card shows with an energy line once 30 s of readings exist', tr.shown && /charged .* · discharged/.test(tr.energy) && tr.w > 100, tr);
+// the History card appears once the pack has been read for 30 s (frames above span more than that); uPlot draws into its own canvas
+const tr = await evalJs(`({ shown: !document.getElementById('trendCard').hidden, energy: document.getElementById('trendEnergy').textContent, w: (document.querySelector('#trend canvas') || {}).width || 0 })`);
+check('the History card shows with an energy line once 30 s of readings exist', tr.shown && /charged .* · discharged/.test(tr.energy) && tr.w > 100, tr);
 
 // --- a picked device that refuses all attempts goes to the countdown, never back to the chooser ---
 await evalJs(`window.__dev.gatt.disconnect(); 1`); await sleep(500);

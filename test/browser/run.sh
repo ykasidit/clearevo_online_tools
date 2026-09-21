@@ -4,6 +4,7 @@
 #   smoke.mjs     - every tool page loads with no console errors / failed requests
 #   batray_freeze.mjs - BatRay over a fake BLE device: a frozen tab must not
 #                   replay queued readings or sit on a dead "connected"
+#   batray_history.mjs - stored history: OPFS day files survive a reload, gzip compaction, uPlot card, delete sheet
 #   batray_tv.mjs   - Show on TV: real encode, stubbed relay, ffmpeg decodes the stream
 #   batray_ui.mjs   - UI_GUIDELINES.md on the real page: 48 px targets, sheets, Back, tabs, low power
 #   batray_log.mjs  - the debug log header, error capture and Upload log
@@ -40,6 +41,7 @@ rc=0
 node smoke.mjs || rc=1
 node clinician.mjs || rc=1
 node batray_freeze.mjs || rc=1
+node batray_history.mjs || rc=1
 node batray_tv.mjs || rc=1
 node batray_ui.mjs || rc=1
 node batray_log.mjs || rc=1      # last: it throws deliberate errors that Chrome replays to the next Runtime.enable

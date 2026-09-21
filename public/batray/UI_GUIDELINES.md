@@ -114,8 +114,10 @@ core"). The role is a layout decision, not a fork.
    selects and confirm. No visual redesign.
 2. Viewer Now screen and bottom tabs on the existing live data; tappable
    tiles with sheets.
-3. History ring buffer on the reader, History tab on the viewer; the
-   how-to's "no stored history" line changes to say exactly what is kept.
+3. Stored history (shipped 0.9.29): NDJSON day files in OPFS on the reader,
+   gzipped at the day change, 30 days; the viewer keeps its own copy from
+   `hist` chunks; uPlot History card with ranges and pinch; delete through
+   a sheet; the how-to says exactly what is kept and where.
 4. Feed tab on the stored alert events.
 5. Export and Explore (Parquet, DuckDB, notebooks) as a separate on-demand
    page for the main phone or PC, never in the reader's bundle.

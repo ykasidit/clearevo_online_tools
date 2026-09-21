@@ -25,12 +25,15 @@ import { I18N, detectLang } from './i18n.js';
 import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
-import { Ema, Trend } from './trend.js';
+import { Ema } from './trend.js';
+import { historyState, dayKey, rowFromReading, rowLine, parseLines, rolloverDecision, retentionDecision, historySummary, recentSlice, chunkRows, recentSendDecision, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HISTORY_KEEP_DAYS, RECENT_HOURS, RECENT_STEP_MS, RANGES } from './history-logic.js';
+import { HistoryStore } from './history.js';
+import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.28';
+export const APP_VERSION = '0.9.29';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -142,7 +145,7 @@ class Pack {
     this.demo = null; this.reTimer = null; this.gapTimer = null; this.attemptTicker = null;   // timers: the shell's, never in cs
     this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.dumped = false;
     this.remoteLive = false;
-    this.trend = new Trend(); this.iEma = new Ema(60);   // session trend + smoothed current for the time-to-go
+    this.iEma = new Ema(60);                                 // smoothed current for the time-to-go; readings go to the stored history
     if (this.bms) this.wire();
   }
   get connected() { return this.remote ? this.remoteLive : (!!this.demo || (this.bms && this.bms.connected)); }
@@ -188,10 +191,10 @@ class Pack {
       }
     });
   }
-  take(d) {
+  take(d, rowT = null) {
     this.data = d; this.lastFrameAt = Date.now();
     this.iEma.push(d.current, this.lastFrameAt);
-    this.trend.push({ t: this.lastFrameAt, soc: d.soc, power: d.power });
+    recordRow(this, d, rowT || this.lastFrameAt);           // rowT: the reader's own time on a viewer, so its copy matches the reader's files
   }
   onData(d) {
     const first = !this.lastFrameAt;
@@ -481,7 +484,7 @@ $('cutoff').addEventListener('change', () => {
   if (Number.isFinite(v)) cutoffPct = Math.max(0, Math.min(95, Math.round(v)));
   $('cutoff').value = cutoffPct;
   try { localStorage.setItem('batray_cutoff_pct', cutoffPct); } catch {}
-  if (active && active.data) renderFlow(active.data);           // the cut-off line on the battery
+  if (active && active.data) renderFlow(active.data);           // the cut-off line on the battery and on the chart
   if (active && active.data) render(active.data, true);
 });
 
@@ -497,59 +500,153 @@ function renderStrip(d) {
 
 function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 
-// while the trend has too little to draw, say so with a bar instead of a blank History tab (owner, 2026-09-20)
+// ---- stored history (phase 3, owner decisions 2026-09-21): one NDJSON row
+// per reading, a file per day in the browser's private storage (OPFS through
+// the history worker), gzipped at the day change, HISTORY_KEEP_DAYS days kept.
+// The history logic module decides; this block stores, loads and draws. ----
+const histS = historyState();
+const hist = new HistoryStore({ log });
+const histMem = { rows: [], keys: new Set(), pending: new Map(), dayCache: new Map(), loading: new Set(), plot: null };
+const rowKey = (r) => `${r.p}|${r.t}`;
+/** Rows into memory (deduplicated); store=true also queues them for the day files. Returns the new rows. */
+function memAdd(rows, store) {
+  const fresh = [];
+  for (const r of rows) { const k = rowKey(r); if (histMem.keys.has(k)) continue; histMem.keys.add(k); fresh.push(r); }
+  if (!fresh.length) return fresh;
+  const last = histMem.rows[histMem.rows.length - 1];
+  if (fresh.length === 1 && (!last || fresh[0].t >= last.t)) histMem.rows.push(fresh[0]);   // the common case: one new reading
+  else histMem.rows = mergeRows(histMem.rows, fresh);
+  if (store) for (const r of fresh) { const day = dayKey(r.t); const l = histMem.pending.get(day) || []; l.push(rowLine(r)); histMem.pending.set(day, l); }
+  return fresh;
+}
+function recordRow(p, d, t) {
+  const store = !p.demo;                          // DEMO readings stay in memory: never a file that looks like a real bank
+  if (!memAdd([rowFromReading(p.label, d, t)], store).length) return;
+  if (store) {
+    const ro = rolloverDecision(histS, dayKey(t));
+    if (ro.action !== 'noop') { log(`history: ${ro.action} ${ro.day}`); if (ro.action === 'compact') flushHistory().then(maintainHistory); }
+    histS.todayRows++;
+  }
+  if (histMem.rows.length % 500 === 0) trimMem(t);
+}
+function trimMem(now) {
+  const before = histMem.rows.length;
+  histMem.rows = trimRows(histMem.rows, now);
+  if (histMem.rows.length !== before) histMem.keys = new Set(histMem.rows.map(rowKey));
+}
+let histWriteFailed = false;
+async function flushHistory() {
+  if (!histMem.pending.size) return;
+  const batch = histMem.pending; histMem.pending = new Map();
+  if (hist.persistent === null) { const ok = await hist.persist(); histS.persistent = ok; log(`history: ${hist.backend}, persistent=${ok}`); }
+  for (const [day, lines] of batch) {
+    try { await hist.append(day, lines); histWriteFailed = false; }
+    catch (e) { if (!histWriteFailed) log(`history: write failed: ${e.message}`); histWriteFailed = true; }
+  }
+}
+setInterval(flushHistory, HISTORY_FLUSH_MS);
+window.addEventListener('pagehide', () => { flushHistory(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushHistory(); });
+/** Compact past days, delete beyond retention, refresh the summary line. */
+async function maintainHistory() {
+  try {
+    const d = retentionDecision(await hist.list(), dayKey(Date.now()));
+    for (const day of d.compact) { const r = await hist.compact(day); log(`history: compacted ${day} (${r.from} -> ${r.to} B)`); histMem.dayCache.delete(day); }
+    for (const f of d.delete) { await hist.remove(f.day); log(`history: deleted ${f.day}`); histMem.dayCache.delete(f.day); }
+    histS.days = await hist.list();
+  } catch (e) { log(`history: maintenance failed: ${e.message}`); }
+  renderHistNote();
+}
+async function initHistory() {
+  histS.backend = await hist.ready;
+  const now = Date.now(), today = dayKey(now);
+  histS.day = today;
+  try {
+    histS.days = await hist.list();
+    // yesterday and today come back into memory, so the chart starts where the last session stopped
+    for (const day of [dayKey(now - 86400e3), today]) {
+      if (!histS.days.some((d) => d.day === day)) continue;
+      const rows = parseLines(await hist.read(day));
+      memAdd(trimRows(rows, now), false);
+      if (day === today) histS.todayRows = rows.length;
+    }
+    const sum = historySummary(histS.days, histS.todayRows);
+    log(`history: ${histS.backend}, ${sum.days} days, ${Math.round(sum.bytes / 1024)} KB, oldest ${sum.oldest || '-'}, ${histMem.rows.length} rows loaded`);
+  } catch (e) { log(`history: load failed: ${e.message}`); }
+  await maintainHistory();
+  if (active) renderTrend(active);
+}
+async function clearHistory() {
+  histMem.pending = new Map();
+  try { const r = await hist.clear(); log(`history: cleared (${r.removed} files)`); } catch (e) { log(`history: clear failed: ${e.message}`); }
+  histMem.rows = []; histMem.keys = new Set(); histMem.dayCache.clear(); histS.days = []; histS.todayRows = 0;
+  toast(T.histCleared, 5000);
+  if (active) { renderTrend(active); if ($('trendCard').hidden) renderHistNote(); }
+}
+const fmtSize = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+function renderHistNote() {
+  const sum = historySummary(histS.days, histS.todayRows);
+  $('histNote').textContent = histS.backend === 'memory' ? T.histNoStore : !sum.days ? T.histNoteEmpty(HISTORY_KEEP_DAYS) : (viewMode ? T.histNoteViewer : T.histNote)(sum.days, fmtSize(sum.bytes), sum.oldest, HISTORY_KEEP_DAYS);
+  $('histClear').hidden = histS.backend === 'memory' || !sum.days;
+}
+// past days for the 7 d / all ranges: read once, thinned to a row a minute, cached per day
+function loadDays(days) {
+  for (const day of days) {
+    if (histMem.dayCache.has(day) || histMem.loading.has(day)) continue;
+    histMem.loading.add(day);
+    hist.read(day).then((text) => { const rows = parseLines(text); histMem.dayCache.set(day, recentSlice(rows, 0, RECENT_STEP_MS, 1e9)); log(`history: read ${day}: ${rows.length} rows`); })
+      .catch((e) => { histMem.dayCache.set(day, []); log(`history: read ${day} failed: ${e.message}`); })
+      .finally(() => { histMem.loading.delete(day); if (active) renderTrend(active); });
+  }
+}
+/** The active pack's rows from `from` on: memory (last 24 h, full resolution) plus cached past days. */
+function histRowsFor(label, from, now) {
+  const mem = histMem.rows.filter((r) => r.p === label);
+  const past = daysNeeded(histS.days, from, dayKey(now));
+  if (!past.length) return mem;
+  loadDays(past);
+  const old = [];
+  for (const d of past) { const c = histMem.dayCache.get(d); if (c) for (const r of c) if (r.p === label) old.push(r); }
+  return old.length ? mergeRows(old, mem) : mem;
+}
+// while the history has too little to draw, say so with a bar instead of a blank History tab (owner, 2026-09-20)
 function renderTrendWait(p) {
-  const pr = trendProgress(p ? p.trend.spanMs : 0, !!(p && p.data));
+  const rows = p ? histMem.rows.filter((r) => r.p === p.label) : [];
+  const pr = trendProgress(spanMs(rows), !!(p && p.data));
   const w = $('trendWait'); w.hidden = pr.ready;
   if (pr.ready) return pr;
   $('trendWaitTxt').textContent = pr.waiting ? T.trendWaitNone : T.trendWait(pr.haveS, pr.needS);
   $('trendWaitBar').style.width = `${pr.pct}%`;
   return pr;
 }
+let trendRaf = 0;
 function renderTrend(p) {
   const card = $('trendCard');
   if (!renderTrendWait(p).ready) { card.hidden = true; return; }
   card.hidden = false;
-  const tr = p.trend;
-  $('trendEnergy').textContent = T.trendEnergy(fmtSpan(tr.spanMs / 3600000), fmtWh(tr.chargedWh), fmtWh(tr.dischargedWh));
-  const cv = $('trend');
-  const dpr = window.devicePixelRatio || 1;
-  const W = Math.max(200, cv.clientWidth), H = 130;
-  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
-  const g = cv.getContext('2d');
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.clearRect(0, 0, W, H);
-  const L = 44, Rm = 34, Tm = 8, Bm = 18, pw = W - L - Rm, ph = H - Tm - Bm;
-  const sm = tr.samples, t0 = sm[0].t, t1 = sm[sm.length - 1].t, span = Math.max(1, t1 - t0);
-  let pmax = 100;
-  for (const x of sm) if (x.power !== null) pmax = Math.max(pmax, Math.abs(x.power));
-  pmax = Math.ceil(pmax / 100) * 100;
-  const X = (t) => L + (t - t0) / span * pw, Yp = (w) => Tm + ph / 2 - (w / pmax) * ph / 2, Ys = (soc) => Tm + ph - (soc / 100) * ph;
-  g.font = '10px DejaVu Sans Mono, monospace'; g.textBaseline = 'middle';
-  g.strokeStyle = '#1c3550'; g.lineWidth = 1;
-  for (const w of [pmax, pmax / 2, 0, -pmax / 2, -pmax]) { g.beginPath(); g.moveTo(L, Yp(w)); g.lineTo(L + pw, Yp(w)); g.stroke(); g.fillStyle = '#7fb0d8'; g.textAlign = 'right'; g.fillText(`${w} W`, L - 4, Yp(w)); }
-  g.textAlign = 'left';
-  for (const pct of [0, 50, 100]) { g.fillStyle = '#4aa9e0'; g.fillText(`${pct}%`, L + pw + 4, Ys(pct)); }
-  const step = span > 4 * 3600000 ? 3600000 : span > 1.5 * 3600000 ? 1800000 : span > 20 * 60000 ? 600000 : 60000;
-  g.fillStyle = '#7fb0d8'; g.textAlign = 'center';
-  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) { if (X(t) < L + 18 || X(t) > L + pw - 18) continue; const dt = new Date(t); g.fillText(`${dt.getHours().toString().padStart(2, '0')}:${dt.getMinutes().toString().padStart(2, '0')}`, X(t), H - Bm / 2); }
-  // power: filled area above/below the zero line
-  const area = (sign, color) => {
-    g.beginPath(); let open = false;
-    for (const x of sm) {
-      const w = x.power === null ? 0 : Math.max(0, sign * x.power) * sign;
-      if (!open) { g.moveTo(X(x.t), Yp(0)); open = true; }
-      g.lineTo(X(x.t), Yp(w));
-    }
-    g.lineTo(X(t1), Yp(0)); g.closePath(); g.fillStyle = color; g.fill();
-  };
-  area(1, 'rgba(95,211,154,.55)'); area(-1, 'rgba(255,183,77,.55)');
-  // battery %
-  g.beginPath(); let started = false;
-  for (const x of sm) { if (x.soc === null) continue; if (!started) { g.moveTo(X(x.t), Ys(x.soc)); started = true; } else g.lineTo(X(x.t), Ys(x.soc)); }
-  g.strokeStyle = '#4aa9e0'; g.lineWidth = 2; g.stroke();
-  if (cutoffPct > 0) { g.setLineDash([4, 4]); g.strokeStyle = '#ff8a80'; g.lineWidth = 1; g.beginPath(); g.moveTo(L, Ys(cutoffPct)); g.lineTo(L + pw, Ys(cutoffPct)); g.stroke(); g.setLineDash([]); }
+  if (!trendRaf) trendRaf = requestAnimationFrame(() => { trendRaf = 0; if (active) drawHistory(active); });
 }
+function drawHistory(p) {
+  const now = Date.now(), range = histS.range;
+  const fromGuess = RANGES[range] ? now - RANGES[range] : (histS.days[0] ? new Date(`${histS.days[0].day}T00:00:00`).getTime() : 0);
+  const rows = histRowsFor(p.label, fromGuess, now);
+  const { from, to } = chartRange(rows, range, now);
+  const win = rowsBetween(rows, from, to);
+  const e = energyWh(win, RANGES[range] && RANGES[range] <= RANGES['24h'] ? 60 : 130);   // thinned past days are a row a minute
+  $('trendEnergy').textContent = T.trendEnergy(fmtSpan((to - from) / 3600000), fmtWh(e.charged), fmtWh(e.discharged));
+  const el = $('trend'), width = Math.max(200, el.clientWidth || el.parentElement.clientWidth);
+  if (!histMem.plot) histMem.plot = makeChart(el, width, () => cutoffPct);
+  drawChart(histMem.plot, chartSeries(downsample(win)), from, to, width);
+  renderHistNote();
+  document.querySelectorAll('#histRanges button').forEach((b) => b.classList.toggle('on', b.dataset.range === histS.range));
+}
+try { const r = localStorage.getItem('batray_hist_range'); if (r && RANGES[r] !== undefined) histS.range = r; } catch {}
+$('histRanges').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-range]'); if (!b) return;
+  histS.range = b.dataset.range; try { localStorage.setItem('batray_hist_range', histS.range); } catch {}
+  log(`history: range ${histS.range}`); if (active) renderTrend(active);
+});
+$('histClear').addEventListener('click', async () => { const a = await openSheet('clearHist'); log(`history: clear -> ${a}`); if (a === 'ok') clearHistory(); });
 window.addEventListener('resize', () => { if (active && active.data) renderTrend(active); });
 
 function render(d, relabelOnly = false) {
@@ -873,6 +970,8 @@ async function beginShare() {
     renderLiveChip(); syncWake(); watchReach(s);
     const v = viewersChange(shareS, s.viewers);
     if (v && alerts) alerts.notify('viewers', v.joined ? T.evViewerJoined : T.evViewerLeft, T.evWatching(v.viewers));
+    const rd = recentSendDecision(histS, { viewers: s.viewers, now: Date.now(), live: s.live });
+    if (rd.action === 'send') sendRecent(rd.why);
   } });
   const pub = publisher;
   try {
@@ -894,8 +993,21 @@ async function beginShare() {
     publisher.stop(); publisher = null; shareFailed(shareS);
   } finally { renderLiveChip(); syncWake(); }
 }
+// the last 24 h thinned to a row a minute, in small chunks 200 ms apart (a data channel has a send buffer, not a queue)
+let recentJob = 0;
+function sendRecent(why) {
+  if (!publisher) return;
+  const chunks = chunkRows(recentSlice(histMem.rows, Date.now() - RECENT_HOURS * 3600e3));
+  const job = ++recentJob, pub = publisher;
+  log(`history: sending ${chunks.reduce((a, c) => a + c.rows.length, 0)} rows in ${chunks.length} chunks (${why})`);
+  let i = 0;
+  const step = () => { if (publisher !== pub || job !== recentJob || i >= chunks.length) return; pub.publish(envelope('hist', { id: '*', name: '*' }, chunks[i++])); setTimeout(step, 200); };
+  step();
+}
 function sendSnapshots() {
   if (!publisher) return;
+  const rd = recentSendDecision(histS, { viewers: publisher.state.viewers, now: Date.now(), live: publisher.state.live });
+  if (rd.action === 'send') sendRecent(rd.why);
   publisher.publish(envelope('hello', { id: '*', name: '*' }, { channel: shareS.name, version: APP_VERSION }));
   const list = [...packs.values()].map((p) => ({ id: p.id, name: p.label, demo: !!p.demo, connected: p.connected }));
   publisher.publish(envelope('packs', { id: '*', name: '*' }, list));
@@ -916,7 +1028,7 @@ async function stopShare(why = 'chip') {
   if (!publisher) return;
   log(`share: stop (${why})`);
   clearInterval(publisher.snapshotTimer);
-  const pub = publisher; publisher = null; shareStopped(shareS);
+  const pub = publisher; publisher = null; shareStopped(shareS); histS.sentRecentAt = 0; histS.viewers = 0;
   renderLiveChip(); syncWake();
   await pub.stop();
   showQr(false); renderLiveChip();
@@ -991,12 +1103,18 @@ function startView() {
         for (const x of env.v) { const p = packs.get(x.id) || addPack(new Pack(x.id, x.name, { remote: true })); p.name = x.name; if (x.demo && !p.demo) p.demo = { stop() {} }; p.remoteLive = viewer.state.live && x.connected; }
         renderPackBar(); return;
       }
+      if (env.k === 'hist') {
+        const c = env.v || {}, fresh = memAdd(Array.isArray(c.rows) ? c.rows.filter((r) => r && typeof r.t === 'number' && typeof r.p === 'string') : [], true);
+        if (c.n === 0) log(`history: receiving ${c.of} chunks from the reader`);
+        if (c.n === c.of - 1) { log(`history: got ${c.of} chunks (${fresh.length} new rows in the last)`); if (active) renderTrend(active); }
+        return;
+      }
       let p = packs.get(env.p.id);
       if (!p) { p = addPack(new Pack(env.p.id, env.p.name, { remote: true })); }
       p.remoteLive = true; viewerDataSeen(viewS);
       if (env.k === 'info') { p.info = env.v; if (p.isActive) renderDevice(env.v); }
       else if (env.k === 'settings') { p.settings = env.v; if (p.isActive) renderSettings(env.v); }
-      else if (env.k === 'data') { p.take(env.v); if (p.isActive) { render(env.v); refreshCard(); } renderPackBar(); }
+      else if (env.k === 'data') { p.take(env.v, env.t); if (p.isActive) { render(env.v); refreshCard(); } renderPackBar(); }
     },
   });
   renderViewChip();
@@ -1209,7 +1327,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, flushHistory, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
@@ -1220,7 +1338,7 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 let sheetResolve = null, suppressPop = 0;
 function sheetCtx() {
   const p = active;
-  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode };
+  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: historySummary(histS.days, histS.todayRows).days, histSize: fmtSize(historySummary(histS.days, 0).bytes) };
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
 function openSheet(kind) {
@@ -1349,7 +1467,7 @@ setInterval(() => {
   const tvs = tv ? `tv(segs=${tv.state.segs} kb=${Math.round(tv.state.bytes / 1024)} pull=${tv.state.pullAgeS}s err=${tv.state.error || '-'})` : '';
   const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
   if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
-  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
+  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} hist=${histS.backend}/${histS.days.length}d/${histS.todayRows}r/${histMem.rows.length}mem/${[...histMem.pending.values()].reduce((a, l) => a + l.length, 0)}pend ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
 }, 60000);
 $('langBtn').addEventListener('click', async () => { const code = await openSheet('lang'); if (code && I18N[code]) { try { localStorage.setItem('batray_lang', code); } catch {} log(`language: ${code}`); applyLang(code); } });
 
@@ -1368,5 +1486,6 @@ alerts = initAlerts({
     $('alertTxt').textContent = T.alertNote(st.channels.join(' + ') + (st.watchdog ? ' + ' + T.alertWatch : ''));
   },
 });
+initHistory();
 if (viewMode) startView();
 else if (new URLSearchParams(location.search).has('demo')) runDemo();

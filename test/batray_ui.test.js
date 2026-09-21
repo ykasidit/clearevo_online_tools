@@ -102,5 +102,8 @@ test('choice sheets: language, TV resolution, keep-awake mark the current choice
   const k = sheetModel('keepAwake', ctx({ mode: 'never' }), T);
   assert.deepEqual(k.options.map((o) => [o.id, o.on]), [['auto', false], ['always', false], ['never', true]]); assert.equal(k.lead, T.keepAwakePost);
   const u = sheetModel('upload', ctx(), T);
+  const c = sheetModel('clearHist', ctx({ histDays: 3, histSize: '812 KB' }), T);
+  assert.equal(c.title, T.histClear); assert.match(c.lead, /3 days, 812 KB/); assert.equal(c.tone, 'act');
+  assert.deepEqual(c.actions.map((a) => a.id), ['cancel', 'ok']); assert.equal(c.actions[1].label, T.histClearGo);
   assert.equal(u.lead, T.uploadWarn); assert.deepEqual(u.actions.map((a) => [a.id, a.primary]), [['cancel', false], ['ok', true]]);
 });

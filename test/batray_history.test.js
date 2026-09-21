@@ -1,0 +1,114 @@
+// BatRay by ClearEvo.com - tests (batray_history.test.js): stored history rules - rows, rollover, retention, thinning, chart
+// Copyright (C) 2026 Kasidit Yusuf
+//
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of the GNU General Public License as published by the Free
+// Software Foundation; either version 2 of the License, or (at your option)
+// any later version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+// FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+// more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+// Source: https://github.com/ykasidit/clearevo_online_tools
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { historyState, dayKey, rowFromReading, rowLine, parseLines, rolloverDecision, retentionDecision, historySummary, recentSlice, chunkRows, recentSendDecision, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_KEEP_DAYS, RANGES, MEM_MS } from '../public/batray/history-logic.js';
+import { decodeCellInfo } from '../public/batray/jkbms.js';
+import * as F from './batray_frames.js';
+
+const owner = decodeCellInfo(F.OWNER_32S_CELL); assert.ok(owner.ok);
+
+test('a row from the owner\'s frame: short keys, cells in mV, unknowns as null; the line survives a round trip and a torn tail', () => {
+  const r = rowFromReading('n11', owner, 1700000000000);
+  assert.equal(r.p, 'n11'); assert.equal(r.t, 1700000000000); assert.equal(r.soc, owner.soc); assert.equal(r.v, owner.packV);
+  assert.equal(r.c.length, owner.cells.length); assert.equal(r.c[0], Math.round(owner.cells[0].v * 1000));
+  assert.ok([0, 1].includes(r.ch)); assert.ok([0, 1, null].includes(r.bal));
+  const j = rowFromReading('x', { soc: undefined, packV: NaN, current: null, cells: undefined, chgMos: undefined }, 5);
+  assert.deepEqual([j.soc, j.v, j.i, j.c, j.ch], [null, null, null, null, null]);
+  const text = rowLine(r) + '\n' + rowLine({ ...r, t: r.t + 3000 }) + '\n' + '{"t":170000000600';   // power cut mid-write
+  const rows = parseLines(text);
+  assert.equal(rows.length, 2); assert.deepEqual(rows[0], r);
+});
+
+test('day key is the phone\'s local calendar day', () => {
+  const d = new Date(2026, 8, 21, 0, 0, 30);           // local midnight + 30 s
+  assert.equal(dayKey(d.getTime()), '2026-09-21');
+  assert.equal(dayKey(d.getTime() - 60000), '2026-09-20');
+});
+
+test('rollover: the first row starts the day, a day change compacts the previous day, the same day is a noop', () => {
+  const hs = historyState();
+  assert.deepEqual(rolloverDecision(hs, '2026-09-20'), { action: 'start', day: '2026-09-20' });
+  hs.todayRows = 5;
+  assert.deepEqual(rolloverDecision(hs, '2026-09-20'), { action: 'noop' }); assert.equal(hs.todayRows, 5);
+  assert.deepEqual(rolloverDecision(hs, '2026-09-21'), { action: 'compact', day: '2026-09-20' });
+  assert.equal(hs.day, '2026-09-21'); assert.equal(hs.todayRows, 0);
+});
+
+test('retention: past raw days get compacted, days beyond the keep window deleted, today and the future untouched', () => {
+  const days = [];
+  for (let i = 0; i < 33; i++) { const day = `2026-08-${String(i + 1).padStart(2, '0')}`; days.push({ day, raw: i === 31, gz: i !== 31, bytes: 100 }); }
+  days.push({ day: '2026-09-02', raw: true, gz: false, bytes: 50 });      // today, still being written
+  days.push({ day: '2026-09-03', raw: true, gz: false, bytes: 5 });       // a clock that jumped: leave it
+  assert.equal(HISTORY_KEEP_DAYS, 30);
+  const dd = retentionDecision(days, '2026-09-02', HISTORY_KEEP_DAYS);
+  assert.equal(dd.compact.length, 1); assert.equal(dd.compact[0], '2026-08-32');
+  assert.ok(dd.delete.length >= 4, dd.delete.length);
+  assert.ok(dd.delete.every((x) => x.day < '2026-08-06'), dd.delete.map((x) => x.day));
+  assert.ok(!dd.delete.some((x) => x.day >= '2026-09-02'));
+  const s = historySummary(days, 7);
+  assert.equal(s.days, 35); assert.equal(s.bytes, 3355); assert.equal(s.oldest, '2026-08-01'); assert.equal(s.todayRows, 7);
+});
+
+test('recent slice for the wire: one row a minute, newest kept, cells dropped; chunks of 60; sent to a new viewer, at start and every 10 min', () => {
+  const rows = []; for (let i = 0; i < 3000; i++) rows.push({ t: 1000 + i * 3000, p: 'n11', w: i, c: [1, 2, 3] });
+  const s = recentSlice(rows, 1000 + 1000 * 3000, 60000, 1500);
+  assert.ok(s.length > 90 && s.length <= 101, s.length); assert.equal(s[0].c, undefined); assert.equal(s[s.length - 1].t, rows[rows.length - 1].t);
+  assert.ok(s.every((r, i) => i === 0 || r.t - s[i - 1].t >= 60000));
+  const many = recentSlice(rows, 0, 3000, 100); assert.equal(many.length, 100); assert.equal(many[99].t, rows[2999].t);
+  const ch = chunkRows(s, 60); assert.equal(ch.length, Math.ceil(s.length / 60)); assert.equal(ch[0].of, ch.length); assert.equal(ch[0].n, 0);
+  const hs = historyState();
+  assert.deepEqual(recentSendDecision(hs, { viewers: 0, now: 1000, live: false }), { action: 'noop' });
+  assert.deepEqual(recentSendDecision(hs, { viewers: 0, now: 2000, live: true }), { action: 'send', why: 'start' });
+  assert.equal(recentSendDecision(hs, { viewers: 0, now: 3000, live: true }).action, 'noop');
+  assert.deepEqual(recentSendDecision(hs, { viewers: 1, now: 4000, live: true }), { action: 'send', why: 'new viewer' });
+  assert.equal(recentSendDecision(hs, { viewers: 1, now: 4000 + 599e3, live: true }).action, 'noop');
+  assert.deepEqual(recentSendDecision(hs, { viewers: 1, now: 4000 + 600e3, live: true }), { action: 'send', why: 'periodic' });
+});
+
+test('merge replaces same-time rows and sorts; LTTB keeps the peaks and both ends', () => {
+  const m = mergeRows([{ t: 3, p: 'a', w: 1 }, { t: 1, p: 'a', w: 1 }], [{ t: 2, p: 'a', w: 5 }, { t: 3, p: 'a', w: 9 }]);
+  assert.deepEqual(m.map((r) => [r.t, r.w]), [[1, 1], [2, 5], [3, 9]]);
+  const rows = []; for (let i = 0; i < 10000; i++) rows.push({ t: i * 1000, w: i === 5000 ? 5000 : Math.sin(i / 50) * 100 });
+  const ds = downsample(rows, 500);
+  assert.equal(ds.length, 500); assert.equal(ds[0], rows[0]); assert.equal(ds[499], rows[9999]);
+  assert.ok(ds.some((r) => r.w === 5000), 'the spike survives');
+  assert.equal(downsample(rows.slice(0, 10), 500).length, 10);
+});
+
+test('chart ranges, columns and energy', () => {
+  const rows = []; for (let i = 0; i <= 3600; i++) rows.push({ t: i * 1000, p: 'a', w: i < 1800 ? 1000 : -500, soc: 50, v: 52 });
+  const r6 = chartRange(rows, '6h', 3600e3); assert.equal(r6.to - r6.from, RANGES['6h']);
+  const ra = chartRange(rows, 'all', 3600e3); assert.equal(ra.from, 0);
+  const rx = chartRange(rows, 'bogus', 10); assert.equal(rx.to - rx.from, RANGES['6h']);
+  const cs = chartSeries(rows.slice(0, 3)); assert.deepEqual(cs.t, [0, 1, 2]); assert.deepEqual(cs.w, [1000, 1000, 1000]); assert.deepEqual(cs.soc, [50, 50, 50]);
+  const e = energyWh(rows);
+  assert.ok(Math.abs(e.charged - 500) < 1, e.charged); assert.ok(Math.abs(e.discharged - 250) < 1, e.discharged);
+  assert.deepEqual(energyWh([{ t: 0, w: 100 }, { t: 120000, w: 100 }]), { charged: 0, discharged: 0 });   // a 2 min gap is not integrated
+});
+
+test('window slicing, memory trim, past-day lookup and the signed power columns', () => {
+  const rows = []; for (let i = 0; i < 100; i++) rows.push({ t: i * 1000, p: 'a', w: i % 2 ? 50 : -50, soc: 40, v: 52 });
+  assert.deepEqual(rowsBetween(rows, 10e3, 12e3).map((r) => r.t), [10000, 11000, 12000]);
+  assert.equal(rowsBetween(rows, 500e3, 600e3).length, 0);
+  assert.equal(spanMs(rows), 99e3); assert.equal(spanMs([]), 0); assert.equal(spanMs(rows.slice(0, 1)), 0);
+  const kept = trimRows(rows, 99e3 + MEM_MS - 50e3);     // everything older than 24 h before "now" goes
+  assert.equal(kept[0].t, 49e3); assert.equal(kept.length, 51);
+  assert.equal(trimRows(rows, 0), rows, 'nothing to trim returns the same array');
+  const days = [{ day: '2026-09-18' }, { day: '2026-09-19' }, { day: '2026-09-20' }, { day: '2026-09-21' }];
+  assert.deepEqual(daysNeeded(days, new Date('2026-09-19T15:00:00').getTime(), '2026-09-21'), ['2026-09-19', '2026-09-20']);   // today is in memory
+  assert.deepEqual(daysNeeded(days, new Date('2026-09-21T01:00:00').getTime(), '2026-09-21'), []);
+  const cs = chartSeries([{ t: 0, w: 120, soc: 50, v: 52 }, { t: 1000, w: -80, soc: 49 }, { t: 2000, w: null }]);
+  assert.deepEqual(cs.wc, [120, 0, null]); assert.deepEqual(cs.wd, [0, -80, null]); assert.deepEqual(cs.v, [52, null, null]);
+});
