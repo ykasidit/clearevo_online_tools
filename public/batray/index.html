@@ -91,6 +91,7 @@ body.offline #fDash{animation:none}
 #etaLine{display:block;line-height:1.8}
 #etaLine input{width:52px;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:4px;padding:1px 4px;font:inherit}
 .ranges{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.ranges button{background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:8px;padding:4px 12px;font:inherit;cursor:pointer}.ranges button.on{background:#1c5680;border-color:#2aa9e0;color:#fff}#trend{width:100%;min-height:200px}#trend .uplot{font-family:'Segoe UI',Tahoma,sans-serif}#trend .u-select{background:rgba(74,169,224,.25)}
+.serverNote{color:#8fa6bd;font-size:12px;line-height:1.5;padding:2px 12px 6px}.serverNote a{color:#4aa9e0}.tvpanel .serverNote{padding:0}
 .prog{height:8px;background:#12283f;border:1px solid #1c3550;border-radius:5px;overflow:hidden;margin-top:8px}.prog .bar{height:100%;background:#2aa9e0;transition:width .5s linear}
 #trend{width:100%;height:130px;display:block;background:#0a1626;border:1px solid #1c3550;border-radius:6px}
 .check{margin:10px 0 0;font:11px 'DejaVu Sans Mono',monospace;color:#6f8aa6;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
@@ -264,6 +265,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
   </div>
   <div id="liveChip" class="chipbar" hidden><span class="dot"></span><span id="liveTxt"></span><button id="shareCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button><button id="qrShow" type="button" class="linkbtn" hidden data-i18n="qrShow">show QR</button><input id="shareLink" readonly hidden><button id="liveStop" type="button" class="linkbtn" data-i18n="shareStop">stop sharing</button></div>
   <div id="viewChip" class="chipbar" hidden><span class="dot"></span><span id="viewTxt"></span><button id="viewStop" type="button" class="linkbtn" hidden data-i18n="cancel">Cancel</button></div>
+  <div class="serverNote" id="serverNote" hidden></div>
   <div id="packBar" hidden></div>
   <div id="main">
     <div id="demoBadge"><span data-i18n="demoBadge">DEMO - simulated JK BMS, not a real battery</span><button id="stopDemo" type="button" data-i18n="stopDemo">Stop demo</button></div>
@@ -290,6 +292,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           <div class="tvrow"><label><span data-i18n="shareNameLbl">name shown to viewers</span> <input id="shareName" type="text" maxlength="40" size="22"></label></div>
           <div class="tvrow"><label class="chk"><input type="checkbox" id="shareReuse"> <span data-i18n="shareReuse">use the last share link</span> <span class="tvnote" id="shareReuseInfo"></span></label></div>
           <div class="tvnote" data-i18n="shareReuseHint">The same link and QR keep working for anyone who kept them, even after this phone restarts. Untick for a fresh link that makes the old one useless.</div>
+          <div class="tvnote serverNote" id="serverNoteShare"></div>
           <div class="tvrow"><button id="shareGo" type="button" class="demobtn" style="padding:6px 16px" data-i18n="shareGo">Start sharing</button> <button id="shareCancel" type="button" class="linkbtn" data-i18n="cancel">Cancel</button></div>
         </div>
       </details>

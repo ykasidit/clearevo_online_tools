@@ -96,12 +96,15 @@ await evalJs(`localStorage.removeItem('batray_share_last'); document.getElementB
 await evalJs(`document.getElementById('shareGo').click(); 1`); await sleep(300);
 let sb = await evalJs(`({ busy: document.getElementById('share').classList.contains('busy'), on: document.getElementById('share').classList.contains('on'), disabled: document.getElementById('share').disabled, title: document.getElementById('share').title, phase: window.__batrayTest.shareState().phase })`);
 check('while the share starts, the button pulses, stays tappable and says tap to cancel', sb.busy && !sb.on && !sb.disabled && /cancel/.test(sb.title) && sb.phase === 'starting', sb);
+const sn = await evalJs(`({ shown: !document.getElementById('serverNote').hidden, txt: document.getElementById('serverNote').textContent, href: (document.querySelector('#serverNote a') || {}).href, setup: document.getElementById('serverNoteShare').textContent })`);
+check('from the moment a share starts, a note says the relay is paid for by the author, has a connection limit, and links to GitHub Sponsors (the same note sits in the share setup card)', sn.shown && /paid for by the author/.test(sn.txt) && /connections at a time/.test(sn.txt) && sn.href === 'https://github.com/sponsors/ykasidit' && /GitHub Sponsors/.test(sn.setup), sn);
 await evalJs(`document.getElementById('share').click(); 1`); await sleep(300);
 sb = await evalJs(`({ busy: document.getElementById('share').classList.contains('busy'), on: document.getElementById('share').classList.contains('on'), phase: window.__batrayTest.shareState().phase, toast: document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent })`);
 check('tapping the busy button cancels the share with a toast', !sb.busy && !sb.on && sb.phase === 'off' && /Cancelled/.test(sb.toast), sb);
 await sleep(1800);
 sb = await evalJs(`({ on: document.getElementById('share').classList.contains('on'), chip: document.getElementById('liveChip').hidden, phase: window.__batrayTest.shareState().phase })`);
 check('...and the late room answer does not resurrect it', !sb.on && sb.chip && sb.phase === 'off', sb);
+check('...and the relay note goes with the chip', await evalJs(`document.getElementById('serverNote').hidden`), 'note still shown');
 
 // low power: no decorative motion
 await evalJs(`document.getElementById('lowPower').click(); 1`); await sleep(200);

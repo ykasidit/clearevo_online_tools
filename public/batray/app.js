@@ -34,7 +34,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.31';
+export const APP_VERSION = '0.9.32';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -310,6 +310,7 @@ function applyLang(code) {
   $('keepAwake').textContent = T[{ auto: 'keepAwakeAuto', always: 'keepAwakeAlways', never: 'keepAwakeNever' }[wakeS.mode]] || wakeS.mode;
   document.querySelectorAll('[data-i18n]').forEach((el) => { const v = T[el.dataset.i18n]; if (typeof v === 'string') el.textContent = v; });
   document.querySelectorAll('[data-i18n-html]').forEach((el) => { const v = T[el.dataset.i18nHtml]; if (typeof v === 'string') el.innerHTML = v; });
+  renderServerNote();
   $('fSysLbl').textContent = T.system;
   setStatus(statusThunk, statusKind);
   if (active) { if (active.info) renderDevice(active.info); if (active.settings) renderSettings(active.settings); if (active.data) render(active.data, true); }
@@ -1035,7 +1036,18 @@ $('cancelRe').addEventListener('click', () => { const p = active; if (!p || p.re
 // server connections against the free cap, or the retry countdown.
 // The server count (connections in use / free cap) is shown in every state
 // once the relay has reported it, so a full server is never a surprise.
+// The relay costs the author money (owner ask 2026-09-22, at ~80 visits a day): the limit and a sponsor link sit
+// next to the live chip and in the share setup card. The limit comes from the relay's own status when known.
+function renderServerNote() {
+  const st = publisher ? publisher.state : viewer ? viewer.state : null;
+  const limit = st && st.server && st.server.limit ? st.server.limit : (histS.serverLimit || null);
+  if (limit) histS.serverLimit = limit;
+  const html = T.serverNote(limit);
+  for (const el of document.querySelectorAll('.serverNote')) if (el.innerHTML !== html) el.innerHTML = html;
+  $('serverNote').hidden = !(publisher || viewer || shareS.phase !== 'off');   // from the first tap on Share, not only once the room answers
+}
 function renderLiveChip() {
+  renderServerNote();
   const b = shareButton(shareS);
   els.share.classList.toggle('on', b.on); els.share.classList.toggle('busy', b.busy); els.share.setAttribute('aria-pressed', b.on); els.share.disabled = b.disabled;
   els.share.title = b.on ? T.shareOnTitle : b.busy ? T.shareBusyTitle : (els.share.dataset.title || '');
@@ -1196,6 +1208,7 @@ $('qrShow').addEventListener('click', () => showQr(true));
 
 // ---- Viewer mode ----
 function renderViewChip() {
+  renderServerNote();
   if (!viewer) { els.viewChip.hidden = true; return; }
   const s = viewer.state;
   els.viewChip.hidden = false;
