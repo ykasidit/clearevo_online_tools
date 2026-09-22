@@ -97,7 +97,7 @@ await evalJs(`document.getElementById('shareGo').click(); 1`); await sleep(300);
 let sb = await evalJs(`({ busy: document.getElementById('share').classList.contains('busy'), on: document.getElementById('share').classList.contains('on'), disabled: document.getElementById('share').disabled, title: document.getElementById('share').title, phase: window.__batrayTest.shareState().phase })`);
 check('while the share starts, the button pulses, stays tappable and says tap to cancel', sb.busy && !sb.on && !sb.disabled && /cancel/.test(sb.title) && sb.phase === 'starting', sb);
 const sn = await evalJs(`({ shown: !document.getElementById('serverNote').hidden, txt: document.getElementById('serverNote').textContent, href: (document.querySelector('#serverNote a') || {}).href, setup: document.getElementById('serverNoteShare').textContent })`);
-check('from the moment a share starts, a note says the relay is paid for by the author, has a connection limit, and links to GitHub Sponsors (the same note sits in the share setup card)', sn.shown && /paid for by the author/.test(sn.txt) && /connections at a time/.test(sn.txt) && sn.href === 'https://github.com/sponsors/ykasidit' && /GitHub Sponsors/.test(sn.setup), sn);
+check('from the moment a share starts, a note says the relay is paid for by the author, has a connection limit, and links to GitHub Sponsors (the same note sits in the share setup card)', sn.shown && /the author pays for/.test(sn.txt) && /connections at a time/.test(sn.txt) && sn.href === 'https://github.com/sponsors/ykasidit' && /GitHub Sponsors/.test(sn.setup), sn);
 await evalJs(`document.getElementById('share').click(); 1`); await sleep(300);
 sb = await evalJs(`({ busy: document.getElementById('share').classList.contains('busy'), on: document.getElementById('share').classList.contains('on'), phase: window.__batrayTest.shareState().phase, toast: document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent })`);
 check('tapping the busy button cancels the share with a toast', !sb.busy && !sb.on && sb.phase === 'off' && /Cancelled/.test(sb.toast), sb);
@@ -115,6 +115,8 @@ await evalJs(`document.getElementById('lowPower').click(); 1`); await sleep(100)
 // ---- Viewer at phone width: bottom tabs and Back ----
 await evalJs(`localStorage.removeItem('batray_lang'); 1`);
 await send('Page.navigate', { url: `${BASE}/batray/?view=AbCdEfGhIjKlMnOpQrStUv&test#k=AbCdEfGhIjKlMnOpQrStUv` }); await sleep(2500);
+const kv = await evalJs(`({ row: document.getElementById('keepAwakeRow').hidden, mode: window.__batrayTest.wakeState().mode })`);
+check('a viewer has no keep-awake video control (it never plays the video)', kv.row === true, kv);
 let vw = await evalJs(`({ tabs: !document.getElementById('tabs').hidden, tab: document.body.dataset.tab, role: window.__batrayTest.uiState().role, view: document.body.classList.contains('view'), small: [...document.querySelectorAll('[data-tab-btn]')].filter((b) => b.getBoundingClientRect().height < 48).length })`);
 check('the viewer shows the bottom tab bar on Now, with 48 px tabs', vw.tabs && vw.tab === 'now' && vw.role === 'viewer' && vw.view && vw.small === 0, vw);
 const top = await evalJs(`({ btNote: getComputedStyle(document.getElementById('btNote')).display, rows: document.querySelector('.toolbar').getBoundingClientRect().height, packBar: document.getElementById('packBar').hidden, tbrowScrolls: getComputedStyle(document.querySelector('.tbrow')).overflowX })`);

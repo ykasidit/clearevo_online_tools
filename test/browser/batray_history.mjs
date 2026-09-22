@@ -55,11 +55,12 @@ const hist = () => evalJs('window.__batrayTest.histState()');
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 await evalJs('window.__batrayTest.clearHistory()'); await sleep(300);
 await connect();
-for (let i = 0; i < 5; i++) { await notify(OWNER_32S_CELL); await sleep(120); }
+for (let i = 0; i < 5; i++) { await notify(OWNER_32S_CELL); await sleep(120); }        // a burst: shown, but one stored row per 3 s
+for (let i = 0; i < 2; i++) { await sleep(3100); await notify(OWNER_32S_CELL); }       // two more rows, 3 s apart
 await evalJs('window.__batrayTest.flushHistory()');
 let h = await hist(); let list = await evalJs('window.__batrayTest.histList()');
 const today = list.length ? list[list.length - 1].day : null;
-check("readings become rows in today's NDJSON file (OPFS backend, persistence asked)", h.backend === 'opfs' && h.mem >= 6 && h.pending === 0 && list.length === 1 && list[0].raw && !list[0].gz && list[0].bytes > 200 && h.persistent !== null, { h, list });
+check("readings become rows in today's NDJSON file, one per pack per 3 s however fast the BMS pushes frames (OPFS backend, persistence asked)", h.backend === 'opfs' && h.mem === 3 && h.pending === 0 && list.length === 1 && list[0].raw && !list[0].gz && list[0].bytes > 200 && h.persistent !== null, { h, list });
 const text = await evalJs(`window.__batrayTest.histRead('${today}')`);
 const lines = text.trim().split('\n');
 const parsedRows = lines.map((l) => JSON.parse(l));

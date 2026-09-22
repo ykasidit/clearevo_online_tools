@@ -28,12 +28,15 @@ export const XFER_BACKLOG = 128 * 1024;         // send the next chunk only when
 export const HIST_REQ_MS = 10 * 60e3;           // a viewer asks again this often (it asks at once when the link comes up)
 export const GAP_REQ_MS = 5000;                 // ... and this soon after a live row shows a hole in its copy of today's file
 export const REPLICA_GIVE_UP = 3;               // 'behind' resyncs of the same day before the viewer keeps that day in memory only
+export const HOLD_MAX = 300;                    // live rows a viewer holds for a tail that has not come; beyond that they are memory only
+export const GAP_ASKS_MAX = 3;                  // unanswered 5 s gap requests before falling back to the 10 min rhythm (2026-09-22 log: 6507 held, asked every 5 s for 5 h)
+export const MIN_ROW_MS = 3000;                 // one stored row per pack per poll period: a BMS that pushes frames every second is shown, not logged, faster
 export const CHART_MAX_POINTS = 2000;
 export const MEM_MS = RECENT_HOURS * 3600e3;          // rows kept in memory at full resolution; older days are read from their files
 export const RANGES = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 24 * 3600e3, '7d': 7 * 86400e3, all: 0 };
 
 export function historyState() {
-  return { day: null, todayRows: 0, todayBytes: 0, pendBytes: 0, days: [], backend: 'none', persistent: null, range: '6h', usage: 0, quota: 0, reqAt: 0, xfer: null, rx: null, gap: null, behind: 0, replicaOff: null };
+  return { day: null, todayRows: 0, todayBytes: 0, pendBytes: 0, days: [], backend: 'none', persistent: null, range: '6h', usage: 0, quota: 0, reqAt: 0, wasLive: false, gapAsks: 0, xfer: null, rx: null, gap: null, behind: 0, replicaOff: null };
 }
 
 /** UTC calendar day of a time, YYYY-MM-DD (owner rule 2026-09-21: every stored date is GMT; only the drawing adds
@@ -48,6 +51,8 @@ export const lineBytes = (row) => utf8.encode(JSON.stringify(row)).length + 1;
  *  what is queued). Both travel inside the row, so a viewer's copy can say exactly how far it got and the log can
  *  show the file growing. */
 export const nextPos = (hs) => ({ n: hs.todayRows + 1, o: hs.todayBytes + hs.pendBytes });
+/** Store this reading? One row per pack per MIN_ROW_MS; the first ever is always due. */
+export const rowDue = (lastT, t, minMs = MIN_ROW_MS) => lastT === null || lastT === undefined || t - lastT >= minMs;
 const nz = (v) => (v === undefined || v === null || Number.isNaN(v) ? null : v);
 /** One stored row from a decoded reading. Short keys: the file is written every 3 s for years. */
 export function rowFromReading(label, d, t, pos = null) {
@@ -145,11 +150,12 @@ export function transferPlan(readerDays, have, today, maxBytes = XFER_MAX_BYTES)
 /** A live row on the viewer against its copy of today's file (an exact byte replica of the reader's):
  *  append when the row starts where the copy ends, hold on a hole (a dropped row: the tail is fetched from the
  *  reader), hold on a row behind the copy (this copy is not the reader's file any more: refetch the whole day). */
-export function replicaDecision(hs, row) {
+export function replicaDecision(hs, row, heldCount = 0) {
   if (row.o === null || row.o === undefined || row.n === null || row.n === undefined) return { action: 'mem' };
   if (hs.replicaOff === hs.day) return { action: 'mem', why: 'replica off for this day' };
   const expected = hs.todayBytes + hs.pendBytes;
   if (row.o === expected) return { action: 'append' };
+  if (heldCount >= HOLD_MAX) return { action: 'mem', why: 'hold full', expected };   // the tail will bring these rows when the reader answers
   if (row.o > expected) { hs.gap = hs.gap || 'gap'; return { action: 'hold', why: 'gap', expected }; }
   hs.gap = 'behind';
   return { action: 'hold', why: 'behind', expected };
@@ -167,11 +173,15 @@ export function releaseHeld(hs, held) {
 }
 /** Should the viewer ask the reader for history now? When the link comes up, then every HIST_REQ_MS. */
 export function histReqDecision(hs, { live, now, gap = false }) {
-  if (!live) { hs.reqAt = 0; return { action: 'noop' }; }
-  const wait = gap ? GAP_REQ_MS : HIST_REQ_MS;
-  if (hs.reqAt && now - hs.reqAt < wait) return { action: 'noop' };
-  const why = gap ? 'gap' : hs.reqAt ? 'periodic' : 'link up';
-  hs.reqAt = now; return { action: 'request', why };
+  if (!live) { hs.wasLive = false; return { action: 'noop' }; }
+  const linkUp = !hs.wasLive; hs.wasLive = true;
+  if (linkUp) { hs.reqAt = now; hs.gapAsks = 0; return { action: 'request', why: 'link up' }; }
+  if (gap && hs.gapAsks < GAP_ASKS_MAX) {
+    if (now - hs.reqAt < GAP_REQ_MS) return { action: 'noop' };
+    hs.gapAsks++; hs.reqAt = now; return { action: 'request', why: 'gap' };
+  }
+  if (now - hs.reqAt < HIST_REQ_MS) return { action: 'noop' };
+  hs.reqAt = now; return { action: 'request', why: 'periodic' };
 }
 /** Base64 chunks of a file for the wire. */
 export function chunkB64(b64, size = Math.ceil(XFER_CHUNK * 4 / 3)) {

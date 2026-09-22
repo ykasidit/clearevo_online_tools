@@ -143,6 +143,8 @@ export function selectedLocalCandidate(stats) {
 export const FRESH_MS = 15000;          // a JK BMS is read every 3 s; five misses is a real gap
 
 /** Has a reading arrived recently enough to prove the reader is alive? */
+/** An envelope older than FRESH_MS when it arrives came out of a queue (a frozen tab, a stalled link), not from now. */
+export function staleEnvelope(env, now = Date.now(), freshMs = FRESH_MS) { return typeof env.t === 'number' && now - env.t > freshMs; }
 export function dataFlowing(lastRxAt, now = Date.now(), freshMs = FRESH_MS) {
   return lastRxAt !== null && lastRxAt !== undefined && now - lastRxAt < freshMs;
 }

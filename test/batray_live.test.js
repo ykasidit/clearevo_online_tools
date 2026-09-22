@@ -14,7 +14,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toB64url, fromB64url, makeKeyB64, validKey, shareLink, parseShare, importKey, encrypt, decrypt, envelope, validEnvelope, classifyPath, selectedLocalCandidate , isPrivateAddress, classifyDirect, selectedPair } from '../public/batray/live-logic.js';
+import { toB64url, fromB64url, makeKeyB64, validKey, shareLink, parseShare, importKey, encrypt, decrypt, envelope, validEnvelope, staleEnvelope, FRESH_MS, classifyPath, selectedLocalCandidate , isPrivateAddress, classifyDirect, selectedPair } from '../public/batray/live-logic.js';
 
 test('base64url round trip and key shape', () => {
   const b = new Uint8Array([0, 1, 2, 250, 251, 252, 253, 254, 255, 7, 8, 9, 10, 11, 12, 13]);
@@ -53,6 +53,8 @@ test('envelope validation', () => {
   assert.ok(!validEnvelope({ k: 'exec', p: { id: 'a' }, t: 1 }));
   assert.ok(validEnvelope(envelope('hist-file', { id: '*', name: '*' }, { day: '2026-09-20', n: 0, of: 2, b64: 'AA==' })), 'history day files travel as hist-file chunks');
   assert.ok(!validEnvelope(envelope('hist', { id: '*', name: '*' }, {})), 'the 0.9.29 row chunks are gone');
+  const e = envelope('data', { id: 'p', name: 'x' }, {});
+  assert.equal(staleEnvelope(e, e.t + FRESH_MS), false); assert.equal(staleEnvelope(e, e.t + FRESH_MS + 1), true, 'older than FRESH_MS on arrival = out of a queue');
   assert.equal(envelope('data', { id: 'p', name: 'BMS 1', label: 'JK-B2A24S' }, {}).p.name, 'JK-B2A24S', 'the envelope carries the pack label the reader shows, so viewer rows match');
   assert.ok(!validEnvelope({ k: 'data', p: { id: 'x'.repeat(65) }, t: 1 }));
   assert.ok(!validEnvelope(null));

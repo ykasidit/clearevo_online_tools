@@ -189,6 +189,7 @@ check('...and the same button brings it back for the next checks', s.gatt === tr
 
 // --- the screen lock: asked for again when the phone lets go of it, then a silent video (old Sony slept after hours, 2026-09-19) ---
 const wakeState = () => evalJs(`({ locks: window.__locks.length, ...window.__batrayTest.wakeState(), plays: window.__plays.filter((p) => /keepawake/.test(p)), paused: document.getElementById('keepVideo').paused, muted: document.getElementById('keepVideo').muted, volume: document.getElementById('keepVideo').volume, note: !document.getElementById('wakeVideo').hidden, saved: localStorage.getItem('batray_keepawake') })`);
+await evalJs(`window.__batrayTest.setKeepAwake('auto'); 1`); await sleep(200);   // the default is the lock alone (owner, 2026-09-22); the drop test opts into auto
 let wk = await wakeState();
 check('a connected pack holds the screen wake lock, no video', wk.lock && wk.locks >= 1 && !wk.video && wk.plays.length === 0, wk);
 const locks0 = wk.locks;

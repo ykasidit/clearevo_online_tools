@@ -112,4 +112,11 @@ export function viewHello(vs, env) {
   vs.channel = name; return { name, version: env.v && env.v.version ? String(env.v.version) : '' };
 }
 /** A reading arrived: that proves the reader (the live module already judges freshness before it says reader=false). */
-export function viewerDataSeen(vs) { vs.readerSeen = true; vs.readerLive = true; }
+/** A reading arrived. Stale ones (queued while the tab was frozen) are counted and skipped; the first fresh one after
+ *  a stale run reports how many were skipped and how old the oldest was, so the log says what the screen did not show. */
+export function viewerDataSeen(vs, stale = false, ageS = 0) {
+  if (stale) { vs.staleRun = (vs.staleRun || 0) + 1; vs.staleMaxS = Math.max(vs.staleMaxS || 0, ageS); return { action: 'skip', stale: vs.staleRun }; }
+  vs.readerSeen = true; vs.readerLive = true;
+  if (vs.staleRun) { const r = { action: 'render', droppedStale: vs.staleRun, maxAgeS: vs.staleMaxS }; vs.staleRun = 0; vs.staleMaxS = 0; return r; }
+  return { action: 'render' };
+}

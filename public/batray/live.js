@@ -22,7 +22,7 @@
 // share link's URL fragment, whichever path carries it. The relay Worker at
 // /batray/api/ holds the SFU secret, routes signalling, and counts how many
 // sockets are on an SFU/TURN path against the free cap.
-import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect, readerPresent, FRESH_MS } from './live-logic.js';
+import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect, readerPresent, FRESH_MS } from './live-logic.js';
 
 const API = '/batray/api';
 const P2P_WAIT_MS = 7000;      // viewer waits this long for a direct offer/connection before using the SFU
@@ -458,8 +458,12 @@ export class Viewer {
     try {
       const env = await decrypt(this.key, new Uint8Array(data));
       if (!validEnvelope(env)) return;
-      this.state.received++; this.lastRxAt = this.now();
-      if (this.state.reader === false) { this.state.reader = true; this.emit(); }   // data beats the server's word
+      this.state.received++;
+      // a frozen tab gets the whole queue on resume: a reading older than FRESH_MS is marked stale, proves nothing
+      // about the reader being there now, and the app stores it without painting it
+      env.stale = staleEnvelope(env, this.now());
+      if (env.stale) this.state.stale = (this.state.stale || 0) + 1;
+      else { this.lastRxAt = this.now(); if (this.state.reader === false) { this.state.reader = true; this.emit(); } }   // fresh data beats the server's word
       this.onEnvelope(env);
     } catch { if (!this.state.error) this.log('live: a message could not be decrypted (wrong or missing key)'); this.state.error = 'cannot decrypt: wrong or missing key'; this.emit(); }
   }

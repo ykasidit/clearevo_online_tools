@@ -26,7 +26,7 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
-import { historyState, dayKey, dayStartMs, rowFromReading, rowLine, lineBytes, nextPos, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, recentSlice, transferPlan, histReqDecision, replicaDecision, releaseHeld, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, RECENT_STEP_MS, XFER_BACKLOG, REPLICA_GIVE_UP, RANGES } from './history-logic.js';
+import { historyState, dayKey, dayStartMs, rowFromReading, rowLine, lineBytes, nextPos, rowDue, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, recentSlice, transferPlan, histReqDecision, replicaDecision, releaseHeld, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, RECENT_STEP_MS, XFER_BACKLOG, REPLICA_GIVE_UP, RANGES } from './history-logic.js';
 import { tarPack, tarParse, backupDays, restorePlan, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { makeChart, drawChart } from './history-chart.js';
@@ -145,7 +145,7 @@ class Pack {
     this.cs = connState();                                   // the connection flow state (conn-logic.js decides over it)
     this.demo = null; this.reTimer = null; this.gapTimer = null; this.attemptTicker = null;   // timers: the shell's, never in cs
     this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.dumped = false;
-    this.remoteLive = false;
+    this.remoteLive = false; this.lastRowAt = null;              // last stored row: readings closer than MIN_ROW_MS apart are shown, not stored
     this.iEma = new Ema(60);                                 // smoothed current for the time-to-go; readings go to the stored history
     if (this.bms) this.wire();
   }
@@ -221,7 +221,7 @@ let publisher = null, viewer = null, tv = null;     // IO handles (sockets, enco
 const shareS = shareState(), tvS = tvUiState(), castS = castState(), viewS = viewState(), reachS = reachState();
 const uiS = uiState(viewMode ? 'viewer' : 'reader');
 let langCode = 'en';
-const wakeS = wakeState('wakeLock' in navigator);
+const wakeS = wakeState('wakeLock' in navigator, !!viewMode);   // a viewer never plays the keep-awake video (owner, 2026-09-22)
 
 function addPack(pack) { packs.set(pack.id, pack); if (!active) setActive(pack); renderPackBar(); return pack; }
 function removePack(pack) {
@@ -388,8 +388,8 @@ async function syncWake() {
       });
       log('screen wake lock acquired');
     } catch (err) {
-      wakeRefused(wakeS);
-      log(`screen wake lock refused (${wakeS.refusals}): ${err.name} ${err.message}`);
+      const r = wakeRefused(wakeS, document.visibilityState === 'visible' && !/not visible/i.test(err.message));
+      log(`screen wake lock refused${r === 'hidden' ? ' while the tab was not in front (not counted)' : ` (${wakeS.refusals})`}: ${err.name} ${err.message}`);
       scheduleWakeRetry();
     }
   } else if (!wakeS.wanted && wakeLock) {
@@ -548,6 +548,10 @@ function recordRow(p, d, t, remoteRow = null) {
       if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') requestHistory();
     }
   } else {
+    // a JK BMS pushes cell frames faster than the 3 s poll (the 2026-09-22 log: ~4 rows/s for two packs, 24 MB
+    // a day): the meters show every frame, the file keeps one row per pack every MIN_ROW_MS
+    if (!rowDue(p.lastRowAt, t)) return null;
+    p.lastRowAt = t;
     row = rowFromReading(p.label, d, t, nextPos(histS));
     if (!memAdd([row], false).length) return row;
     queueLine(row); histS.todayRows = row.n;
@@ -1247,7 +1251,7 @@ async function requestHistory() {
 }
 async function storeReceived(file) {
   const bytes = unb64(file.b64);
-  histMem.dayCache.delete(file.day);
+  histMem.dayCache.delete(file.day); histS.gapAsks = 0;              // the reader answers: holes may be asked about again
   if (!file.live && file.day === histS.day) {
     // today sent whole as a past day (the reader's today is gz + raw after a restore): our copy cannot mirror its
     // offsets, so today is written raw as it came and further live rows stay in memory until the day changes
@@ -1287,6 +1291,7 @@ async function storeReceived(file) {
 }
 function startView() {
   document.body.classList.add('view'); $('tabs').hidden = false; renderTabs();
+  $('keepAwakeRow').hidden = true;                                   // a viewer never plays the keep-awake video
   $('titleText').textContent = `BatRay by ClearEvo.com v${APP_VERSION} · ${T.viewTitle}`;
   for (const el of [els.disconnect, $('autoRe').parentElement, els.share, $('tsep')]) el.hidden = true;
   els.empty.hidden = true;
@@ -1322,10 +1327,18 @@ function startView() {
       }
       let p = packs.get(env.p.id);
       if (!p) { p = addPack(new Pack(env.p.id, env.p.name, { remote: true })); }
-      p.remoteLive = true; viewerDataSeen(viewS);
-      if (env.k === 'info') { p.info = env.v; if (p.isActive) renderDevice(env.v); }
-      else if (env.k === 'settings') { p.settings = env.v; if (p.isActive) renderSettings(env.v); }
-      else if (env.k === 'data') { p.take(env.v, env.t, env.r && typeof env.r === 'object' && typeof env.r.t === 'number' ? env.r : null); if (p.isActive) { render(env.v); refreshCard(); } renderPackBar(); }
+      // a frozen tab gets the whole queue on resume (the 2026-09-22 log: 20 s of replay): a reading older than
+      // FRESH_MS is kept for the history but never painted, and does not count as the reader being there
+      const seen = viewerDataSeen(viewS, !!env.stale, Math.round((Date.now() - env.t) / 1000));
+      if (seen.droppedStale) log(`live: ${seen.droppedStale} queued readings up to ${seen.maxAgeS} s old were stored but not shown`);
+      if (!env.stale) p.remoteLive = true;
+      if (env.k === 'info') { p.info = env.v; if (p.isActive && !env.stale) renderDevice(env.v); }
+      else if (env.k === 'settings') { p.settings = env.v; if (p.isActive && !env.stale) renderSettings(env.v); }
+      else if (env.k === 'data') {
+        const row = env.r && typeof env.r === 'object' && typeof env.r.t === 'number' ? env.r : null;
+        if (env.stale) { recordRow(p, env.v, env.t, row); return; }
+        p.take(env.v, env.t, row); if (p.isActive) { render(env.v); refreshCard(); } renderPackBar();
+      }
     },
   });
   renderViewChip();
@@ -1677,9 +1690,10 @@ setInterval(() => {
   const vw = viewer ? `view(live=${viewer.state.live} reader=${viewer.state.reader} path=${viewer.state.path.tier} received=${viewer.state.received} sig=${viewer.state.sig})` : '';
   const tvs = tv ? `tv(segs=${tv.state.segs} kb=${Math.round(tv.state.bytes / 1024)} pull=${tv.state.pullAgeS}s err=${tv.state.error || '-'})` : '';
   const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
+  const rate = histS.hbDay === histS.day && histS.hbRows !== undefined ? `${histS.todayRows - histS.hbRows}/min` : '-'; histS.hbDay = histS.day; histS.hbRows = histS.todayRows;
   if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
   if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now() }).action === 'request') requestHistory();
-  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} hist=${histS.backend}/${histS.days.length}d/${histS.todayRows}r/${histS.todayBytes}+${histS.pendBytes}B/${histMem.rows.length}mem/${[...histMem.pending.values()].reduce((a, l) => a + l.length, 0)}pend/${histMem.held.length}held${histS.gap ? '/' + histS.gap : ''}/${Math.round(histS.usage / 1048576)}of${Math.round(histS.quota / 1048576)}MB${histS.xfer ? '/xfer' : ''} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
+  log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} hist=${histS.backend}/${histS.days.length}d/${histS.todayRows}r/${rate}/${histS.todayBytes}+${histS.pendBytes}B/${histMem.rows.length}mem/${[...histMem.pending.values()].reduce((a, l) => a + l.length, 0)}pend/${histMem.held.length}held${histS.gap ? '/' + histS.gap : ''}/${Math.round(histS.usage / 1048576)}of${Math.round(histS.quota / 1048576)}MB${histS.xfer ? '/xfer' : ''} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
 }, 60000);
 $('langBtn').addEventListener('click', async () => { const code = await openSheet('lang'); if (code && I18N[code]) { try { localStorage.setItem('batray_lang', code); } catch {} log(`language: ${code}`); applyLang(code); } });
 

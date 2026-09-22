@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { historyState, dayKey, dayStartMs, lineBytes, nextPos, replicaDecision, releaseHeld, rowFromReading, rowLine, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, cleanLen, recentSlice, transferPlan, histReqDecision, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HEADROOM_BYTES, XFER_CHUNK, HIST_REQ_MS, GAP_REQ_MS, RANGES, MEM_MS } from '../public/batray/history-logic.js';
+import { historyState, dayKey, dayStartMs, lineBytes, nextPos, replicaDecision, releaseHeld, rowFromReading, rowLine, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, cleanLen, recentSlice, transferPlan, histReqDecision, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, rowDue, HEADROOM_BYTES, XFER_CHUNK, HIST_REQ_MS, GAP_REQ_MS, GAP_ASKS_MAX, HOLD_MAX, MIN_ROW_MS, RANGES, MEM_MS } from '../public/batray/history-logic.js';
 import { decodeCellInfo } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -93,6 +93,16 @@ test('recent slice thins to a row a minute keeping the newest; transfer plan sen
   assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 + GAP_REQ_MS, gap: true }), { action: 'request', why: 'gap' });
   assert.deepEqual(histReqDecision(hs, { live: true, now: 2000 + GAP_REQ_MS + HIST_REQ_MS }), { action: 'request', why: 'periodic' });
   histReqDecision(hs, { live: false, now: 3e6 }); assert.deepEqual(histReqDecision(hs, { live: true, now: 3e6 + 1 }), { action: 'request', why: 'link up' }, 'a link that came back asks again at once');
+  // 2026-09-22 viewer log: live flapped false/true four times in one ms and each flip asked again; and a hole was asked about every 5 s for five hours
+  histReqDecision(hs, { live: false, now: 3e6 + 2 }); assert.deepEqual(histReqDecision(hs, { live: true, now: 3e6 + 3 }), { action: 'request', why: 'link up' });
+  histReqDecision(hs, { live: false, now: 3e6 + 4 }); assert.equal(histReqDecision(hs, { live: true, now: 3e6 + 5 }).action, 'request', 'each real link-up asks once');
+  const g = historyState(); histReqDecision(g, { live: true, now: 0 });
+  let asked = 0; for (let t = GAP_REQ_MS; t < HIST_REQ_MS; t += GAP_REQ_MS) if (histReqDecision(g, { live: true, now: t, gap: true }).action === 'request') asked++;
+  assert.equal(asked, GAP_ASKS_MAX, 'unanswered gap requests stop after GAP_ASKS_MAX until the reader answers');
+  const lastAsk = GAP_ASKS_MAX * GAP_REQ_MS;
+  assert.equal(histReqDecision(g, { live: true, now: lastAsk + HIST_REQ_MS - 1, gap: true }).action, 'noop');
+  assert.equal(histReqDecision(g, { live: true, now: lastAsk + HIST_REQ_MS, gap: true }).why, 'periodic', 'then the 10 min rhythm from the last request');
+  g.gapAsks = 0; assert.equal(histReqDecision(g, { live: true, now: lastAsk + HIST_REQ_MS + GAP_REQ_MS, gap: true }).why, 'gap', 'a received file (gapAsks reset) allows gap requests again');
   const b64 = 'A'.repeat(40000); const ch = chunkB64(b64); assert.equal(ch.length, Math.ceil(40000 / Math.ceil(XFER_CHUNK * 4 / 3))); assert.equal(ch.join(''), b64);
   const vs = historyState(); const env = (n, of, day = '2026-09-19') => ({ k: 'hist-file', v: { day, n, of, b64: 'p' + n, live: false } });
   assert.equal(rxChunk(vs, env(0, 3)), null); assert.equal(rxChunk(vs, env(1, 3)), null);
@@ -150,6 +160,8 @@ test('every stored date is UTC; rows carry their row number and byte offset; a v
   // the viewer: its copy ends at 9120 B
   assert.deepEqual(replicaDecision(hs, { t, n: 42, o: 9120 }), { action: 'append' });
   assert.deepEqual(replicaDecision(hs, { t, n: 44, o: 9400 }), { action: 'hold', why: 'gap', expected: 9120 }); assert.equal(hs.gap, 'gap');
+  assert.deepEqual(replicaDecision(hs, { t, n: 44, o: 9400 }, HOLD_MAX), { action: 'mem', why: 'hold full', expected: 9120 }, 'a full hold keeps the row in memory only');
+  assert.equal(rowDue(null, 5), true); assert.equal(rowDue(1000, 1000 + MIN_ROW_MS - 1), false); assert.equal(rowDue(1000, 1000 + MIN_ROW_MS), true);
   assert.deepEqual(replicaDecision(hs, { t, n: 40, o: 8800 }), { action: 'hold', why: 'behind', expected: 9120 }); assert.equal(hs.gap, 'behind');
   assert.deepEqual(replicaDecision(hs, { t, n: null, o: null }), { action: 'mem' });
   hs.replicaOff = '2026-09-21'; assert.equal(replicaDecision(hs, { t, n: 42, o: 9120 }).action, 'mem'); hs.replicaOff = null;

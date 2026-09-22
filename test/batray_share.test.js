@@ -87,7 +87,13 @@ test('viewer: the reader\'s presence alerts only after it was seen once and only
   assert.equal(viewerEvent(vs, { sig: false, reader: false }), null);         // our own socket is down: not the reader's fault
   assert.deepEqual(viewerEvent(vs, { sig: true, reader: false }), { readerAlert: 'off' });
   assert.deepEqual(viewerEvent(vs, { sig: true, reader: true }), { readerAlert: 'on' });
-  const vs2 = viewState(); viewerDataSeen(vs2);
+  const vs2 = viewState(); assert.deepEqual(viewerDataSeen(vs2), { action: 'render' });
+  // 2026-09-22 viewer log: a frozen tab replayed ~20 s of queued readings on resume; stale ones are skipped and counted
+  const vs3 = viewState();
+  assert.deepEqual(viewerDataSeen(vs3, true, 40), { action: 'skip', stale: 1 }); assert.equal(vs3.readerLive, false, 'a stale reading does not make the reader live');
+  assert.deepEqual(viewerDataSeen(vs3, true, 25), { action: 'skip', stale: 2 });
+  assert.deepEqual(viewerDataSeen(vs3, false, 1), { action: 'render', droppedStale: 2, maxAgeS: 40 }); assert.equal(vs3.readerLive, true);
+  assert.deepEqual(viewerDataSeen(vs3, false, 1), { action: 'render' });
   assert.deepEqual(viewerEvent(vs2, { sig: true, reader: false }), { readerAlert: 'off' });   // data proved the reader before the server spoke
   assert.deepEqual(viewHello(vs, { v: { channel: 'm-00', version: '0.9.21' } }), { name: 'm-00', version: '0.9.21' });
   assert.equal(viewHello(vs, { v: { channel: 'm-00' } }), null);
