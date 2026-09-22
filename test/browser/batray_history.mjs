@@ -72,7 +72,8 @@ check('the day file is the UTC day', today === new Date().toISOString().slice(0,
 await evalJs(`(() => {
   const now = Date.now(), rows = [];
   for (let i = 120; i >= 1; i--) rows.push({ t: now - i * 60000, p: 'n11', soc: 50 + (i % 10), v: 52.1, i: i % 2 ? 12 : -18, w: i % 2 ? 620 : -930, ah: 150, tm: 30, t1: 25, t2: 26, ch: 1, ds: 1, bal: 0, err: 0, c: null });
-  for (let i = 0; i < 1440; i += 5) rows.push({ t: now - 26 * 3600e3 - i * 60000, p: 'n11', soc: 70, v: 53, i: 5, w: 260, ah: 200, tm: 30, t1: 25, t2: 26, ch: 1, ds: 1, bal: 0, err: 0, c: null });
+  const y0 = Date.parse(new Date(now - 86400e3).toISOString().slice(0, 10) + 'T00:00:00Z');       // all of yesterday's rows inside yesterday's UTC day, whatever the time now
+  for (let i = 0; i < 1440; i += 5) rows.push({ t: y0 + i * 60000, p: 'n11', soc: 70, v: 53, i: 5, w: 260, ah: 200, tm: 30, t1: 25, t2: 26, ch: 1, ds: 1, bal: 0, err: 0, c: null });
   return window.__batrayTest.histSeed(rows);
 })()`);
 await evalJs('window.__batrayTest.flushHistory()');
@@ -80,7 +81,8 @@ await evalJs('window.__batrayTest.maintainHistory()');
 list = await evalJs('window.__batrayTest.histList()');
 const past = list.filter((d) => d.day !== today);
 check('a past day is compacted to .ndjson.gz by maintenance, today stays raw', past.length >= 1 && past.every((d) => d.gz && !d.raw) && list.find((d) => d.day === today).raw, list);
-const pastText = await evalJs(`window.__batrayTest.histRead('${past[0].day}')`);
+const yday = new Date(Date.now() - 86400e3).toISOString().slice(0, 10);
+const pastText = await evalJs(`window.__batrayTest.histRead('${yday}')`);
 check('the gzipped day reads back inflated', pastText.split('\n').filter(Boolean).length >= 100 && /"soc":70/.test(pastText), { len: pastText.length });
 const note = await evalJs(`document.getElementById('histNote').textContent`);
 check('the History card says days, used vs the browser maximum, the estimated days left and the auto-delete rule', /Stored on this device: \d+ days? since \d{4}-\d{2}-\d{2}, \d+ KB of the [\d.]+ (GB|MB) this browser allows, room for (about [\d,]+ more days|more than ten years) .* less than 100 MB stay free/.test(note), note);

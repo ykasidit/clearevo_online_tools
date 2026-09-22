@@ -19,7 +19,7 @@
 // the publisher re-registers its session on every socket reopen.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readerPresent, dataFlowing, FRESH_MS, makeKeyB64, importKey, encrypt, envelope } from '../public/batray/live-logic.js';
+import { readerPresent, dataFlowing, FRESH_MS, makeKeyB64, importKey, encrypt, envelope, sigDecision, SIG_PING_MS, SIG_DEAD_MS } from '../public/batray/live-logic.js';
 
 // ---- fakes for the browser globals live.js touches ----
 const sockets = [];
@@ -140,4 +140,30 @@ test('publisher.publish before start() has imported the key drops the envelope i
   const p = new Publisher({ log: () => {}, onState: () => {} });
   await p.publish({ t: 'data', x: 1 });                    // the BMS can emit before start() resolves (live log 2026-09-20)
   assert.equal(p.state.dropped, 1);
+});
+
+test('2026-09-22 reader log: the signalling socket pings the relay and reopens itself when nothing answers (a half-open socket after a Wi-Fi change)', async () => {
+  assert.deepEqual(sigDecision({ lastMsgAt: 0, lastPingAt: 0, now: SIG_PING_MS - 1 }), { action: 'wait' });
+  assert.deepEqual(sigDecision({ lastMsgAt: 0, lastPingAt: 0, now: SIG_PING_MS }), { action: 'ping' });
+  assert.deepEqual(sigDecision({ lastMsgAt: 0, lastPingAt: SIG_PING_MS, now: SIG_DEAD_MS }), { action: 'reopen', silentS: 60 });
+  assert.deepEqual(sigDecision({ lastMsgAt: SIG_DEAD_MS - 1000, lastPingAt: SIG_PING_MS, now: SIG_DEAD_MS }), { action: 'ping' }, 'a pong (any message) keeps it alive');
+  const logs = [];
+  const p = new Publisher({ log: (m) => logs.push(m), onState: () => {} });
+  p.room = 'r9'; p.pubToken = 'tok'; p.sig = null;
+  const { Viewer } = await import('../public/batray/live.js');
+  const v = new Viewer({ room: 'r1', keyB64: makeKeyB64(), log: (m) => logs.push(m), onState: () => {}, onEnvelope: () => {} });
+  let t = 7_000_000; v.now = () => t;
+  await v.start(); v.subscribe = async () => {};
+  const sig = v.sig; sig.now = () => t; clearInterval(sig.tick);
+  const ws = sockets[sockets.length - 1]; ws.open();
+  t += SIG_PING_MS; sig.check();
+  assert.deepEqual(ws.sent.filter((m) => m.type === 'ping').length, 1, 'a ping goes out after 25 s of silence');
+  t += 1000; ws.push({ type: 'pong' });
+  t += SIG_PING_MS; sig.check(); assert.equal(ws.sent.filter((m) => m.type === 'ping').length, 2, 'the pong kept it alive; the next ping is due');
+  let closed = false; ws.close = () => { closed = true; ws.readyState = 3; ws.onclose && ws.onclose({ code: 4001, reason: 'no pong', wasClean: true }); };
+  t += SIG_DEAD_MS; sig.check();
+  assert.ok(closed, 'no message for 60 s: the socket is closed');
+  assert.ok(logs.some((m) => /the socket is dead, reopening/.test(m)), logs.slice(-3));
+  assert.ok(logs.some((m) => /reopening in 4 s/.test(m)), 'and the normal reopen follows');
+  v.stop();
 });

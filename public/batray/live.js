@@ -22,7 +22,7 @@
 // share link's URL fragment, whichever path carries it. The relay Worker at
 // /batray/api/ holds the SFU secret, routes signalling, and counts how many
 // sockets are on an SFU/TURN path against the free cap.
-import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect, readerPresent, FRESH_MS } from './live-logic.js';
+import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, SIG_DEAD_MS, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect, readerPresent, FRESH_MS } from './live-logic.js';
 
 const API = '/batray/api';
 const P2P_WAIT_MS = 7000;      // viewer waits this long for a direct offer/connection before using the SFU
@@ -92,15 +92,24 @@ class Signal {
     this.room = room; this.role = role; this.token = token; this.log = log;
     this.ws = null; this.closed = false; this.timer = null; this.handlers = new Set(); this.lastPath = null;
     this.connected = false; this.onConn = () => {};
+    this.now = () => Date.now(); this.lastMsgAt = 0; this.lastPingAt = 0;
+    this.tick = setInterval(() => this.check(), 5000);           // the heartbeat (a frozen tab pauses it, and nudge() reopens on resume)
     this.open();
+  }
+  /** Ping the relay, or give up on a socket that has said nothing for SIG_DEAD_MS and reopen it. */
+  check() {
+    if (this.closed || !this.ws || this.ws.readyState !== 1) return;
+    const d = sigDecision({ lastMsgAt: this.lastMsgAt, lastPingAt: this.lastPingAt, now: this.now() });
+    if (d.action === 'ping') { this.lastPingAt = this.now(); this.send({ type: 'ping' }); }
+    else if (d.action === 'reopen') { this.log(`signal: no answer for ${d.silentS} s - the socket is dead, reopening`); this.lastMsgAt = this.now(); try { this.ws.close(4001, 'no pong'); } catch { /* */ } }
   }
   open() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}${API}/room/${this.room}/ws?role=${this.role}${this.token ? `&token=${this.token}` : ''}`);
     this.ws = ws;
     const t0 = Date.now();
-    ws.onopen = () => { this.connected = true; this.log(`signal: socket open (${this.role}) in ${Date.now() - t0} ms`); this.onConn(true); if (this.lastPath) this.send({ type: 'path', path: this.lastPath }); };
-    ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { this.log('signal: unparsable message'); return; } for (const h of this.handlers) h(m); };
+    ws.onopen = () => { this.connected = true; this.lastMsgAt = this.lastPingAt = this.now(); this.log(`signal: socket open (${this.role}) in ${Date.now() - t0} ms`); this.onConn(true); if (this.lastPath) this.send({ type: 'path', path: this.lastPath }); };
+    ws.onmessage = (e) => { this.lastMsgAt = this.now(); let m; try { m = JSON.parse(e.data); } catch { this.log('signal: unparsable message'); return; } if (m.type === 'pong') return; for (const h of this.handlers) h(m); };
     ws.onclose = (e) => { this.connected = false; this.log(`signal: socket closed code=${e.code} reason="${e.reason || ''}" clean=${e.wasClean}${this.closed ? '' : ' - reopening in 4 s'}`); if (!this.closed) this.onConn(false); if (!this.closed) { this.timer = setTimeout(() => this.open(), 4000); } };
     ws.onerror = () => { this.log('signal: socket error (close follows)'); };
   }
@@ -109,7 +118,7 @@ class Signal {
   reportPath(tier) { this.lastPath = tier; this.send({ type: 'path', path: tier }); }
   /** Reopen now instead of after the 4 s delay (tab resumed). */
   nudge() { if (this.closed || (this.ws && this.ws.readyState <= 1)) return; clearTimeout(this.timer); this.timer = null; this.open(); }
-  close() { this.closed = true; clearTimeout(this.timer); try { this.ws.close(1000, 'bye'); } catch { /* */ } }
+  close() { this.closed = true; clearTimeout(this.timer); clearInterval(this.tick); try { this.ws.close(1000, 'bye'); } catch { /* */ } }
 }
 
 /** Track the device's own internet state into state.net (navigator.onLine is

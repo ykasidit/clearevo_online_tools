@@ -158,7 +158,7 @@ class Pack {
     const b = this.bms;
     b.addEventListener('log', (e) => this.plog(e.detail));
     b.addEventListener('connected', (e) => {
-      this.device = e.detail;
+      this.device = e.detail; this.frames = 0;
       this.plog(`gatt connected: ${this.label} id=${String(e.detail.id || '').slice(0, 10)}…`);
       connAct(this, 'gatt-connected');
       this.loadThunk = () => T.loading(this.label);
@@ -177,11 +177,19 @@ class Pack {
       connAct(this, 'gatt-disconnected');
     });
     b.addEventListener('data', (e) => this.onData(e.detail));
-    b.addEventListener('device', (e) => { this.onInfo(e.detail); this.plog(`device: ${e.detail.model} hw ${e.detail.hwVersion} fw ${e.detail.swVersion}`); });
+    b.addEventListener('device', (e) => {
+      this.onInfo(e.detail);
+      const key = `${e.detail.model} hw ${e.detail.hwVersion} fw ${e.detail.swVersion}`;
+      if (key !== this.infoKey) { this.infoKey = key; this.plog(`device: ${key}`); }   // the BMS repeats its info every 3 s: log it once
+    });
     b.addEventListener('settings', (e) => this.onSettings(e.detail));
     b.addEventListener('frame', (e) => {
       const f = e.detail, type = f[4];
-      this.plog(`frame type 0x${type.toString(16).padStart(2, '0')} (${f.length}B) ${hex(f.slice(0, 16))} …`);
+      // every frame filled the 4000-line log in 11 minutes (reader log 2026-09-22): the first ten after a connect in
+      // full, then one line per 200 frames with the count
+      this.frames = (this.frames || 0) + 1;
+      if (this.frames <= 10) this.plog(`frame type 0x${type.toString(16).padStart(2, '0')} (${f.length}B) ${hex(f.slice(0, 16))} …`);
+      else if (this.frames % 200 === 0) this.plog(`frame #${this.frames} type 0x${type.toString(16).padStart(2, '0')} (${f.length}B) - ${this.frames} frames since connect`);
       if (type === FRAME_CELL_INFO && !this.dumped) {
         // Full dump of the first good cell-info frame, so layout can be checked
         // by hand against a real unit if the auto-detect ever looks wrong.

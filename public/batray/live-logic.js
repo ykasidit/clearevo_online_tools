@@ -143,6 +143,17 @@ export function selectedLocalCandidate(stats) {
 export const FRESH_MS = 15000;          // a JK BMS is read every 3 s; five misses is a real gap
 
 /** Has a reading arrived recently enough to prove the reader is alive? */
+// The signalling socket needs a heartbeat of its own (reader log 2026-09-22: the relay had dropped the reader's
+// socket, wiped its session and told viewers "no reader", while the reader's socket looked open for hours - a
+// half-open TCP link after a Wi-Fi change gets no close event, and with no viewers nothing is ever sent on it).
+export const SIG_PING_MS = 25000;        // send {type:'ping'} this often; the relay answers {type:'pong'} without waking
+export const SIG_DEAD_MS = 60000;        // no message of any kind for this long = the socket is dead: close and reopen
+/** What the signalling socket should do now. */
+export function sigDecision({ lastMsgAt, lastPingAt, now }) {
+  if (now - lastMsgAt >= SIG_DEAD_MS) return { action: 'reopen', silentS: Math.round((now - lastMsgAt) / 1000) };
+  if (now - lastPingAt >= SIG_PING_MS) return { action: 'ping' };
+  return { action: 'wait' };
+}
 /** An envelope older than FRESH_MS when it arrives came out of a queue (a frozen tab, a stalled link), not from now. */
 export function staleEnvelope(env, now = Date.now(), freshMs = FRESH_MS) { return typeof env.t === 'number' && now - env.t > freshMs; }
 export function dataFlowing(lastRxAt, now = Date.now(), freshMs = FRESH_MS) {
