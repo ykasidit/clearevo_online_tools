@@ -146,8 +146,8 @@ export const FRESH_MS = 15000;          // a JK BMS is read every 3 s; five miss
 // The signalling socket needs a heartbeat of its own (reader log 2026-09-22: the relay had dropped the reader's
 // socket, wiped its session and told viewers "no reader", while the reader's socket looked open for hours - a
 // half-open TCP link after a Wi-Fi change gets no close event, and with no viewers nothing is ever sent on it).
-export const SIG_PING_MS = 25000;        // send {type:'ping'} this often; the relay answers {type:'pong'} without waking
-export const SIG_DEAD_MS = 60000;        // no message of any kind for this long = the socket is dead: close and reopen
+export const SIG_PING_MS = 10000;        // send {type:'ping'} this often; the relay answers {type:'pong'} without waking (owner: 10 s)
+export const SIG_DEAD_MS = 30000;        // no message of any kind for this long = the socket is dead at either end or at the relay: close and reopen (owner: 30 s)
 /** What the signalling socket should do now. */
 export function sigDecision({ lastMsgAt, lastPingAt, now }) {
   if (now - lastMsgAt >= SIG_DEAD_MS) return { action: 'reopen', silentS: Math.round((now - lastMsgAt) / 1000) };

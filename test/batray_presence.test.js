@@ -142,10 +142,11 @@ test('publisher.publish before start() has imported the key drops the envelope i
   assert.equal(p.state.dropped, 1);
 });
 
-test('2026-09-22 reader log: the signalling socket pings the relay and reopens itself when nothing answers (a half-open socket after a Wi-Fi change)', async () => {
+test('2026-09-22 reader log: the signalling socket pings the relay every 10 s and reopens itself after 30 s without any answer (a half-open socket after a Wi-Fi change)', async () => {
+  assert.equal(SIG_PING_MS, 10000); assert.equal(SIG_DEAD_MS, 30000);
   assert.deepEqual(sigDecision({ lastMsgAt: 0, lastPingAt: 0, now: SIG_PING_MS - 1 }), { action: 'wait' });
   assert.deepEqual(sigDecision({ lastMsgAt: 0, lastPingAt: 0, now: SIG_PING_MS }), { action: 'ping' });
-  assert.deepEqual(sigDecision({ lastMsgAt: 0, lastPingAt: SIG_PING_MS, now: SIG_DEAD_MS }), { action: 'reopen', silentS: 60 });
+  assert.deepEqual(sigDecision({ lastMsgAt: 0, lastPingAt: SIG_PING_MS, now: SIG_DEAD_MS }), { action: 'reopen', silentS: 30 });
   assert.deepEqual(sigDecision({ lastMsgAt: SIG_DEAD_MS - 1000, lastPingAt: SIG_PING_MS, now: SIG_DEAD_MS }), { action: 'ping' }, 'a pong (any message) keeps it alive');
   const logs = [];
   const p = new Publisher({ log: (m) => logs.push(m), onState: () => {} });
@@ -157,12 +158,12 @@ test('2026-09-22 reader log: the signalling socket pings the relay and reopens i
   const sig = v.sig; sig.now = () => t; clearInterval(sig.tick);
   const ws = sockets[sockets.length - 1]; ws.open();
   t += SIG_PING_MS; sig.check();
-  assert.deepEqual(ws.sent.filter((m) => m.type === 'ping').length, 1, 'a ping goes out after 25 s of silence');
+  assert.deepEqual(ws.sent.filter((m) => m.type === 'ping').length, 1, 'a ping goes out after 10 s of silence');
   t += 1000; ws.push({ type: 'pong' });
   t += SIG_PING_MS; sig.check(); assert.equal(ws.sent.filter((m) => m.type === 'ping').length, 2, 'the pong kept it alive; the next ping is due');
   let closed = false; ws.close = () => { closed = true; ws.readyState = 3; ws.onclose && ws.onclose({ code: 4001, reason: 'no pong', wasClean: true }); };
   t += SIG_DEAD_MS; sig.check();
-  assert.ok(closed, 'no message for 60 s: the socket is closed');
+  assert.ok(closed, 'no message for 30 s: the socket is closed');
   assert.ok(logs.some((m) => /the socket is dead, reopening/.test(m)), logs.slice(-3));
   assert.ok(logs.some((m) => /reopening in 4 s/.test(m)), 'and the normal reopen follows');
   v.stop();

@@ -93,7 +93,7 @@ class Signal {
     this.ws = null; this.closed = false; this.timer = null; this.handlers = new Set(); this.lastPath = null;
     this.connected = false; this.onConn = () => {};
     this.now = () => Date.now(); this.lastMsgAt = 0; this.lastPingAt = 0;
-    this.tick = setInterval(() => this.check(), 5000);           // the heartbeat (a frozen tab pauses it, and nudge() reopens on resume)
+    this.tick = setInterval(() => this.check(), 2000);           // the heartbeat (a frozen tab pauses it, and nudge() reopens on resume)
     this.open();
   }
   /** Ping the relay, or give up on a socket that has said nothing for SIG_DEAD_MS and reopen it. */
