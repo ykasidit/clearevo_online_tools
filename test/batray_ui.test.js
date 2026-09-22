@@ -102,6 +102,11 @@ test('choice sheets: language, TV resolution, keep-awake mark the current choice
   const k = sheetModel('keepAwake', ctx({ mode: 'never' }), T);
   assert.deepEqual(k.options.map((o) => [o.id, o.on]), [['auto', false], ['always', false], ['never', true]]); assert.equal(k.lead, T.keepAwakePost);
   const u = sheetModel('upload', ctx(), T);
+  const up0 = sheetModel('uploading', ctx({ upload: { loaded: 0, total: 0 } }), T);
+  assert.equal(up0.lead, T.uploadStarting); assert.equal(up0.progress, 0); assert.deepEqual(up0.actions.map((a) => a.id), ['cancel']);
+  const up1 = sheetModel('uploading', ctx({ upload: { loaded: 51200, total: 204800 } }), T);
+  assert.equal(up1.progress, 25); assert.match(up1.lead, /25 %/); assert.match(up1.lead, /50 .* 200 KB/);
+  assert.equal(sheetModel('uploading', ctx({ upload: { loaded: 999999, total: 1000 } }), T).progress, 100, 'never over 100');
   const c = sheetModel('clearHist', ctx({ histDays: 3, histSize: '812 KB' }), T);
   assert.equal(c.title, T.histClear); assert.match(c.lead, /3 days, 812 KB/); assert.equal(c.tone, 'act');
   assert.deepEqual(c.actions.map((a) => a.id), ['cancel', 'ok']); assert.equal(c.actions[1].label, T.histClearGo);

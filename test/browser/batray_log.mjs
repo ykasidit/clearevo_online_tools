@@ -40,6 +40,31 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     if (url.includes('/batray/api/sfu') || url.includes('/batray/api/turn')) return ok({ error: 'no sfu in this test' }, 500);
     return rf(u, i);
   };
+  // the log upload is an XMLHttpRequest (progress + abort): a fake that reports 50 % after 150 ms and finishes at 400 ms,
+  // or waits for window.__release when window.__holdUpload is set (the Cancel test)
+  const RealXHR = window.XMLHttpRequest;
+  window.XMLHttpRequest = function () {
+    const x = { upload: {}, status: 0, responseText: '', _h: {}, aborted: false };
+    x.open = (m, u) => { x.method = m; x.url = String(u); };
+    x.setRequestHeader = (k, v) => { x._h[k] = v; };
+    x.abort = () => { x.aborted = true; window.__aborted = (window.__aborted || 0) + 1; x.onabort && x.onabort(); };
+    x.send = (body) => {
+      if (!x.url.endsWith('/batray/api/log')) throw new Error('unexpected xhr ' + x.url);
+      const text = new TextDecoder().decode(body); const total = body.byteLength || body.length;
+      const run = () => {
+        if (x.aborted) return;
+        x.upload.onprogress && x.upload.onprogress({ loaded: Math.floor(total / 2), total, lengthComputable: true });
+        setTimeout(() => {
+          if (x.aborted) return;
+          x.upload.onprogress && x.upload.onprogress({ loaded: total, total, lengthComputable: true });
+          window.__logPosts.push({ method: x.method, headers: x._h, body: text });
+          x.status = 200; x.responseText = JSON.stringify({ id: 'TestLogId0000000000000', key: 'logs/x' }); x.onload && x.onload();
+        }, 250);
+      };
+      if (window.__holdUpload) window.__release = run; else setTimeout(run, 150);
+    };
+    return x;
+  };
 ` });
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 
@@ -68,11 +93,24 @@ let posts = await evalJs(`window.__logPosts.length`);
 check('declining the warning sends nothing', posts === 0 && (await evalJs(`window.__batrayTest.logLines().some((l) => /log upload: declined/.test(l))`)), posts);
 // accepted -> header + --- + lines, id shown
 await evalJs(`document.getElementById('upload2').click(); 1`); await sleep(200);
-await evalJs(`document.querySelector('#sheetActs [data-act=ok]').click(); 1`); await sleep(600);
+await evalJs(`document.querySelector('#sheetActs [data-act=ok]').click(); 1`); await sleep(250);
+const mid = await evalJs(`({ open: !document.getElementById('sheet').hidden, title: document.getElementById('sheetTitle').textContent, lead: document.getElementById('sheetLead').textContent, bar: document.getElementById('sheetBar').style.width, progShown: !document.getElementById('sheetProg').hidden, cancel: !!document.querySelector('#sheetActs [data-act=cancel]') })`);
+check('while it uploads, a sheet shows the percent, the bytes and a Cancel button', mid.open && mid.title === 'Upload log' && /Uploading… (49|50) % \(\d+ of \d+ KB\)/.test(mid.lead) && /^(49|50)%$/.test(mid.bar) && mid.progShown && mid.cancel, mid);
+await sleep(500);
+const after = await evalJs(`({ open: !document.getElementById('sheet').hidden, sheet: window.__batrayTest.uiState().sheet })`);
+check('the sheet closes itself when the upload completes', !after.open && !after.sheet, after);
 const post = await evalJs(`window.__logPosts[0] ? { method: window.__logPosts[0].method, ct: window.__logPosts[0].headers['Content-Type'], head: window.__logPosts[0].body.slice(0, 40), hasSep: window.__logPosts[0].body.includes('\\n---\\n'), hasBoom: window.__logPosts[0].body.includes('boom thrown'), len: window.__logPosts[0].body.length } : null`);
 const ui = await evalJs(`({ idTxt: document.getElementById('uploadId').textContent, shown: !document.getElementById('uploadId').hidden, toast: document.getElementById('toast').textContent })`);
 check('accepting uploads header + separator + log as text/plain and shows the id', post && post.method === 'POST' && /text\/plain/.test(post.ct) && /^BatRay v/.test(post.head) && post.hasSep && post.hasBoom && post.len > 1000, post);
 check('the id is shown in the Debug card and the toast', /TestLogId0000000000000/.test(ui.idTxt) && ui.shown && /TestLogId0000000000000/.test(ui.toast), ui);
+// cancel: the request is aborted, nothing is posted, the toast says so
+await evalJs(`window.__holdUpload = true; document.getElementById('upload2').click(); 1`); await sleep(200);
+await evalJs(`document.querySelector('#sheetActs [data-act=ok]').click(); 1`); await sleep(250);
+const holding = await evalJs(`({ open: !document.getElementById('sheet').hidden, lead: document.getElementById('sheetLead').textContent, posts: window.__logPosts.length })`);
+await evalJs(`document.querySelector('#sheetActs [data-act=cancel]').click(); 1`); await sleep(300);
+const canc = await evalJs(`({ aborted: window.__aborted, posts: window.__logPosts.length, open: !document.getElementById('sheet').hidden, toast: document.getElementById('toast').textContent, logged: window.__batrayTest.logLines().some((l) => /log upload: cancelled by the user/.test(l)), btn: document.getElementById('upload2').disabled })`);
+check('Cancel aborts the upload in flight: nothing posted, a toast says so, the button is usable again', holding.open && /connecting|0 %/.test(holding.lead) && canc.aborted === 1 && canc.posts === holding.posts && !canc.open && /cancelled/i.test(canc.toast) && canc.logged && !canc.btn, { holding, canc });
+await evalJs(`window.__holdUpload = false; 1`);
 
 // --- share setup: name prefill, the last-link option, and what Start saves ---
 await evalJs(`localStorage.removeItem('batray_share_last'); localStorage.removeItem('batray_share_name'); document.getElementById('share').click(); 1`); await sleep(300);

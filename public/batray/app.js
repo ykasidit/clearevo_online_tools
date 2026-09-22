@@ -1570,7 +1570,7 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 let sheetResolve = null, suppressPop = 0;
 function sheetCtx() {
   const p = active;
-  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
+  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
 function openSheet(kind) {
@@ -1578,6 +1578,7 @@ function openSheet(kind) {
   const m = sheetModel(kind, sheetCtx(), T), d = sheetOpen(uiS, kind);
   $('sheetTitle').textContent = m.title;
   const lead = $('sheetLead'); lead.textContent = m.lead || ''; lead.className = 'lead' + (m.tone ? ' ' + m.tone : ''); lead.hidden = !m.lead;
+  renderSheetProgress(m);
   $('sheetRows').innerHTML = m.rows.map(([k, v]) => `<div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>`).join('');
   $('sheetOpts').innerHTML = m.options.map((o) => `<button type="button" data-opt="${esc(o.id)}"${o.on ? ' class="on"' : ''}>${esc(o.label)}</button>`).join('');
   $('sheetActs').innerHTML = m.actions.map((x) => `<button type="button" data-act="${esc(x.id)}" class="${x.primary ? 'demobtn' : 'linkbtn'}"${x.primary ? ' style="padding:10px 18px"' : ''}>${esc(x.label)}</button>`).join('');
@@ -1585,6 +1586,14 @@ function openSheet(kind) {
   if (!d.replace) history.pushState({ sheet: kind }, '');
   log(`ui: sheet ${kind}`);
   return new Promise((ok) => { sheetResolve = ok; });
+}
+function renderSheetProgress(m) { const p = $('sheetProg'); p.hidden = m.progress === undefined; if (!p.hidden) $('sheetBar').style.width = `${m.progress}%`; }
+/** Refresh the open sheet's text and bar from the state (a progress sheet), without touching history. */
+function updateSheet(kind) {
+  if (!uiS.sheet || uiS.sheet.kind !== kind) return;
+  const m = sheetModel(kind, sheetCtx(), T);
+  const lead = $('sheetLead'); lead.textContent = m.lead || ''; lead.hidden = !m.lead;
+  renderSheetProgress(m);
 }
 function closeSheet(result = null, why = 'dismiss') {
   const d = sheetClose(uiS);
@@ -1650,23 +1659,40 @@ async function copyLog(btn) {
 els.copy.addEventListener('click', () => copyLog(els.copy));
 // Upload: the same log to clearevo.com, only after the warning is accepted.
 // The relay stores it for 90 days for the owner to read; the id is the handle.
+// The upload shows its progress in a sheet with a Cancel (owner ask 2026-09-23): XMLHttpRequest because fetch
+// gives no upload progress and no abort of a request body in flight on every Chrome.
+const uploadS = { loaded: 0, total: 0, xhr: null };
 async function uploadLog(btn) {
   if ((await openSheet('upload')) !== 'ok') { log('log upload: declined at the warning'); return; }
+  if (uploadS.xhr) { log('log upload: one is already running'); return; }
   const body = logHeaderLines().join('\n') + '\n---\n' + logLines.join('\n');
+  const bytes = new TextEncoder().encode(body);
   const lbl = btn.querySelector('.lbl'); const was = lbl ? lbl.textContent : '';
   if (lbl) lbl.textContent = T.uploading;
   btn.disabled = true;
-  try {
-    const r = await fetch('/batray/api/log', { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
-    log(`log uploaded: id ${j.id} (${body.length} chars)`);
-    $('uploadId').textContent = T.uploadedId(j.id); $('uploadId').hidden = false;
-    toast(T.uploadDone(j.id), 14000);
-  } catch (e) {
-    log(`log upload failed: ${e.message}`);
-    toast(T.uploadFailed(e.message), 10000);
-  } finally { if (lbl) lbl.textContent = was; btn.disabled = false; }
+  uploadS.loaded = 0; uploadS.total = bytes.length;
+  const xhr = new XMLHttpRequest(); uploadS.xhr = xhr;
+  let finished = false;
+  const done = new Promise((res) => {
+    xhr.upload.onprogress = (e) => { uploadS.loaded = e.loaded; if (e.lengthComputable) uploadS.total = e.total; updateSheet('uploading'); };
+    xhr.onload = () => { finished = true; let j = {}; try { j = JSON.parse(xhr.responseText || '{}'); } catch { /* not json */ } res(xhr.status >= 200 && xhr.status < 300 ? { ok: true, j } : { ok: false, error: j.error || `HTTP ${xhr.status}` }); };
+    xhr.onerror = () => { finished = true; res({ ok: false, error: 'network error' }); };
+    xhr.onabort = () => { finished = true; res({ ok: false, cancelled: true }); };
+  });
+  xhr.open('POST', '/batray/api/log'); xhr.setRequestHeader('Content-Type', 'text/plain; charset=utf-8'); xhr.send(bytes);
+  log(`log upload: started, ${bytes.length} B`);
+  // the sheet resolves on Cancel (or a tap outside / Back, which cancels too), or when the app closes it on completion
+  openSheet('uploading').then((r) => { if (!finished && r !== 'done') { log(`log upload: cancelled by the user (${uploadS.loaded} of ${uploadS.total} B sent)`); xhr.abort(); } });
+  const r = await done;
+  uploadS.xhr = null;
+  if (uiS.sheet && uiS.sheet.kind === 'uploading') closeSheet('done', r.ok ? 'uploaded' : r.cancelled ? 'cancelled' : 'failed');
+  if (r.ok) {
+    log(`log uploaded: id ${r.j.id} (${bytes.length} B)`);
+    $('uploadId').textContent = T.uploadedId(r.j.id); $('uploadId').hidden = false;
+    toast(T.uploadDone(r.j.id), 14000);
+  } else if (r.cancelled) toast(T.uploadCancelled, 6000);
+  else { log(`log upload failed: ${r.error}`); toast(T.uploadFailed(r.error), 10000); }
+  if (lbl) lbl.textContent = was; btn.disabled = false;
 }
 $('upload').addEventListener('click', () => uploadLog($('upload')));
 $('upload2').addEventListener('click', () => uploadLog($('upload2')));

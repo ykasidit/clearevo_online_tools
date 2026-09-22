@@ -111,6 +111,14 @@ export function sheetModel(kind, ctx, T) {
       m.title = T.uploadLog; m.lead = T.uploadWarn;
       m.actions = [{ id: 'cancel', label: T.cancel, primary: false }, { id: 'ok', label: T.uploadGo, primary: true }];
       break;
+    case 'uploading': {                                  // the log upload in flight (owner ask 2026-09-23): percent, bytes, and a Cancel
+      const u = ctx.upload || {}; const total = u.total || 0, loaded = Math.min(u.loaded || 0, total);
+      const pct = total ? Math.floor(loaded * 100 / total) : null;
+      m.title = T.uploadLog; m.lead = pct === null ? T.uploadStarting : T.uploadProgress(pct, Math.round(loaded / 1024), Math.round(total / 1024));
+      m.progress = pct === null ? 0 : pct;
+      m.actions = [{ id: 'cancel', label: T.cancel, primary: false }];
+      break;
+    }
     case 'clearHist':
       m.title = T.histClear; m.lead = T.histClearBody(ctx.histDays || 0, ctx.histSize || '0 KB'); m.tone = 'act';
       m.actions = [{ id: 'cancel', label: T.cancel, primary: false }, { id: 'ok', label: T.histClearGo, primary: true }];
