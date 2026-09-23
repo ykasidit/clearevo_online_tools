@@ -725,6 +725,8 @@ async function initLogStore() {
 }
 function setLogKeep(on) {
   logS.on = !!on; try { localStorage.setItem(LOG_KEY, on ? '1' : '0'); } catch {}
+  // the same choice covers Chrome's crash report: the site strips the Reporting-Endpoints header when this cookie says 0
+  try { document.cookie = `batray_debuglog=${on ? '1' : '0'}; Path=/batray/; Max-Age=31536000; SameSite=Lax${location.protocol === 'https:' ? '; Secure' : ''}`; } catch { /* */ }
   if (!on) { logS.pending = []; logS.pendBytes = 0; }
   log(`debug log: ${on ? 'kept on this device from now on' : 'no longer kept on this device'}`);
   if (on) { logS.file = null; logS.fileBytes = 0; }          // a fresh file for the rest of this session

@@ -142,8 +142,8 @@ const noteTxt = await evalJs(`({ note: document.getElementById('stLogSize').text
 check('the Storage box row says how many debug log files and KB are stored, with Back up and Delete', /^\d+ KB · \d+ files? · this session \d+ KB \(id [a-z0-9]{6}\)$/.test(noteTxt.note) && noteTxt.keep && noteTxt.dl && noteTxt.del, noteTxt);
 // opt-out greys Copy / Upload with a tooltip that says where to turn it back on
 await evalJs(`document.getElementById('logKeep').click(); 1`); await sleep(200);
-const off = await evalJs(`({ pref: localStorage.getItem('batray_debuglog'), on: window.__batrayTest.logState().on, btns: ['copy', 'upload', 'copy2', 'upload2'].map((id) => [document.getElementById(id).disabled, document.getElementById(id).title]) })`);
-check('unticking "keep debug logs" disables Copy log and Upload log with a tooltip naming the History card', off.pref === '0' && !off.on && off.btns.every(([d, t]) => d && /History card/.test(t)), off);
+const off = await evalJs(`({ pref: localStorage.getItem('batray_debuglog'), cookie: document.cookie, on: window.__batrayTest.logState().on, btns: ['copy', 'upload', 'copy2', 'upload2'].map((id) => [document.getElementById(id).disabled, document.getElementById(id).title]) })`);
+check('unticking "keep debug logs" disables Copy log and Upload log with a tooltip naming the History card, and sets the cookie that stops Chrome\'s crash report', off.pref === '0' && /batray_debuglog=0/.test(off.cookie) && !off.on && off.btns.every(([d, t]) => d && /History card/.test(t)), off);
 await evalJs(`document.getElementById('logKeep').click(); 1`); await sleep(200);
 const on = await evalJs(`({ pref: localStorage.getItem('batray_debuglog'), btns: ['copy', 'upload'].map((id) => [document.getElementById(id).disabled, document.getElementById(id).title]) })`);
 check('ticking it again restores the buttons and their normal titles', on.pref === '1' && on.btns.every(([d, t]) => !d && !/History card/.test(t)), on);
