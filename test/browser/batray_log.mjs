@@ -112,6 +112,44 @@ const canc = await evalJs(`({ aborted: window.__aborted, posts: window.__logPost
 check('Cancel aborts the upload in flight: nothing posted, a toast says so, the button is usable again', holding.open && /connecting|0 %/.test(holding.lead) && canc.aborted === 1 && canc.posts === holding.posts && !canc.open && /cancelled/i.test(canc.toast) && canc.logged && !canc.btn, { holding, canc });
 await evalJs(`window.__holdUpload = false; 1`);
 
+// --- the stored debug log (owner ask 2026-09-23): session files in OPFS, rolling, retention, opt-out, download, delete ---
+await evalJs('window.__batrayTest.clearLogs()'); await sleep(200);
+await evalJs('window.__batrayTest.flushLog()');
+let ls = await evalJs('window.__batrayTest.logState()'); let lf = await evalJs('window.__batrayTest.logList()');
+const first = lf.find((f) => f.name.includes(ls.sid));
+check('every log line is also written to a session file named by start time and session id', ls.on && ls.backend === 'opfs' && /^log-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z-[a-z0-9]{6}\.txt$/.test(ls.file) && first && first.bytes > 500 && first.bytes === ls.fileBytes, { ls, lf });
+const stored = await evalJs(`window.__batrayTest.logRead('${ls.file}')`);
+check('each file starts with the header facts block (so it uploads on its own) and then the lines', /^BatRay v/.test(stored) && /\nua: Mozilla/.test(stored) && /\n---\n/.test(stored) && /debug log: deleted/.test(stored), stored.slice(0, 120));
+// rolling: a tiny fileMax makes the next flush open a second file with the same session id; retention keeps the newest N
+await evalJs(`window.__batrayTest.logSet('fileMax', 3000); window.__batrayTest.logSet('filesMax', 2); 1`);
+await evalJs(`for (let i = 0; i < 100; i++) window.__batrayTest.logLine('test line ' + i + ' ' + 'x'.repeat(50)); 1`);
+await evalJs('window.__batrayTest.flushLog()'); await sleep(1100);                   // 6 KB > 3000: this flush opens file 2
+await evalJs(`for (let i = 0; i < 100; i++) window.__batrayTest.logLine('test line b' + i + ' ' + 'y'.repeat(50)); 1`);
+await evalJs('window.__batrayTest.flushLog()'); await sleep(200);                    // file 3; retention keeps the newest 2
+ls = await evalJs('window.__batrayTest.logState()'); lf = await evalJs('window.__batrayTest.logList()');
+const mine = lf.filter((f) => f.name.includes(ls.sid));
+check('when a file would pass the limit the next flush rolls to a new timestamp with the same session id, and only the newest files are kept', mine.length >= 2 && lf.length <= 2 && ls.file !== first.name, { ls: { file: ls.file, fileBytes: ls.fileBytes }, lf });
+const noteTxt = await evalJs(`({ note: document.getElementById('logNote').textContent, keep: document.getElementById('logKeep').checked, dl: !document.getElementById('logDownload').hidden, del: !document.getElementById('logClear').hidden })`);
+check('the History card says how many debug log files and MB are stored, with Download and Delete', /Debug logs on this device: \d+ files?, \d+ KB \(this session/.test(noteTxt.note) && noteTxt.keep && noteTxt.dl && noteTxt.del, noteTxt);
+// opt-out greys Copy / Upload with a tooltip that says where to turn it back on
+await evalJs(`document.getElementById('logKeep').click(); 1`); await sleep(200);
+const off = await evalJs(`({ pref: localStorage.getItem('batray_debuglog'), on: window.__batrayTest.logState().on, btns: ['copy', 'upload', 'copy2', 'upload2'].map((id) => [document.getElementById(id).disabled, document.getElementById(id).title]) })`);
+check('unticking "keep debug logs" disables Copy log and Upload log with a tooltip naming the History card', off.pref === '0' && !off.on && off.btns.every(([d, t]) => d && /History card/.test(t)), off);
+await evalJs(`document.getElementById('logKeep').click(); 1`); await sleep(200);
+const on = await evalJs(`({ pref: localStorage.getItem('batray_debuglog'), btns: ['copy', 'upload'].map((id) => [document.getElementById(id).disabled, document.getElementById(id).title]) })`);
+check('ticking it again restores the buttons and their normal titles', on.pref === '1' && on.btns.every(([d, t]) => !d && !/History card/.test(t)), on);
+// download = a .tar of gzipped log files; delete through a sheet
+await evalJs(`const cou = URL.createObjectURL.bind(URL); URL.createObjectURL = (b) => { window.__logBlob = b; return cou(b); }; HTMLAnchorElement.prototype.click = function () { window.__dlName = this.download; }; 1`);
+const dl = await evalJs('window.__batrayTest.downloadLogs()');
+const tarInfo = await evalJs(`(async () => { const bytes = new Uint8Array(await window.__logBlob.arrayBuffer()); const m = window.__batrayTest.tarParse(bytes); return { name: window.__dlName, members: m.map((e) => e.name), gz: m.every((e) => e.bytes[0] === 0x1f && e.bytes[1] === 0x8b) }; })()`);
+check('Download debug logs gives batray-logs-<day>.tar with one gzip per session file', dl && dl.files >= 1 && /^batray-logs-\d{4}-\d{2}-\d{2}\.tar$/.test(tarInfo.name) && tarInfo.members.every((n) => /^batray-logs\/log-.*\.txt\.gz$/.test(n)) && tarInfo.gz, { dl, tarInfo });
+await evalJs(`document.getElementById('logClear').click(); 1`); await sleep(300);
+const sh = await evalJs(`({ open: !document.getElementById('sheet').hidden, title: document.getElementById('sheetTitle').textContent, btns: [...document.querySelectorAll('#sheet button')].map((b) => b.textContent.trim()) })`);
+await evalJs(`[...document.querySelectorAll('#sheet button')].find((b) => b.textContent.trim() === 'Delete').click(); 1`); await sleep(400);
+const gone = await evalJs(`window.__batrayTest.logList()`);
+check('Delete debug logs asks in a sheet and empties the store (logging then continues in a fresh file)', sh.open && sh.title === 'Delete debug logs' && sh.btns.includes('Delete') && gone.length <= 1 && gone.every((f) => !mine.some((m) => m.name === f.name)), { sh, gone, mine });
+await evalJs(`window.__batrayTest.logSet('fileMax', 10 * 1048576); window.__batrayTest.logSet('filesMax', 10); 1`);
+
 // --- share setup: name prefill, the last-link option, and what Start saves ---
 await evalJs(`localStorage.removeItem('batray_share_last'); localStorage.removeItem('batray_share_name'); document.getElementById('share').click(); 1`); await sleep(300);
 let sp = await evalJs(`({ shown: !document.getElementById('sharePanel').hidden, name: document.getElementById('shareName').value, reuseDisabled: document.getElementById('shareReuse').disabled, reuseChecked: document.getElementById('shareReuse').checked, info: document.getElementById('shareReuseInfo').textContent })`);

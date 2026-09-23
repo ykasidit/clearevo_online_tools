@@ -107,6 +107,8 @@ test('choice sheets: language, TV resolution, keep-awake mark the current choice
   const up1 = sheetModel('uploading', ctx({ upload: { loaded: 51200, total: 204800 } }), T);
   assert.equal(up1.progress, 25); assert.match(up1.lead, /25 %/); assert.match(up1.lead, /50 .* 200 KB/);
   assert.equal(sheetModel('uploading', ctx({ upload: { loaded: 999999, total: 1000 } }), T).progress, 100, 'never over 100');
+  const cl = sheetModel('clearLogs', ctx({ logFiles: 4, logSize: '31.2 MB' }), T);
+  assert.equal(cl.title, T.logClear); assert.match(cl.lead, /4 files, 31.2 MB/); assert.deepEqual(cl.actions.map((a) => a.id), ['cancel', 'ok']);
   const c = sheetModel('clearHist', ctx({ histDays: 3, histSize: '812 KB' }), T);
   assert.equal(c.title, T.histClear); assert.match(c.lead, /3 days, 812 KB/); assert.equal(c.tone, 'act');
   assert.deepEqual(c.actions.map((a) => a.id), ['cancel', 'ok']); assert.equal(c.actions[1].label, T.histClearGo);

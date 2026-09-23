@@ -147,7 +147,28 @@ const ops = {
     return { files: out };
   },
   async remove({ day }) { const d = await dir(); const a = await remove(d, rawName(day)), b = await remove(d, gzName(day)); return { removed: a || b }; },
-  async clear() { const d = await dir(); let n = 0; for await (const [name] of d.entries()) { await d.removeEntry(name); n++; } return { removed: n }; },
+  async clear() { const d = await dir(); let n = 0; for await (const [name, h] of d.entries()) { if (h.kind !== 'file') continue; await d.removeEntry(name); n++; } return { removed: n }; },   // the logs/ folder stays
+  // ---- the debug log: session files under logs/ (owner ask 2026-09-23) ----
+  async logDir() { return (await dir()).getDirectoryHandle('logs', { create: true }); },
+  async logAppend({ name, text }) {
+    if (!/^log-[0-9TZ-]+-[a-z0-9]{6}\.txt$/.test(name)) throw new Error('bad log name');
+    const d = await ops.logDir(); const fh = await d.getFileHandle(name, { create: true }); const h = await fh.createSyncAccessHandle();
+    try { const size = h.getSize(); const b = enc.encode(text); h.write(b, { at: size }); h.flush(); return { bytes: size + b.length }; } finally { h.close(); }
+  },
+  async logList() {
+    const d = await ops.logDir(); const out = [];
+    for await (const [name, handle] of d.entries()) if (handle.kind === 'file' && name.startsWith('log-')) out.push({ name, bytes: (await handle.getFile()).size });
+    return { files: out.sort((a, b) => (a.name < b.name ? -1 : 1)) };
+  },
+  async logRead({ name }) { const d = await ops.logDir(); const b = await fileBytes(d, name); return { text: b ? dec.decode(b) : '' }; },
+  async logRemove({ name }) { const d = await ops.logDir(); return { removed: await remove(d, name) }; },
+  async logClear() { const d = await ops.logDir(); let n = 0; for await (const [name] of d.entries()) { await d.removeEntry(name); n++; } return { removed: n }; },
+  /** Every log file gzipped, for a .tar download. */
+  async logAllGz() {
+    const d = await ops.logDir(); const { files } = await ops.logList(); const out = [];
+    for (const f of files) { const b = await fileBytes(d, f.name); if (b && b.length) out.push({ name: f.name + '.gz', bytes: await gzip(b) }); }
+    return { files: out };
+  },
   async estimate() { const e = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : {}; return { usage: e.usage || 0, quota: e.quota || 0 }; },
 };
 

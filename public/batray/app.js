@@ -29,6 +29,7 @@ import { Ema } from './trend.js';
 import { historyState, dayKey, dayStartMs, rowFromReading, rowLine, lineBytes, nextPos, rowDue, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, recentSlice, transferPlan, histReqDecision, replicaDecision, releaseHeld, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, RECENT_STEP_MS, XFER_BACKLOG, REPLICA_GIVE_UP, RANGES } from './history-logic.js';
 import { tarPack, tarParse, backupDays, restorePlan, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
+import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
@@ -66,10 +67,16 @@ function renderLog() {
   els.log.textContent = logLines.join('\n');
   els.log.scrollTop = els.log.scrollHeight;
 }
+// The stored debug log (owner ask 2026-09-23): every line also goes to a session file in the browser's private
+// storage (10 MB per file, rolled with the same session id, the newest 10 files kept), unless the user unticks
+// "keep debug logs" in the History card. Decisions in the log logic module over `logS`; the history worker writes.
+let logKeepPref = true; try { logKeepPref = localStorage.getItem(LOG_KEY) !== '0'; } catch {}
+const logS = logState(logKeepPref);
 function log(msg) {
   const line = `${new Date().toISOString().slice(11, 23)}  ${msg}`;
   logLines.push(line);
   if (logLines.length > MAX_LOG_LINES) logLines.shift();
+  logQueue(logS, line);
   if (!logRaf) logRaf = requestAnimationFrame(() => { logRaf = 0; renderLog(); });
 }
 $('debug').addEventListener('toggle', renderLog);
@@ -691,6 +698,67 @@ async function clearHistory() {
   toast(T.histCleared, 5000);
   if (active) { renderTrend(active); if ($('trendCard').hidden) renderHistNote(); }
 }
+// ---- stored debug log I/O (the decisions are in the log logic module) ----
+let logFlushing = false;
+async function flushLog() {
+  if (logFlushing || histS.backend === 'none') return;
+  const plan = flushPlan(logS, Date.now()); if (plan.action !== 'write') return;
+  logFlushing = true;
+  const lines = logS.pending, text = (plan.roll ? logHeaderLines().join('\n') + '\n---\n' : '') + lines.join('\n') + '\n';
+  try {
+    const r = await hist.logAppend(plan.file, text);
+    flushDone(logS, plan.file, r.bytes, text.length);
+    if (plan.roll) { logS.files = await hist.logList(); for (const f of logRetention(logS.files, logS.filesMax)) { await hist.logRemove(f.name); } logS.files = await hist.logList(); renderLogNote(); }
+  } catch (e) { logS.pending = []; logS.pendBytes = 0; if (!logS.failedOnce) { logS.failedOnce = true; console.warn('debug log write failed', e); } }
+  finally { logFlushing = false; }
+}
+setInterval(flushLog, LOG_FLUSH_MS);
+window.addEventListener('pagehide', () => { flushLog(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushLog(); });
+async function initLogStore() {
+  logS.backend = await hist.ready;
+  try { logS.files = await hist.logList(); } catch { logS.files = []; }
+  const sum = logSummary(logS.files);
+  log(`debug log: ${logS.on ? 'kept on this device' : 'not kept (opted out)'}, ${sum.files} files, ${Math.round(sum.bytes / 1024)} KB, session ${logS.sid}`);
+  renderLogNote(); renderDebugButtons();
+}
+function setLogKeep(on) {
+  logS.on = !!on; try { localStorage.setItem(LOG_KEY, on ? '1' : '0'); } catch {}
+  if (!on) { logS.pending = []; logS.pendBytes = 0; }
+  log(`debug log: ${on ? 'kept on this device from now on' : 'no longer kept on this device'}`);
+  if (on) { logS.file = null; logS.fileBytes = 0; }          // a fresh file for the rest of this session
+  renderLogNote(); renderDebugButtons();
+}
+function renderDebugButtons() {
+  const b = debugButtons(logS.on);
+  for (const id of ['copy', 'upload', 'copy2', 'upload2']) { const el = $(id); if (!el) continue; el.disabled = b.disabled; el.title = b.disabled ? T.debugOffTitle : (el.dataset.title || el.title); if (!el.dataset.title && !b.disabled) el.dataset.title = el.title; }
+}
+function renderLogNote() {
+  const sum = logSummary(logS.files); const el = $('logNote'); if (!el) return;
+  $('logKeep').checked = logS.on;
+  el.textContent = histS.backend === 'memory' ? T.logNoStore : T.logNote(sum.files, fmtSize(sum.bytes), fmtSize(logS.sessionBytes + logS.pendBytes), logS.sid);
+  $('logClear').hidden = !sum.files; $('logDownload').hidden = !sum.files;
+}
+async function downloadLogs() {
+  await flushLog();
+  const files = await hist.logAllGz();
+  if (!files.length) { toast(T.logNothing, 5000); return null; }
+  const tar = tarPack(files.map((f) => ({ name: `batray-logs/${f.name}`, bytes: f.bytes })));
+  const name = `batray-logs-${dayKey(Date.now())}.tar`;
+  log(`debug log: download ${name}: ${files.length} files, ${tar.length} B`);
+  const url = URL.createObjectURL(new Blob([tar], { type: 'application/x-tar' }));
+  const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  return { name, files: files.length, bytes: tar.length };
+}
+async function clearLogs() {
+  logS.pending = []; logS.pendBytes = 0; logS.file = null; logS.fileBytes = 0; logS.sessionBytes = 0;
+  try { const r = await hist.logClear(); logS.files = []; log(`debug log: deleted (${r.removed} files)`); } catch (e) { log(`debug log: delete failed: ${e.message}`); }
+  toast(T.logCleared, 5000); renderLogNote();
+}
+$('logKeep').addEventListener('change', () => setLogKeep($('logKeep').checked));
+$('logDownload').addEventListener('click', () => downloadLogs().catch((e) => log(`debug log: download failed: ${e.message}`)));
+$('logClear').addEventListener('click', async () => { const a = await openSheet('clearLogs'); if (a === 'ok') clearLogs(); });
 const fmtSize = (b) => (b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 function histSum() { return historySummary(histS.days, histS.todayRows, { usage: histS.usage, quota: histS.quota, today: histS.day }); }
 function renderHistNote() {
@@ -1559,7 +1627,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, histHeld: () => histMem.held.slice(), remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, lineBytes, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, histHeld: () => histMem.held.slice(), remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, lineBytes, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
@@ -1570,7 +1638,7 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 let sheetResolve = null, suppressPop = 0;
 function sheetCtx() {
   const p = active;
-  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
+  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
 function openSheet(kind) {
@@ -1665,7 +1733,12 @@ const uploadS = { loaded: 0, total: 0, xhr: null };
 async function uploadLog(btn) {
   if ((await openSheet('upload')) !== 'ok') { log('log upload: declined at the warning'); return; }
   if (uploadS.xhr) { log('log upload: one is already running'); return; }
-  const body = logHeaderLines().join('\n') + '\n---\n' + logLines.join('\n');
+  await flushLog();
+  let stored = '';
+  if (logS.on && logS.file) { try { stored = await hist.logRead(logS.file); } catch { stored = ''; } }
+  const ub = uploadBody({ header: logHeaderLines(), ring: logLines.join('\n'), stored, limit: LOG_UPLOAD_MAX });
+  log(`log upload: sending the ${ub.source === 'ring' ? 'last lines in memory' : ub.source === 'file' ? 'stored session file' : 'tail of the stored session file'}`);
+  const body = ub.body;
   const bytes = new TextEncoder().encode(body);
   const lbl = btn.querySelector('.lbl'); const was = lbl ? lbl.textContent : '';
   if (lbl) lbl.textContent = T.uploading;
@@ -1746,6 +1819,6 @@ alerts = initAlerts({
     $('alertTxt').textContent = T.alertNote(st.channels.join(' + ') + (st.watchdog ? ' + ' + T.alertWatch : ''));
   },
 });
-initHistory();
+initHistory().then(initLogStore);
 if (viewMode) startView();
 else if (new URLSearchParams(location.search).has('demo')) runDemo();

@@ -29,6 +29,12 @@ class MemoryBackend {
   async note() { return { bytes: 0 }; }
   async seal({ day }) { const f = this.files.get(day); return { bytes: f ? f.raw.length : 0, rows: f ? f.raw.split('\n').length - 1 : 0 }; }
   async appendGzAt() { throw new Error('this browser cannot store files'); }
+  async logAppend({ name, text }) { const f = this.files.get('L:' + name) || { raw: '', gz: null }; f.raw += text; this.files.set('L:' + name, f); return { bytes: f.raw.length }; }
+  async logList() { return { files: [...this.files.entries()].filter(([k]) => k.startsWith('L:')).map(([k, f]) => ({ name: k.slice(2), bytes: f.raw.length })).sort((a, b) => (a.name < b.name ? -1 : 1)) }; }
+  async logRead({ name }) { const f = this.files.get('L:' + name); return { text: f ? f.raw : '' }; }
+  async logRemove({ name }) { return { removed: this.files.delete('L:' + name) }; }
+  async logClear() { let n = 0; for (const k of [...this.files.keys()]) if (k.startsWith('L:')) { this.files.delete(k); n++; } return { removed: n }; }
+  async logAllGz() { return { files: [] }; }
   async appendAt({ day, text, at }) { const f = this.files.get(day) || { raw: '', gz: null }; if (f.raw.length !== at) throw new Error('offset moved'); f.raw += text; this.files.set(day, f); return { bytes: f.raw.length }; }
   async readGz() { return { bytes: null, gz: false, rawBytes: 0 }; }          // nothing leaves a memory-only session as a file
   async writeGz() { throw new Error('this browser cannot store files'); }
@@ -47,7 +53,7 @@ class WorkerBackend {
   }
   call(op, args) { return new Promise((res, rej) => { const id = ++this.seq; this.waiting.set(id, { res, rej }); this.w.postMessage({ id, op, args }); }); }
 }
-for (const op of ['ping', 'append', 'appendAt', 'appendGzAt', 'seal', 'note', 'list', 'read', 'readGz', 'writeGz', 'readAllGz', 'compact', 'remove', 'clear', 'estimate']) WorkerBackend.prototype[op] = function (args) { return this.call(op, args); };
+for (const op of ['ping', 'append', 'appendAt', 'appendGzAt', 'seal', 'logAppend', 'logList', 'logRead', 'logRemove', 'logClear', 'logAllGz', 'note', 'list', 'read', 'readGz', 'writeGz', 'readAllGz', 'compact', 'remove', 'clear', 'estimate']) WorkerBackend.prototype[op] = function (args) { return this.call(op, args); };
 
 export class HistoryStore {
   /** opts: { log(msg), forceMemory } */
@@ -84,6 +90,12 @@ export class HistoryStore {
   async seal(day) { await this.ready; return this.b.seal({ day }); }
   async appendAt(day, text, at) { await this.ready; return this.b.appendAt({ day, text, at }); }
   async appendGzAt(day, bytes, at) { await this.ready; return this.b.appendGzAt({ day, bytes, at }); }
+  async logAppend(name, text) { await this.ready; return this.b.logAppend({ name, text }); }
+  async logList() { await this.ready; return (await this.b.logList()).files; }
+  async logRead(name) { await this.ready; return (await this.b.logRead({ name })).text; }
+  async logRemove(name) { await this.ready; return this.b.logRemove({ name }); }
+  async logClear() { await this.ready; return this.b.logClear(); }
+  async logAllGz() { await this.ready; return (await this.b.logAllGz()).files; }
   async writeGz(day, bytes, asRaw = false) { await this.ready; return this.b.writeGz({ day, bytes, asRaw }); }
   async readAllGz() { await this.ready; return (await this.b.readAllGz()).files; }
 }

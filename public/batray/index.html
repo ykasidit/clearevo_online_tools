@@ -384,6 +384,9 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           <div class="check" data-i18n="trendLegend">power: green charge, amber discharge · battery %: blue line, right axis · red dashes: inverter cut-off · two fingers zoom, a mouse drags a window</div>
           <div class="check" id="histNote"></div>
           <div class="tvrow"><button type="button" id="histBackup" class="linkbtn" data-i18n="histBackup" hidden>Back up history (.tar)</button><button type="button" id="histRestore" class="linkbtn" data-i18n="histRestore" hidden>Restore from a backup</button><button type="button" id="histClear" class="linkbtn" data-i18n="histClear" hidden>Delete stored history</button><input type="file" id="histFile" accept=".tar,application/x-tar" hidden></div>
+          <div class="check" id="logNote"></div>
+          <div class="check"><label class="chk"><input type="checkbox" id="logKeep" checked> <span data-i18n="logKeep">Keep debug logs on this device (needed for Copy log and Upload log)</span></label></div>
+          <div class="tvrow"><button type="button" id="logDownload" class="linkbtn" data-i18n="logDownload" hidden>Download debug logs (.tar)</button><button type="button" id="logClear" class="linkbtn" data-i18n="logClear" hidden>Delete debug logs</button></div>
           <div class="check" id="histBackupNote" data-i18n="histBackupNote" hidden>The backup is one .tar file holding a gzip file per day (7-Zip or Windows 11 opens it; each day is plain JSON lines). Up to 512 MB. Restoring adds the days this device lacks and never replaces a fuller day.</div>
         </div>
         <div class="card" data-tab="more" id="moreCard">
