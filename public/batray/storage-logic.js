@@ -50,6 +50,14 @@ export function browseItems(type, data) {
   if (type === 'log') return [...(data.files || [])].sort((a, b) => (a.name < b.name ? 1 : -1)).map((f) => ({ id: f.name, name: f.name + (f.name === data.current ? ' (this session, live)' : ''), bytes: f.bytes || 0, del: true }));
   return [];
 }
+/** This tab's JavaScript heap against the limit Chrome gives it (owner ask 2026-09-23: see the limit coming before
+ *  an "Aw, Snap"). `perf` = performance.memory (Chrome only); null where the browser has no such figure. */
+export const MEM_LOG_MS = 15000;
+export function memoryModel(perf) {
+  if (!perf || !perf.jsHeapSizeLimit) return null;
+  const used = perf.usedJSHeapSize || 0, total = perf.totalJSHeapSize || 0, limit = perf.jsHeapSizeLimit;
+  return { used, total, limit, pct: usagePct(used, limit), near: used / limit >= 0.8 };
+}
 /** Percent of the browser's maximum, readable at both ends (0.02 %, 100 %). */
 export function usagePct(usage, quota) {
   if (!quota) return null;

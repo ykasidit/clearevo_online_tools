@@ -112,6 +112,15 @@ const canc = await evalJs(`({ aborted: window.__aborted, posts: window.__logPost
 check('Cancel aborts the upload in flight: nothing posted, a toast says so, the button is usable again', holding.open && /connecting|0 %/.test(holding.lead) && canc.aborted === 1 && canc.posts === holding.posts && !canc.open && /cancelled/i.test(canc.toast) && canc.logged && !canc.btn, { holding, canc });
 await evalJs(`window.__holdUpload = false; 1`);
 
+// --- memory line and the last-run tombstone (owner ask 2026-09-23) ---
+const memNow = await evalJs(`(() => { window.__batrayTest.memTick(); return { line: document.getElementById('memUse').textContent, logged: window.__batrayTest.logLines().filter((l) => /  mem: used=\\d+MB total=\\d+MB limit=\\d+MB pct=[\\d.]+ rows=\\d+ held=\\d+ log=\\d+/.test(l)).length, first: window.__batrayTest.logLines().find((l) => /first start on this device|previous session/.test(l)), lastrun: JSON.parse(localStorage.getItem('batray_lastrun')) }; })()`);
+check('the History card shows this tab\'s memory against the limit Chrome allows, the log gets a mem line, and a last-run record is kept', /^Memory of this tab: [\d.]+ (KB|MB) of the [\d.]+ (MB|GB) Chrome allows \([\d.]+ %\) · \d+ readings in memory$/.test(memNow.line) && memNow.logged >= 1 && !!memNow.first && memNow.lastrun && memNow.lastrun.clean === false && typeof memNow.lastrun.sid === 'string', memNow);
+// a start after an unclean end (the record was never marked clean) says so at the top of the new log
+await evalJs(`window.__batrayTest.skipLastRun = true; localStorage.setItem('batray_lastrun', JSON.stringify({ sid: 'dead01', at: Date.now() - 5 * 60000, mem: { used: 900e6, limit: 1000e6 }, rows: 4321, state: 'reader connected, sharing on', file: 'log-2026-09-23T00-00-00Z-dead01.txt', clean: false })); 1`);
+await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
+const tomb = await evalJs(`(() => { const ls = window.__batrayTest.logLines(); const i = ls.findIndex((l) => /ENDED WITHOUT A CLEAN EXIT/.test(l)); return { i, lines: ls.slice(i, i + 3), headerLines: ls.findIndex((l) => /^\\S+  settings:/.test(l)) }; })()`);
+check('the new log opens with what the previous session last reported: unclean end, when, state, memory, rows, its log file', tomb.i > 0 && tomb.i < tomb.headerLines + 3 && /previous session dead01 ENDED WITHOUT A CLEAN EXIT .* last seen .* \(5 min before this start\)/.test(tomb.lines[0]) && /state reader connected, sharing on; memory 858 MB of 954 MB; 4321 rows in memory; its log file: log-2026-09-23T00-00-00Z-dead01.txt/.test(tomb.lines[1]) && /this start: (navigate|reload)/.test(tomb.lines[2]), tomb);
+
 // --- the stored debug log (owner ask 2026-09-23): session files in OPFS, rolling, retention, opt-out, download, delete ---
 await evalJs('window.__batrayTest.clearLogs()'); await sleep(200);
 await evalJs('window.__batrayTest.flushLog()');

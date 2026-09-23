@@ -71,3 +71,25 @@ export function uploadBody({ header, ring, stored, limit = LOG_UPLOAD_MAX }) {
 }
 /** Copy / Upload while the stored log is off: greyed with a title that says where to turn it on. */
 export function debugButtons(on) { return { disabled: !on }; }
+
+// ---- the last-run record (owner ask 2026-09-23): Chrome gives a page no tombstone after an "Aw, Snap", so the
+// app writes one itself every MEM_LOG_MS into localStorage and marks it clean on pagehide. The next start reads it
+// and puts what it says at the top of the new log; the previous session's stored log file is the rest of the story.
+export const LASTRUN_KEY = 'batray_lastrun';
+export function lastRunRecord({ sid, now, mem, rows, state, file, clean = false }) {
+  return { sid, at: now, mem: mem ? { used: mem.used, limit: mem.limit } : null, rows: rows || 0, state: state || '', file: file || null, clean: !!clean };
+}
+/** Lines for the top of a new log about the previous run: null when there was none. */
+export function lastRunReport(prev, now, { wasDiscarded = false, navType = '' } = {}) {
+  if (!prev || typeof prev !== 'object' || typeof prev.at !== 'number') return null;
+  const ago = Math.max(0, Math.round((now - prev.at) / 60000));
+  const when = `${new Date(prev.at).toISOString()} (${ago} min before this start)`;
+  const lines = [];
+  if (prev.clean) lines.push(`previous session ${prev.sid || '?'} ended cleanly at ${when}${prev.file ? `; its log file: ${prev.file}` : ''}`);
+  else {
+    lines.push(`previous session ${prev.sid || '?'} ENDED WITHOUT A CLEAN EXIT (a crash, an "Aw, Snap", a killed tab, or a lost power): last seen ${when}`);
+    lines.push(`  last known: state ${prev.state || '?'}; memory ${prev.mem ? `${Math.round(prev.mem.used / 1048576)} MB of ${Math.round(prev.mem.limit / 1048576)} MB` : 'unknown'}; ${prev.rows} rows in memory${prev.file ? `; its log file: ${prev.file} (Browse in the History card)` : ''}`);
+  }
+  lines.push(`  this start: ${navType || 'navigate'}${wasDiscarded ? '; Chrome had DISCARDED the tab (memory pressure) and this is its reload' : ''}`);
+  return lines;
+}

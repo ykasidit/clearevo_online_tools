@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, usagePct, storageModel, browseItems, SETTINGS_MAX_BYTES } from '../public/batray/storage-logic.js';
+import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, usagePct, storageModel, browseItems, memoryModel, MEM_LOG_MS, SETTINGS_MAX_BYTES } from '../public/batray/storage-logic.js';
 
 test('settings: only the app keys are snapshotted, a settings file is checked before it is applied', () => {
   const snap = settingsSnapshot([['batray_cutoff_pct', '12'], ['ce_zoom', '110'], ['other_app', 'x'], ['batray_lang', 'th'], ['batray_bad', 5]]);
@@ -43,6 +43,10 @@ test('the Storage box: percent readable at both ends, three rows with what each 
   assert.deepEqual(browseItems('set', { snapshot: { batray_lang: 'th', batray_cutoff_pct: '12' } }).map((i) => [i.id, i.bytes]), [['batray_cutoff_pct', 19], ['batray_lang', 13]]);
   assert.deepEqual(browseItems('log', { files: [{ name: 'log-a-x.txt', bytes: 1 }, { name: 'log-b-y.txt', bytes: 2 }], current: 'log-b-y.txt' }).map((i) => i.name), ['log-b-y.txt (this session, live)', 'log-a-x.txt']);
   assert.deepEqual(browseItems('other', {}), []);
+  assert.equal(memoryModel(undefined), null); assert.equal(memoryModel({}), null);
+  assert.deepEqual(memoryModel({ usedJSHeapSize: 48e6, totalJSHeapSize: 64e6, jsHeapSizeLimit: 2147e6 }), { used: 48e6, total: 64e6, limit: 2147e6, pct: 2.2, near: false });
+  assert.equal(memoryModel({ usedJSHeapSize: 1800e6, totalJSHeapSize: 1900e6, jsHeapSizeLimit: 2147e6 }).near, true, '80 % of the limit is near');
+  assert.equal(MEM_LOG_MS, 15000);
   const empty = storageModel({ backend: 'memory' });
   assert.ok(!empty.stored && empty.rows.every((r) => !r.canDelete) && !empty.rows[0].canRestore && empty.rows[1].canRestore, 'memory only: nothing to back up or delete except settings');
 });

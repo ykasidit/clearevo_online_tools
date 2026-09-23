@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX } from '../public/batray/log-logic.js';
+import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LASTRUN_KEY, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX } from '../public/batray/log-logic.js';
 
 test('one file per session, rolled at 10 MB with the same session id; names sort by time and parse back', () => {
   const ls = logState(true, 'abc123');
@@ -51,4 +51,19 @@ test('the newest 10 files are kept; the summary counts bytes; Upload sends the s
   assert.equal(tail.source, 'file-tail'); assert.ok(tail.body.startsWith('BatRay v0.9.32 · x\nua: y\n---\n(stored log is 5019 B: this is its tail from byte '), tail.body.slice(0, 90)); assert.ok(tail.body.length <= 1000, tail.body.length);
   assert.equal(LOG_UPLOAD_MAX, 4 * 1048576);
   assert.deepEqual(debugButtons(true), { disabled: false }); assert.deepEqual(debugButtons(false), { disabled: true });
+});
+
+test('the last-run record is the tombstone: a start after an unclean end says so at the top of the new log, with the last known state', () => {
+  assert.equal(LASTRUN_KEY, 'batray_lastrun');
+  const t0 = Date.UTC(2026, 8, 23, 1, 0, 0);
+  const rec = lastRunRecord({ sid: 'abc123', now: t0, mem: { used: 50e6, limit: 2000e6, total: 60e6 }, rows: 28800, state: 'connected, sharing', file: 'log-x-abc123.txt' });
+  assert.deepEqual(rec, { sid: 'abc123', at: t0, mem: { used: 50e6, limit: 2000e6 }, rows: 28800, state: 'connected, sharing', file: 'log-x-abc123.txt', clean: false });
+  const r = lastRunReport(rec, t0 + 7 * 60000, { wasDiscarded: true, navType: 'reload' });
+  assert.equal(r.length, 3);
+  assert.match(r[0], /^previous session abc123 ENDED WITHOUT A CLEAN EXIT .* last seen 2026-09-23T01:00:00.000Z \(7 min before this start\)$/);
+  assert.match(r[1], /state connected, sharing; memory 48 MB of 1907 MB; 28800 rows in memory; its log file: log-x-abc123.txt/);
+  assert.match(r[2], /this start: reload; Chrome had DISCARDED the tab/);
+  const clean = lastRunReport(lastRunRecord({ sid: 'zzz', now: t0, mem: null, rows: 0, state: 'idle', file: null, clean: true }), t0 + 60000, {});
+  assert.deepEqual(clean, ['previous session zzz ended cleanly at 2026-09-23T01:00:00.000Z (1 min before this start)', '  this start: navigate']);
+  assert.equal(lastRunReport(null, t0), null); assert.equal(lastRunReport('junk', t0), null);
 });

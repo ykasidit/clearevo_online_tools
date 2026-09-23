@@ -29,8 +29,8 @@ import { Ema } from './trend.js';
 import { historyState, dayKey, dayStartMs, rowFromReading, rowLine, lineBytes, nextPos, rowDue, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, recentSlice, transferPlan, histReqDecision, replicaDecision, releaseHeld, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, RECENT_STEP_MS, XFER_BACKLOG, REPLICA_GIVE_UP, RANGES } from './history-logic.js';
 import { tarPack, tarParse, backupDays, restorePlan, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
-import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems } from './storage-logic.js';
-import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY } from './log-logic.js';
+import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, MEM_LOG_MS } from './storage-logic.js';
+import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, LASTRUN_KEY } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
@@ -751,10 +751,46 @@ async function clearLogs() {
   try { const r = await hist.logClear(); logS.files = []; log(`debug log: deleted (${r.removed} files)`); } catch (e) { log(`debug log: delete failed: ${e.message}`); }
   toast(T.logCleared, 5000); renderLogNote();
 }
+// ---- memory line + the last-run record (owner ask 2026-09-23): every 15 s the tab's heap use goes to the card, to
+// the log, and into localStorage with what the app was doing; pagehide marks it clean. A start that finds an
+// unclean record says so at the top of the new log (Chrome gives no tombstone of its own).
+function appState() {
+  const p = active; const parts = [];
+  parts.push(p ? `${p.demo ? 'demo' : p.remote ? 'viewer' : 'reader'} ${p.connected ? 'connected' : 'not connected'}` : 'no pack');
+  if (shareS.phase !== 'off') parts.push(`sharing ${shareS.phase}`); if (viewer) parts.push(`viewing live=${viewer.state.live}`); if (tvS.phase !== 'off') parts.push(`tv ${tvS.phase}`);
+  return parts.join(', ');
+}
+function renderMemory(m) {
+  const el = $('memUse'); if (!el) return;
+  el.textContent = m ? `${T.memUse(fmtSize(m.used), fmtSize(m.limit), m.pct, histMem.rows.length)}${m.near ? ` · ${T.memNear}` : ''}` : T.memNone;
+  el.classList.toggle('warn', !!(m && m.near));
+}
+function writeLastRun(clean) {
+  const m = memoryModel(performance.memory);
+  try { localStorage.setItem(LASTRUN_KEY, JSON.stringify(lastRunRecord({ sid: logS.sid, now: Date.now(), mem: m, rows: histMem.rows.length, state: appState(), file: logS.file, clean }))); } catch { /* no storage */ }
+  return m;
+}
+function memTick() {
+  const m = writeLastRun(false);
+  renderMemory(m);
+  if (m) log(`mem: used=${Math.round(m.used / 1048576)}MB total=${Math.round(m.total / 1048576)}MB limit=${Math.round(m.limit / 1048576)}MB pct=${m.pct}${m.near ? ' NEAR THE LIMIT' : ''} rows=${histMem.rows.length} held=${histMem.held.length} log=${logLines.length}`);
+}
+setInterval(memTick, MEM_LOG_MS);
+window.addEventListener('pagehide', () => { if (!(window.__batrayTest && window.__batrayTest.skipLastRun)) writeLastRun(true); });
+/** Right after the header lines: what the previous run last reported, then this run's first record. */
+function logLastRun() {
+  let prev = null; try { prev = JSON.parse(localStorage.getItem(LASTRUN_KEY) || 'null'); } catch { prev = null; }
+  const nav = performance.getEntriesByType ? (performance.getEntriesByType('navigation')[0] || {}).type : '';
+  const report = lastRunReport(prev, Date.now(), { wasDiscarded: !!document.wasDiscarded, navType: nav });
+  if (report) for (const line of report) log(line);
+  else log(`first start on this device (this start: ${nav || 'navigate'})`);
+  writeLastRun(false);
+  renderMemory(memoryModel(performance.memory));
+}
 $('logKeep').addEventListener('change', () => setLogKeep($('logKeep').checked));
 $('logDownload').addEventListener('click', () => downloadLogs().catch((e) => log(`debug log: download failed: ${e.message}`)));
 $('logClear').addEventListener('click', async () => { const a = await openSheet('clearLogs'); if (a === 'ok') clearLogs(); });
-const fmtSize = (b) => (b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+function fmtSize(b) { return b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`; }   // hoisted: used by the startup blocks above
 function histSum() { return historySummary(histS.days, histS.todayRows, { usage: histS.usage, quota: histS.quota, today: histS.day }); }
 function settingsEntries() { const out = []; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); out.push([k, localStorage.getItem(k)]); } } catch { /* no storage */ } return out; }
 /** The Storage box under the chart (owner ask 2026-09-23): used of the maximum with a percent, one row per eater. */
@@ -1697,7 +1733,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, histHeld: () => histMem.held.slice(), remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, lineBytes, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, histHeld: () => histMem.held.slice(), remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, lineBytes, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
@@ -1863,6 +1899,7 @@ $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('ab
 })();
 
 for (const line of logHeaderLines()) log(line);     // typeof-guarded inside: a missing BluetoothDevice global must not abort startup
+logLastRun();
 logEnvAsync();
 // one line a minute with everything that matters, so a log of a whole night reads as a timeline
 setInterval(() => {
