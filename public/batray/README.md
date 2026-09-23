@@ -145,6 +145,23 @@ memory or a chart, the in-memory set is thinned evenly to `MEM_MAX_ROWS`
 happened. The files keep every row. `readGz` no longer spreads a day into
 constructor arguments (an 88 MB day threw).
 
+## Live memory line (0.9.35)
+
+Chrome hands a page a LIVE `performance.memory` only when it is cross-origin
+isolated; otherwise the figure is quantised and refreshed every ~20 minutes
+(the owner's phone showed 10 MB with 327k rows in memory, and a sandbox probe
+saw the figure not move after allocating 200k objects). The site therefore
+sends `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless` for /batray/ (deploy.sh
+`_headers`, a site_checks rule), `memoryModel(perf, {precise, measured})`
+carries `precise = crossOriginIsolated`, the line refreshes every 5 s
+(`MEM_UI_MS`), and once a minute (`MEM_MEASURE_MS`)
+`performance.measureUserAgentSpecificMemory()` gives the whole tab with a
+breakdown (page / history worker / DOM / other, `memoryParts()`), which the
+line shows in brackets and the `mem:` log line carries as `measured=`. On a
+page without the headers the line says so. `credentialless` keeps the GA tag
+and Google's cast sender loading.
+
 ## Copyright & license
 
 Copyright (C) 2026 Kasidit Yusuf.

@@ -53,11 +53,32 @@ export function browseItems(type, data) {
 /** This tab's JavaScript heap against the limit Chrome gives it (owner ask 2026-09-23: see the limit coming before
  *  an "Aw, Snap"). `perf` = performance.memory (Chrome only); null where the browser has no such figure. */
 export const MEM_LOG_MS = 15000;
-export function memoryModel(perf) {
+export function memoryModel(perf, { precise = true, measured = null } = {}) {
   if (!perf || !perf.jsHeapSizeLimit) return null;
-  const used = perf.usedJSHeapSize || 0, total = perf.totalJSHeapSize || 0, limit = perf.jsHeapSizeLimit;
-  return { used, total, limit, pct: usagePct(used, limit), near: used / limit >= 0.8 };
+  const heap = perf.usedJSHeapSize || 0, total = perf.totalJSHeapSize || 0, limit = perf.jsHeapSizeLimit;
+  // Chrome only reports a live figure on a cross-origin isolated page (the site sends the two headers for
+  // /batray/); elsewhere performance.memory is quantised and refreshed every ~20 min, so the line says so.
+  // `measured` = performance.measureUserAgentSpecificMemory(): the whole tab incl. the history worker and DOM.
+  const used = measured && measured.bytes ? measured.bytes : heap;
+  const m = { used, heap, total, limit, pct: usagePct(used, limit), near: used / limit >= 0.8, precise: !!precise, parts: null, measuredAt: null };
+  if (measured && measured.breakdown) {
+    const p = { window: 0, worker: 0, dom: 0, other: 0 };
+    for (const b of measured.breakdown) {
+      const scope = (b.attribution || []).map((a) => a.scope || '').join(',');
+      if (/Worker/.test(scope)) p.worker += b.bytes; else if ((b.types || []).includes('DOM')) p.dom += b.bytes; else if (/Window/.test(scope)) p.window += b.bytes; else p.other += b.bytes;
+    }
+    m.parts = p; m.measuredAt = measured.at || null;
+  }
+  return m;
 }
+/** Text of the breakdown: the parts that are not zero, biggest first. */
+export function memoryParts(m, T) {
+  if (!m || !m.parts) return '';
+  const names = { window: T.memWindow, worker: T.memWorker, dom: T.memDom, other: T.memOther };
+  return Object.entries(m.parts).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${names[k]} ${T.fmtSize(v)}`).join(', ');
+}
+export const MEM_UI_MS = 5000;             // the line refreshes this often (the log line every MEM_LOG_MS)
+export const MEM_MEASURE_MS = 60000;       // measureUserAgentSpecificMemory() is slow (seconds) and rate-limited: once a minute
 /** Percent of the browser's maximum, readable at both ends (0.02 %, 100 %). */
 export function usagePct(usage, quota) {
   if (!quota) return null;

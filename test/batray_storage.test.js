@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, usagePct, storageModel, browseItems, memoryModel, MEM_LOG_MS, SETTINGS_MAX_BYTES } from '../public/batray/storage-logic.js';
+import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, usagePct, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, SETTINGS_MAX_BYTES } from '../public/batray/storage-logic.js';
 
 test('settings: only the app keys are snapshotted, a settings file is checked before it is applied', () => {
   const snap = settingsSnapshot([['batray_cutoff_pct', '12'], ['ce_zoom', '110'], ['other_app', 'x'], ['batray_lang', 'th'], ['batray_bad', 5]]);
@@ -44,7 +44,21 @@ test('the Storage box: percent readable at both ends, three rows with what each 
   assert.deepEqual(browseItems('log', { files: [{ name: 'log-a-x.txt', bytes: 1 }, { name: 'log-b-y.txt', bytes: 2 }], current: 'log-b-y.txt' }).map((i) => i.name), ['log-b-y.txt (this session, live)', 'log-a-x.txt']);
   assert.deepEqual(browseItems('other', {}), []);
   assert.equal(memoryModel(undefined), null); assert.equal(memoryModel({}), null);
-  assert.deepEqual(memoryModel({ usedJSHeapSize: 48e6, totalJSHeapSize: 64e6, jsHeapSizeLimit: 2147e6 }), { used: 48e6, total: 64e6, limit: 2147e6, pct: 2.2, near: false });
+  assert.deepEqual(memoryModel({ usedJSHeapSize: 48e6, totalJSHeapSize: 64e6, jsHeapSizeLimit: 2147e6 }), { used: 48e6, heap: 48e6, total: 64e6, limit: 2147e6, pct: 2.2, near: false, precise: true, parts: null, measuredAt: null });
+  // not cross-origin isolated: Chrome's figure is stale (the owner's phone: 10 MB with 327k rows) and the model says so
+  assert.equal(memoryModel({ usedJSHeapSize: 10e6, totalJSHeapSize: 10e6, jsHeapSizeLimit: 2995e6 }, { precise: false }).precise, false);
+  // measureUserAgentSpecificMemory() on the isolated page, as the sandbox probe returned it (2026-09-24)
+  const measured = { bytes: 4964185, at: 5, breakdown: [
+    { bytes: 329005, types: ['JavaScript'], attribution: [{ scope: 'DedicatedWorkerGlobalScope', url: 'history-worker.js' }] },
+    { bytes: 650035, types: ['Shared'], attribution: [] }, { bytes: 0, types: [], attribution: [] },
+    { bytes: 222816, types: ['DOM'], attribution: [] },
+    { bytes: 3762329, types: ['JavaScript'], attribution: [{ scope: 'Window', url: 'batray' }] }] };
+  const mm = memoryModel({ usedJSHeapSize: 5450953, totalJSHeapSize: 7882953, jsHeapSizeLimit: 4294705152 }, { precise: true, measured });
+  assert.equal(mm.used, 4964185, 'the measured whole-tab figure is what is shown'); assert.equal(mm.heap, 5450953);
+  assert.deepEqual(mm.parts, { window: 3762329, worker: 329005, dom: 222816, other: 650035 }); assert.equal(mm.measuredAt, 5);
+  const T = { memWindow: 'page', memWorker: 'history worker', memDom: 'DOM', memOther: 'other', fmtSize: (b) => `${Math.round(b / 1024)} KB` };
+  assert.equal(memoryParts(mm, T), 'page 3674 KB, other 635 KB, history worker 321 KB, DOM 218 KB');
+  assert.equal(memoryParts(memoryModel({ usedJSHeapSize: 1, totalJSHeapSize: 1, jsHeapSizeLimit: 9 }), T), '', 'no breakdown without a measurement');
   assert.equal(memoryModel({ usedJSHeapSize: 1800e6, totalJSHeapSize: 1900e6, jsHeapSizeLimit: 2147e6 }).near, true, '80 % of the limit is near');
   assert.equal(MEM_LOG_MS, 15000);
   const empty = storageModel({ backend: 'memory' });

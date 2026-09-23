@@ -29,14 +29,14 @@ import { Ema } from './trend.js';
 import { historyState, dayKey, dayStartMs, rowFromReading, rowLine, lineBytes, nextPos, rowDue, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, recentSlice, transferPlan, histReqDecision, replicaDecision, releaseHeld, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, RECENT_STEP_MS, XFER_BACKLOG, REPLICA_GIVE_UP, RANGES , MEM_MAX_ROWS, MEM_TAIL_BYTES, thinRows } from './history-logic.js';
 import { tarPack, tarParse, backupDays, restorePlan, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
-import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, MEM_LOG_MS } from './storage-logic.js';
+import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
 import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, LASTRUN_KEY } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.34';
+export const APP_VERSION = '0.9.35';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -765,22 +765,37 @@ function appState() {
   if (shareS.phase !== 'off') parts.push(`sharing ${shareS.phase}`); if (viewer) parts.push(`viewing live=${viewer.state.live}`); if (tvS.phase !== 'off') parts.push(`tv ${tvS.phase}`);
   return parts.join(', ');
 }
+// Live only on a cross-origin isolated page (the site sends COOP/COEP for /batray/): there performance.memory is
+// precise and measureUserAgentSpecificMemory() gives the whole tab, worker included. Elsewhere Chrome hands out a
+// figure refreshed every ~20 min (the owner's phone said 10 MB with 327k rows), and the line says so.
+let memMeasured = null;
+const memPrecise = () => !!window.crossOriginIsolated;
+function memModel() { return memoryModel(performance.memory, { precise: memPrecise(), measured: memMeasured }); }
 function renderMemory(m) {
   const el = $('memUse'); if (!el) return;
-  el.textContent = m ? `${T.memUse(fmtSize(m.used), fmtSize(m.limit), m.pct, histMem.rows.length)}${m.near ? ` · ${T.memNear}` : ''}` : T.memNone;
+  const parts = memoryParts(m, { ...T, fmtSize });
+  el.textContent = m ? `${T.memUse(fmtSize(m.used), fmtSize(m.limit), m.pct, histMem.rows.length)}${parts ? ` (${parts})` : ''}${m.precise ? '' : ` · ${T.memCoarse}`}${m.near ? ` · ${T.memNear}` : ''}` : T.memNone;
   el.classList.toggle('warn', !!(m && m.near));
 }
+async function memMeasure() {
+  if (!memPrecise() || typeof performance.measureUserAgentSpecificMemory !== 'function') return;
+  try { const r = await performance.measureUserAgentSpecificMemory(); memMeasured = { bytes: r.bytes, breakdown: r.breakdown, at: Date.now() }; renderMemory(memModel()); }
+  catch (e) { log(`mem: measure failed: ${e.message}`); }
+}
 function writeLastRun(clean) {
-  const m = memoryModel(performance.memory);
+  const m = memModel();
   try { localStorage.setItem(LASTRUN_KEY, JSON.stringify(lastRunRecord({ sid: logS.sid, now: Date.now(), mem: m, rows: histMem.rows.length, state: appState(), file: logS.file, clean }))); } catch { /* no storage */ }
   return m;
 }
 function memTick() {
   const m = writeLastRun(false);
   renderMemory(m);
-  if (m) log(`mem: used=${Math.round(m.used / 1048576)}MB total=${Math.round(m.total / 1048576)}MB limit=${Math.round(m.limit / 1048576)}MB pct=${m.pct}${m.near ? ' NEAR THE LIMIT' : ''} rows=${histMem.rows.length} held=${histMem.held.length} log=${logLines.length}`);
+  if (m) log(`mem: used=${Math.round(m.used / 1048576)}MB total=${Math.round(m.total / 1048576)}MB limit=${Math.round(m.limit / 1048576)}MB pct=${m.pct}${m.near ? ' NEAR THE LIMIT' : ''} rows=${histMem.rows.length} held=${histMem.held.length} log=${logLines.length} precise=${m.precise ? 'yes' : 'no'}${m.parts ? ` measured=${Math.round(m.used / 1048576)}MB(${Object.entries(m.parts).filter(([, v]) => v > 0).map(([k, v]) => `${k} ${Math.round(v / 1048576)}`).join(', ')}MB)` : ''}`);
 }
 setInterval(memTick, MEM_LOG_MS);
+setInterval(() => renderMemory(memModel()), MEM_UI_MS);
+setInterval(memMeasure, MEM_MEASURE_MS);
+setTimeout(memMeasure, 3000);
 window.addEventListener('pagehide', () => { if (!(window.__batrayTest && window.__batrayTest.skipLastRun)) writeLastRun(true); });
 /** Right after the header lines: what the previous run last reported, then this run's first record. */
 function logLastRun() {
@@ -790,7 +805,8 @@ function logLastRun() {
   if (report) for (const line of report) log(line);
   else log(`first start on this device (this start: ${nav || 'navigate'})`);
   writeLastRun(false);
-  renderMemory(memoryModel(performance.memory));
+  renderMemory(memModel());
+  log(`mem: ${memPrecise() ? 'page is cross-origin isolated: figures are live' : 'page is NOT cross-origin isolated: Chrome refreshes performance.memory only every ~20 min'}`);
 }
 $('logKeep').addEventListener('change', () => setLogKeep($('logKeep').checked));
 $('logDownload').addEventListener('click', () => downloadLogs().catch((e) => log(`debug log: download failed: ${e.message}`)));
