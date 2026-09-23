@@ -92,6 +92,7 @@ body.offline #fDash{animation:none}
 #etaLine input{width:52px;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:4px;padding:1px 4px;font:inherit}
 .ranges{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.ranges button{background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:8px;padding:4px 12px;font:inherit;cursor:pointer}.ranges button.on{background:#1c5680;border-color:#2aa9e0;color:#fff}#trend{width:100%;min-height:200px}#trend .uplot{font-family:'Segoe UI',Tahoma,sans-serif}#trend .u-select{background:rgba(74,169,224,.25)}
 .serverNote{color:#8fa6bd;font-size:12px;line-height:1.5;padding:2px 12px 6px}.serverNote a{color:#4aa9e0}.tvpanel .serverNote{padding:0}
+.storage{margin:10px 0 6px;border:1px solid #1c3550;border-radius:8px;background:#0d1f33;overflow:hidden}.stHead{display:flex;justify-content:space-between;gap:10px;padding:8px 12px;background:#12283f;font-weight:600;color:#eaf4ff}.stHead span:last-child{color:#4aa9e0;font-weight:400}.stRow{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;border-top:1px solid #1c3550}.stName{display:flex;flex-direction:column;min-width:0}.stSize{color:#8fa6bd;font-size:12px}.stBtns{display:flex;gap:6px;flex-wrap:wrap}.stBtn{background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:8px;padding:4px 10px;font:inherit;font-size:13px;cursor:pointer}.stBtn.danger{border-color:#7a3a3a;color:#ff8a80}.stBtn[hidden]{display:none}
 .prog{height:8px;background:#12283f;border:1px solid #1c3550;border-radius:5px;overflow:hidden;margin-top:8px}.prog .bar{height:100%;background:#2aa9e0;transition:width .5s linear}
 #trend{width:100%;height:130px;display:block;background:#0a1626;border:1px solid #1c3550;border-radius:6px}
 .check{margin:10px 0 0;font:11px 'DejaVu Sans Mono',monospace;color:#6f8aa6;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
@@ -210,7 +211,7 @@ body.view #empty,body.view #oneApp{display:none}
 
 /* ---- UI_GUIDELINES.md: touch targets, bottom sheet, viewer tab bar, low power ---- */
 @media (max-width:700px),(pointer:coarse){
-  .tbtn,.linkbtn,.pchip,.demobtn,#stopDemo,.tabbar button,.sheetBox .opts button,.optbtn,.ranges button,#flowFull,details.card>summary,#etaLine input,.toolbar label.chk{min-height:48px}
+  .tbtn,.linkbtn,.pchip,.demobtn,#stopDemo,.tabbar button,.sheetBox .opts button,.optbtn,.ranges button,.stBtn,#flowFull,details.card>summary,#etaLine input,.toolbar label.chk{min-height:48px}
   .tbtn{min-width:48px}.fontbtn{min-height:40px;min-width:40px}.linkbtn{padding:10px 8px}.pchip{padding:6px 14px}
   #demoBadge button{min-height:48px;padding:4px 14px}
 }
@@ -382,12 +383,15 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           <div class="check" id="trendEnergy"></div>
           <div id="trend" aria-label="power and battery percent over time"></div>
           <div class="check" data-i18n="trendLegend">power: green charge, amber discharge · battery %: blue line, right axis · red dashes: inverter cut-off · two fingers zoom, a mouse drags a window</div>
-          <div class="check" id="histNote"></div>
-          <div class="tvrow"><button type="button" id="histBackup" class="linkbtn" data-i18n="histBackup" hidden>Back up history (.tar)</button><button type="button" id="histRestore" class="linkbtn" data-i18n="histRestore" hidden>Restore from a backup</button><button type="button" id="histClear" class="linkbtn" data-i18n="histClear" hidden>Delete stored history</button><input type="file" id="histFile" accept=".tar,application/x-tar" hidden></div>
-          <div class="check" id="logNote"></div>
+          <div class="storage" id="storage">
+            <div class="stHead"><span data-i18n="stStorage">Storage on this device</span><span id="stUse"></span></div>
+            <div class="stRow" id="stHist"><div class="stName"><span data-i18n="stHistory">History data</span><span class="stSize" id="stHistSize"></span></div><div class="stBtns"><button type="button" id="histBackup" class="stBtn" data-i18n="stBackup">Back up</button><button type="button" id="histRestore" class="stBtn" data-i18n="stRestore">Restore</button><button type="button" id="histClear" class="stBtn danger" data-i18n="stDelete">Delete</button></div></div>
+            <div class="stRow" id="stSet"><div class="stName"><span data-i18n="stSettings">Settings</span><span class="stSize" id="stSetSize"></span></div><div class="stBtns"><button type="button" id="setBackup" class="stBtn" data-i18n="stBackup">Back up</button><button type="button" id="setRestore" class="stBtn" data-i18n="stRestore">Restore</button><button type="button" id="setReset" class="stBtn danger" data-i18n="stReset">Reset</button></div></div>
+            <div class="stRow" id="stLog"><div class="stName"><span data-i18n="stLogs">Debug logs</span><span class="stSize" id="stLogSize"></span></div><div class="stBtns"><button type="button" id="logDownload" class="stBtn" data-i18n="stBackup">Back up</button><button type="button" id="logClear" class="stBtn danger" data-i18n="stDelete">Delete</button></div></div>
+            <input type="file" id="histFile" accept=".tar,application/x-tar" hidden><input type="file" id="setFile" accept=".json,application/json" hidden>
+          </div>
           <div class="check"><label class="chk"><input type="checkbox" id="logKeep" checked> <span data-i18n="logKeep">Keep debug logs on this device (needed for Copy log and Upload log)</span></label></div>
-          <div class="tvrow"><button type="button" id="logDownload" class="linkbtn" data-i18n="logDownload" hidden>Download debug logs (.tar)</button><button type="button" id="logClear" class="linkbtn" data-i18n="logClear" hidden>Delete debug logs</button></div>
-          <div class="check" id="histBackupNote" data-i18n="histBackupNote" hidden>The backup is one .tar file holding a gzip file per day (7-Zip or Windows 11 opens it; each day is plain JSON lines). Up to 512 MB. Restoring adds the days this device lacks and never replaces a fuller day.</div>
+          <div class="check" id="histNote"></div>
         </div>
         <div class="card" data-tab="more" id="moreCard">
           <h2><span data-i18n="moreH">More</span> <span class="note" data-i18n="moreNote">same frame as the meters, not covered by the cell-sum check; offsets verified against captured frames from 24-cell, 32-cell and JK-PB firmware (see how to use)</span></h2>

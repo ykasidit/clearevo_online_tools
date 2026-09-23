@@ -119,6 +119,10 @@ export function sheetModel(kind, ctx, T) {
       m.actions = [{ id: 'cancel', label: T.cancel, primary: false }];
       break;
     }
+    case 'resetSettings':
+      m.title = T.resetTitle; m.lead = T.resetBody(ctx.setCount || 0); m.tone = 'act';
+      m.actions = [{ id: 'cancel', label: T.cancel, primary: false }, { id: 'ok', label: T.resetGo, primary: true }];
+      break;
     case 'clearLogs':
       m.title = T.logClear; m.lead = T.logClearBody(ctx.logFiles || 0, ctx.logSize || '0 KB'); m.tone = 'act';
       m.actions = [{ id: 'cancel', label: T.cancel, primary: false }, { id: 'ok', label: T.logClearGo, primary: true }];

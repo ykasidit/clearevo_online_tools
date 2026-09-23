@@ -49,6 +49,8 @@ passed to every function) is the house style here:
 | Screen wake lock + keep-awake video | `wakeS` | `wake-logic.js` | `app.js` | `batray_wake.test.js`, `browser/batray_freeze.mjs` |
 | Alerts, time-to-go | rule tables | `alerts-logic.js`, `trend.js` | `alerts.js`, `app.js` | `batray_alerts.test.js`, `batray_trend.test.js` |
 | Stored history: day files, rollover, retention by free space, the transfer plan, chart windows | `histS` | `history-logic.js` | `history.js` + `history-worker.js` (OPFS), `history-chart.js` (uPlot), `app.js` | `batray_history.test.js`, `browser/batray_history.mjs` (files survive a reload, gzip, torn tail, backup/restore, received file, delete sheet) |
+| Storage box: usage percent, the three rows, settings file checks | facts in | `storage-logic.js` | `app.js` | `batray_storage.test.js`, `browser/batray_history.mjs` |
+| Stored debug log: session files, rolling, retention, what Upload sends | `logS` | `log-logic.js` | the history worker, `app.js` | `batray_log.test.js`, `browser/batray_log.mjs` |
 | Backup / restore (.tar of the daily gz) | bytes in, bytes out | `backup-logic.js` | `app.js` (download, file input), the worker | `batray_backup.test.js` (round trip through system tar) |
 | Remembered BMS button | saved id + name, getDevices | `conn-logic.js` `knownDevice`, event `known` | `app.js` | `batray_conn.test.js`, `browser/batray_history.mjs` |
 | The picture, chips, cell line, "updated", TV frame model | a decoded reading | `view-logic.js` | `app.js` paints, `tv-draw.js` draws | `batray_view.test.js` (the owner's real frame) |

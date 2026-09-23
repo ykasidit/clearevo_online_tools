@@ -129,8 +129,8 @@ await evalJs('window.__batrayTest.flushLog()'); await sleep(200);               
 ls = await evalJs('window.__batrayTest.logState()'); lf = await evalJs('window.__batrayTest.logList()');
 const mine = lf.filter((f) => f.name.includes(ls.sid));
 check('when a file would pass the limit the next flush rolls to a new timestamp with the same session id, and only the newest files are kept', mine.length >= 2 && lf.length <= 2 && ls.file !== first.name, { ls: { file: ls.file, fileBytes: ls.fileBytes }, lf });
-const noteTxt = await evalJs(`({ note: document.getElementById('logNote').textContent, keep: document.getElementById('logKeep').checked, dl: !document.getElementById('logDownload').hidden, del: !document.getElementById('logClear').hidden })`);
-check('the History card says how many debug log files and MB are stored, with Download and Delete', /Debug logs on this device: \d+ files?, \d+ KB \(this session/.test(noteTxt.note) && noteTxt.keep && noteTxt.dl && noteTxt.del, noteTxt);
+const noteTxt = await evalJs(`({ note: document.getElementById('stLogSize').textContent, keep: document.getElementById('logKeep').checked, dl: !document.getElementById('logDownload').hidden, del: !document.getElementById('logClear').hidden })`);
+check('the Storage box row says how many debug log files and KB are stored, with Back up and Delete', /^\d+ KB · \d+ files? · this session \d+ KB \(id [a-z0-9]{6}\)$/.test(noteTxt.note) && noteTxt.keep && noteTxt.dl && noteTxt.del, noteTxt);
 // opt-out greys Copy / Upload with a tooltip that says where to turn it back on
 await evalJs(`document.getElementById('logKeep').click(); 1`); await sleep(200);
 const off = await evalJs(`({ pref: localStorage.getItem('batray_debuglog'), on: window.__batrayTest.logState().on, btns: ['copy', 'upload', 'copy2', 'upload2'].map((id) => [document.getElementById(id).disabled, document.getElementById(id).title]) })`);

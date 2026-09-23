@@ -29,6 +29,7 @@ import { Ema } from './trend.js';
 import { historyState, dayKey, dayStartMs, rowFromReading, rowLine, lineBytes, nextPos, rowDue, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, recentSlice, transferPlan, histReqDecision, replicaDecision, releaseHeld, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, RECENT_STEP_MS, XFER_BACKLOG, REPLICA_GIVE_UP, RANGES } from './history-logic.js';
 import { tarPack, tarParse, backupDays, restorePlan, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
+import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel } from './storage-logic.js';
 import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
@@ -733,12 +734,6 @@ function renderDebugButtons() {
   const b = debugButtons(logS.on);
   for (const id of ['copy', 'upload', 'copy2', 'upload2']) { const el = $(id); if (!el) continue; el.disabled = b.disabled; el.title = b.disabled ? T.debugOffTitle : (el.dataset.title || el.title); if (!el.dataset.title && !b.disabled) el.dataset.title = el.title; }
 }
-function renderLogNote() {
-  const sum = logSummary(logS.files); const el = $('logNote'); if (!el) return;
-  $('logKeep').checked = logS.on;
-  el.textContent = histS.backend === 'memory' ? T.logNoStore : T.logNote(sum.files, fmtSize(sum.bytes), fmtSize(logS.sessionBytes + logS.pendBytes), logS.sid);
-  $('logClear').hidden = !sum.files; $('logDownload').hidden = !sum.files;
-}
 async function downloadLogs() {
   await flushLog();
   const files = await hist.logAllGz();
@@ -761,12 +756,58 @@ $('logDownload').addEventListener('click', () => downloadLogs().catch((e) => log
 $('logClear').addEventListener('click', async () => { const a = await openSheet('clearLogs'); if (a === 'ok') clearLogs(); });
 const fmtSize = (b) => (b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 function histSum() { return historySummary(histS.days, histS.todayRows, { usage: histS.usage, quota: histS.quota, today: histS.day }); }
-function renderHistNote() {
-  const sum = histSum(), mem = histS.backend === 'memory';
-  const headroom = Math.round(HEADROOM_BYTES / 1048576);
-  $('histNote').textContent = mem ? T.histNoStore : !sum.days ? T.histNoteEmpty(headroom) : (viewMode ? T.histNoteViewer : T.histNote)(sum.days, fmtSize(sum.bytes), sum.oldest, sum.quota ? fmtSize(sum.quota) : '?', sum.estDays === null ? T.histEstUnknown : sum.estDays - sum.days > 3650 ? T.histEstYears : T.histEstDays((sum.estDays - sum.days).toLocaleString()), headroom);
-  $('histClear').hidden = mem || !sum.days; $('histBackup').hidden = mem || !sum.days; $('histRestore').hidden = mem; $('histBackupNote').hidden = mem;
+function settingsEntries() { const out = []; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); out.push([k, localStorage.getItem(k)]); } } catch { /* no storage */ } return out; }
+/** The Storage box under the chart (owner ask 2026-09-23): used of the maximum with a percent, one row per eater. */
+function renderStorage() {
+  const hs = histSum(), snap = settingsSnapshot(settingsEntries()), ls = logSummary(logS.files);
+  const m = storageModel({ usage: histS.usage, quota: histS.quota, backend: histS.backend, hist: { bytes: hs.bytes, days: hs.days, oldest: hs.oldest }, settings: { bytes: settingsBytes(snap), count: Object.keys(snap).length }, logs: { bytes: ls.bytes, files: ls.files, session: logS.sessionBytes + logS.pendBytes, sid: logS.sid } });
+  $('stUse').textContent = m.max ? T.stUse(fmtSize(m.used), fmtSize(m.max), m.pct) : T.stUnknown;
+  const [h, st, lg] = m.rows;
+  $('stHistSize').textContent = !m.stored ? T.histNoStore : h.days ? `${fmtSize(h.bytes)} · ${T.stHistInfo(h.days, h.since)}` : T.stNone;
+  $('stSetSize').textContent = st.count ? `${fmtSize(st.bytes)} · ${T.stSetInfo(st.count)}` : T.stNone;
+  $('stLogSize').textContent = !m.stored ? T.logNoStore : lg.files ? `${fmtSize(lg.bytes)} · ${T.stLogInfo(lg.files, fmtSize(lg.session), lg.sid)}` : T.stNone;
+  $('histBackup').hidden = !h.canBackup; $('histRestore').hidden = !h.canRestore; $('histClear').hidden = !h.canDelete;
+  $('setBackup').hidden = !st.canBackup; $('setReset').hidden = !st.canDelete;
+  $('logDownload').hidden = !lg.canBackup; $('logClear').hidden = !lg.canDelete;
+  $('logKeep').checked = logS.on;
+  $('histNote').textContent = T.histNote(Math.round(HEADROOM_BYTES / 1048576));
 }
+const renderHistNote = renderStorage, renderLogNote = renderStorage;
+// settings: a small .json out, checked before it goes back in; reset through a sheet; both reload the page
+function backupSettings() {
+  const snap = settingsSnapshot(settingsEntries());
+  if (!Object.keys(snap).length) { toast(T.setNothing, 5000); return null; }
+  const name = settingsFileName(dayKey(Date.now()));
+  const text = JSON.stringify(settingsFile(snap, APP_VERSION, new Date().toISOString()), null, 1);
+  log(`settings: backup ${name}: ${Object.keys(snap).length} values`);
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  return { name, count: Object.keys(snap).length };
+}
+async function restoreSettings(text, from = 'file') {
+  let obj = null; try { obj = JSON.parse(text); } catch { /* below */ }
+  const plan = settingsRestorePlan(obj);
+  if (!plan.ok) { toast(T.setBad, 8000); log(`settings: restore (${from}) refused: ${plan.why}`); return null; }
+  try { for (const [k, v] of Object.entries(plan.apply)) localStorage.setItem(k, v); } catch (e) { log(`settings: restore failed: ${e.message}`); return null; }
+  const n = Object.keys(plan.apply).length;
+  log(`settings: restored ${n} values (${plan.skipped} skipped) - reloading`);
+  toast(T.setRestored(n), 4000);
+  if (!window.__batrayTest) setTimeout(() => location.reload(), 1500);
+  return { restored: n, skipped: plan.skipped };
+}
+async function resetSettings() {
+  const snap = settingsSnapshot(settingsEntries());
+  try { for (const k of Object.keys(snap)) localStorage.removeItem(k); } catch { /* */ }
+  log(`settings: reset ${Object.keys(snap).length} values - reloading`);
+  toast(T.setReset, 4000);
+  if (!window.__batrayTest) setTimeout(() => location.reload(), 1500);
+  return Object.keys(snap).length;
+}
+$('setBackup').addEventListener('click', () => backupSettings());
+$('setRestore').addEventListener('click', () => $('setFile').click());
+$('setFile').addEventListener('change', async () => { const f = $('setFile').files[0]; $('setFile').value = ''; if (!f) return; if (f.size > 1048576) { toast(T.setBad, 6000); return; } restoreSettings(await f.text(), f.name).catch((e) => log(`settings: restore failed: ${e.message}`)); });
+$('setReset').addEventListener('click', async () => { const a = await openSheet('resetSettings'); log(`settings: reset -> ${a}`); if (a === 'ok') resetSettings(); });
 // past days for the 7 d / all ranges: read once, thinned to a row a minute, cached per day
 function loadDays(days) {
   for (const day of days) {
@@ -1627,7 +1668,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, histHeld: () => histMem.held.slice(), remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, lineBytes, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, histHeld: () => histMem.held.slice(), remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, lineBytes, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
@@ -1638,7 +1679,7 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 let sheetResolve = null, suppressPop = 0;
 function sheetCtx() {
   const p = active;
-  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
+  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
 function openSheet(kind) {
