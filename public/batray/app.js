@@ -26,7 +26,7 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
-import { historyState, dayKey, dayStartMs, rowFromReading, rowLine, lineBytes, nextPos, rowDue, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, recentSlice, transferPlan, histReqDecision, replicaDecision, releaseHeld, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, RECENT_STEP_MS, XFER_BACKLOG, REPLICA_GIVE_UP, RANGES } from './history-logic.js';
+import { historyState, dayKey, dayStartMs, rowFromReading, rowLine, lineBytes, nextPos, rowDue, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, recentSlice, transferPlan, histReqDecision, replicaDecision, releaseHeld, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, RECENT_STEP_MS, XFER_BACKLOG, REPLICA_GIVE_UP, RANGES , MEM_MAX_ROWS, MEM_TAIL_BYTES, thinRows } from './history-logic.js';
 import { tarPack, tarParse, backupDays, restorePlan, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, MEM_LOG_MS } from './storage-logic.js';
@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.33';
+export const APP_VERSION = '0.9.34';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -578,6 +578,7 @@ function recordRow(p, d, t, remoteRow = null) {
 function trimMem(now) {
   const before = histMem.rows.length;
   histMem.rows = trimRows(histMem.rows, now);
+  if (histMem.rows.length > MEM_MAX_ROWS) { histMem.rows = thinRows(histMem.rows, MEM_MAX_ROWS); log(`history: ${before} rows in memory thinned to ${histMem.rows.length} (cap ${MEM_MAX_ROWS}; the files keep all)`); }
   if (histMem.rows.length !== before) histMem.keys = new Set(histMem.rows.map(rowKey));
 }
 let histWriteFailed = false;
@@ -627,10 +628,12 @@ async function loadRecentIntoMem(now = Date.now()) {
   const today = dayKey(now); let loaded = 0;
   for (const day of [dayKey(now - 86400e3), today]) {
     if (!histS.days.some((d) => d.day === day)) continue;
-    const rows = parseLines(await hist.read(day));
+    const r = await hist.readTail(day, MEM_TAIL_BYTES);        // never the whole of a huge day: that was the Aw, Snap
+    const rows = parseLines(r.text);
+    if (r.cut) log(`history: ${day} is ${Math.round(r.total / 1048576)} MB, only its last ${Math.round(MEM_TAIL_BYTES / 1048576)} MB (${rows.length} rows) loaded into memory`);
     loaded += memAdd(trimRows(rows, now), false).length;
-    if (day === today) histS.todayRows = rows.length;
   }
+  trimMem(now);
   return loaded;
 }
 async function initHistory() {
@@ -880,7 +883,7 @@ function loadDays(days) {
   for (const day of days) {
     if (histMem.dayCache.has(day) || histMem.loading.has(day)) continue;
     histMem.loading.add(day);
-    hist.read(day).then((text) => { const rows = parseLines(text); histMem.dayCache.set(day, recentSlice(rows, 0, RECENT_STEP_MS, 1e9)); log(`history: read ${day}: ${rows.length} rows`); })
+    hist.readTail(day, MEM_TAIL_BYTES).then((r) => { const rows = parseLines(r.text); histMem.dayCache.set(day, recentSlice(rows, 0, RECENT_STEP_MS, 1e9)); log(`history: read ${day}: ${rows.length} rows${r.cut ? ` (last ${Math.round(MEM_TAIL_BYTES / 1048576)} MB of ${Math.round(r.total / 1048576)} MB)` : ''}`); })
       .catch((e) => { histMem.dayCache.set(day, []); log(`history: read ${day} failed: ${e.message}`); })
       .finally(() => { histMem.loading.delete(day); if (active) renderTrend(active); });
   }
@@ -1735,7 +1738,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, histHeld: () => histMem.held.slice(), remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, lineBytes, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, histHeld: () => histMem.held.slice(), remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, lineBytes, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), histReadTail: (d, n) => hist.readTail(d, n), connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });

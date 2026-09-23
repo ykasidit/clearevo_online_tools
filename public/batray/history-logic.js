@@ -33,6 +33,12 @@ export const GAP_ASKS_MAX = 3;                  // unanswered 5 s gap requests b
 export const MIN_ROW_MS = 3000;                 // one stored row per pack per poll period: a BMS that pushes frames every second is shown, not logged, faster
 export const CHART_MAX_POINTS = 2000;
 export const MEM_MS = RECENT_HOURS * 3600e3;          // rows kept in memory at full resolution; older days are read from their files
+// Memory caps (the owner's reader crashed "Aw, Snap" on 2026-09-23 after a day at 4 rows/s: 314k rows,
+// 88 MB in today's file, all of it parsed into memory at start). At most MEM_TAIL_BYTES of a day file are
+// read for memory / a chart, and the in-memory set is thinned to MEM_MAX_ROWS (two packs at one row per
+// 3 s for 24 h is 57.6k). The files keep everything.
+export const MEM_MAX_ROWS = 60000;
+export const MEM_TAIL_BYTES = 24 * 1048576;
 export const RANGES = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 24 * 3600e3, '7d': 7 * 86400e3, all: 0 };
 
 export function historyState() {
@@ -251,6 +257,13 @@ export function rowsBetween(rows, from, to) {
 }
 /** Time covered by rows, ms. */
 export const spanMs = (rows) => (rows.length < 2 ? 0 : rows[rows.length - 1].t - rows[0].t);
+/** Thin to at most maxRows, evenly, always keeping the newest row (a chart downsamples further anyway). */
+export function thinRows(rows, maxRows = MEM_MAX_ROWS) {
+  if (rows.length <= maxRows) return rows;
+  const step = rows.length / maxRows, out = [];
+  for (let i = rows.length - 1; i >= 0 && out.length < maxRows; i -= step) out.push(rows[Math.round(i)]);
+  return out.reverse();
+}
 /** Drop rows older than MEM_MS from the in-memory set (the files keep them). */
 export function trimRows(rows, now, keepMs = MEM_MS) {
   let i = 0; while (i < rows.length && rows[i].t < now - keepMs) i++;

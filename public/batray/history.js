@@ -24,7 +24,7 @@ class MemoryBackend {
   async ping() { return { ok: true }; }
   async append({ day, text }) { const f = this.files.get(day) || { raw: '', gz: null }; f.raw += text; this.files.set(day, f); return { bytes: f.raw.length }; }
   async list() { return { days: [...this.files.entries()].map(([day, f]) => ({ day, raw: f.raw !== '', gz: f.gz !== null, bytes: f.raw.length + (f.gz ? f.gz.length : 0) })).sort((a, b) => (a.day < b.day ? -1 : 1)) }; }
-  async read({ day }) { const f = this.files.get(day); return { text: f ? (f.gz || '') + f.raw : '' }; }
+  async read({ day, tail = 0 }) { const f = this.files.get(day); let text = f ? (f.gz || '') + f.raw : ''; const total = text.length; let cut = false; if (tail > 0 && text.length > tail) { cut = true; text = text.slice(text.length - tail); const nl = text.indexOf('\n'); text = nl >= 0 ? text.slice(nl + 1) : ''; } return { text, total, cut }; }
   async compact({ day }) { const f = this.files.get(day); if (!f || f.raw === '') return { done: false }; f.gz = (f.gz || '') + f.raw; f.raw = ''; return { done: true, from: f.gz.length, to: f.gz.length }; }
   async note() { return { bytes: 0 }; }
   async seal({ day }) { const f = this.files.get(day); return { bytes: f ? f.raw.length : 0, rows: f ? f.raw.split('\n').length - 1 : 0 }; }
@@ -80,7 +80,9 @@ export class HistoryStore {
   }
   async append(day, lines) { await this.ready; return this.b.append({ day, text: lines.join('\n') + '\n' }); }
   async list() { await this.ready; return (await this.b.list()).days; }
-  async read(day) { await this.ready; return (await this.b.read({ day })).text; }
+  async read(day, tail = 0) { await this.ready; return (await this.b.read({ day, tail })).text; }
+  /** {text, total, cut}: the last `tail` bytes of the day from a whole line, and whether a prefix was left out. */
+  async readTail(day, tail) { await this.ready; return this.b.read({ day, tail }); }
   async compact(day) { await this.ready; return this.b.compact({ day }); }
   async remove(day) { await this.ready; return this.b.remove({ day }); }
   async clear() { await this.ready; return this.b.clear(); }

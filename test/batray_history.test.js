@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { historyState, dayKey, dayStartMs, lineBytes, nextPos, replicaDecision, releaseHeld, rowFromReading, rowLine, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, cleanLen, recentSlice, transferPlan, histReqDecision, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, rowDue, HEADROOM_BYTES, XFER_CHUNK, HIST_REQ_MS, GAP_REQ_MS, GAP_ASKS_MAX, HOLD_MAX, MIN_ROW_MS, RANGES, MEM_MS } from '../public/batray/history-logic.js';
+import { historyState, dayKey, dayStartMs, lineBytes, nextPos, replicaDecision, releaseHeld, rowFromReading, rowLine, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, cleanLen, recentSlice, transferPlan, histReqDecision, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, thinRows, MEM_MAX_ROWS, MEM_TAIL_BYTES, daysNeeded, rowDue, HEADROOM_BYTES, XFER_CHUNK, HIST_REQ_MS, GAP_REQ_MS, GAP_ASKS_MAX, HOLD_MAX, MIN_ROW_MS, RANGES, MEM_MS } from '../public/batray/history-logic.js';
 import { decodeCellInfo } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -171,4 +171,18 @@ test('every stored date is UTC; rows carry their row number and byte offset; a v
   const rel = releaseHeld(hs, [c, b, { t, n: 44, o: 9400 }, a]);
   assert.deepEqual(rel.append.map((r) => r.n), [45, 46]); assert.deepEqual(rel.drop.map((r) => r.n), [44]); assert.deepEqual(rel.keep.map((r) => r.n), [48]);
   const ro = rolloverDecision(hs, '2026-09-22'); assert.equal(ro.action, 'compact'); assert.equal(hs.todayBytes, 0); assert.equal(hs.pendBytes, 0); assert.equal(hs.gap, null);
+});
+
+// The owner's reader crashed "Aw, Snap" on 2026-09-23 with 314k rows (88 MB) in today's file parsed into memory at start.
+test('thinRows: evenly thins a big set to the cap, newest row kept; small sets untouched', () => {
+  const rows = Array.from({ length: 314_393 }, (_, i) => ({ t: 1_000 + i * 275, p: 'm-00', n: i + 1 }));
+  const out = thinRows(rows, MEM_MAX_ROWS);
+  assert.equal(out.length, MEM_MAX_ROWS);
+  assert.equal(out[out.length - 1].n, rows.length, 'the newest row is always kept');
+  for (let i = 1; i < out.length; i++) assert.ok(out[i].t > out[i - 1].t, 'still sorted');
+  const gaps = new Set(); for (let i = 1; i < 50; i++) gaps.add(out[i].n - out[i - 1].n);
+  assert.ok([...gaps].every((g) => g === 5 || g === 6), `even steps of ~5.24 rows, got ${[...gaps]}`);
+  const small = rows.slice(0, 100);
+  assert.equal(thinRows(small, MEM_MAX_ROWS), small, 'under the cap: the same array back');
+  assert.ok(MEM_TAIL_BYTES < 88 * 1048576, 'a 4 rows/s day (88 MB) is never read whole into memory');
 });

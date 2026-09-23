@@ -417,18 +417,22 @@ export function queuedAfterGap(lastRxAt, now = Date.now(), limitMs = STALE_MS) {
 // (0x03), 228 pairs per session on both packs, one per 3.02 s - the same read
 // the JK app does once at connect, and the BMS beeps each time it serves it
 // (owner: "BatRay beeps every few seconds, the JK app once"). So no periodic
-// command any more: the stream itself proves the link, and one 0x96 is sent
-// only as a nudge when the stream has been quiet for NUDGE_MS, before the
-// STALE_MS drop. A beep then means the link is already sick.
-export const NUDGE_MS = 6000;
+// command any more: the stream itself proves the link, and 0x96 is re-sent
+// only as a nudge while the stream is quiet (every NUDGE_MS of silence, so at
+// most three before the STALE_MS drop). A beep then means the link is sick.
+// 0.9.34 (owner's log 2026-09-23 23:04): a 0x96 written right behind 0x97 is
+// ignored by the BMS (it is busy serving the 300 B device-info answer), so
+// the stream never started and the link fell ~10 s after connect; the JK
+// app's order is 0x97, wait for the answer, then 0x96 - see connect().
+export const NUDGE_MS = 3000;
+export const HANDSHAKE_WAIT_MS = 1500;
 
-/** Send one nudge command now? Quiet for NUDGE_MS since the last frame (or
- *  since connect when nothing has arrived yet) and not nudged since then. */
+/** Send a nudge command now? Quiet for NUDGE_MS since the last frame (or since
+ *  connect when nothing has arrived yet) and since the previous nudge. */
 export function nudgeDecision(lastRxAt, connectedAt, nudgedAt, now = Date.now(), quietMs = NUDGE_MS) {
   const since = lastRxAt || connectedAt;
   if (!since) return false;
-  if (now - since < quietMs) return false;
-  return !nudgedAt || nudgedAt < since;
+  return now - Math.max(since, nudgedAt || 0) >= quietMs;
 }
 
 export class JkBms extends EventTarget {
@@ -441,6 +445,8 @@ export class JkBms extends EventTarget {
     this.nudgeCheckMs = 1000;
     this.nudgedAt = null;
     this.connectedAt = null;
+    this._infoWaiters = [];
+    this._rxOther = 0;          // non-frame notifications logged this link (capped)
     this.info = null; // last decoded device-info frame
     this._listened = null;
     this._attempt = 0;
@@ -535,12 +541,13 @@ export class JkBms extends EventTarget {
       await this.char.startNotifications();
       if (stale()) throw new Error('superseded');
       this._log('notifications on');
-      // Device info first: its firmware version selects the frame layout. Some
-      // units only start streaming after they've been asked who they are.
+      // Device info first: its firmware version selects the frame layout, and
+      // the BMS only takes the cell-info command once it has served that answer
+      // (a 0x96 written right behind 0x97 was ignored: owner's log 2026-09-23).
       // These two are the ONLY commands of a healthy session (the JK app does
       // the same, one beep); see NUDGE_MS for why there is no poll.
+      this._rxOther = 0;
       await this._write(buildCommand(CMD_DEVICE_INFO));
-      await this._write(buildCommand(CMD_CELL_INFO));
     })();
     try {
       await Promise.race([work, timeout]);
@@ -554,6 +561,27 @@ export class JkBms extends EventTarget {
     }
     this._startNudge();
     this._emit('connected', device);
+    this._handshake(token);
+  }
+
+  /** After the device-info answer (or HANDSHAKE_WAIT_MS without it) ask for
+   *  cell info once: that is what starts the BMS's own stream. */
+  async _handshake(token) {
+    const t0 = Date.now();
+    const got = await this._waitInfo(HANDSHAKE_WAIT_MS);
+    if (this._attempt !== token || !this.char) return;                 // link gone or superseded meanwhile
+    this._log(got ? `handshake: device info in ${Date.now() - t0} ms, asking for cell info (0x96)` : `handshake: no device info in ${HANDSHAKE_WAIT_MS} ms, asking for cell info anyway (0x96)`);
+    this.nudgedAt = Date.now();                                          // the nudge clock starts at this ask
+    await this._write(buildCommand(CMD_CELL_INFO)).catch((e) => this._log(`handshake failed: ${e.message}`));
+  }
+
+  _waitInfo(ms) {
+    if (this.info) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const t = setTimeout(() => { this._infoWaiters = this._infoWaiters.filter((w) => w !== done); resolve(false); }, ms);
+      const done = () => { clearTimeout(t); resolve(true); };
+      this._infoWaiters.push(done);
+    });
   }
 
   async disconnect() {
@@ -586,7 +614,7 @@ export class JkBms extends EventTarget {
       if (!nudgeDecision(this.lastRxAt, this.connectedAt, this.nudgedAt, now)) return;
       this.nudgedAt = now;
       const quiet = Math.round((now - (this.lastRxAt || this.connectedAt)) / 1000);
-      this._log(`nudge: no frame for ${quiet} s, asking the BMS once (0x96)`);
+      this._log(`nudge: no frame for ${quiet} s, asking the BMS again (0x96)`);
       this._write(buildCommand(CMD_CELL_INFO)).catch((e) => this._log(`nudge failed: ${e.message}`));
     }, this.nudgeCheckMs);
   }
@@ -611,6 +639,14 @@ export class JkBms extends EventTarget {
     }
     this.lastRxAt = now;
     const { buf, frames, notes } = feedFrames(this.buf, chunk);
+    // A notification that is not part of a 300 B frame (the 20 B command ACK,
+    // an "AT" splice, whatever the module says on its own): the first few are
+    // logged in full - the 2026-09-23 log had something arriving 4 s after
+    // connect that was not a frame, and nothing said what.
+    if (!frames.length && chunk.length <= 40 && findHeader(chunk, 0) < 0 && this._rxOther < 5) {
+      this._rxOther++;
+      this._log(`rx ${chunk.length}B not a frame: ${hex(chunk)}`);
+    }
     this.buf = buf;
     for (const n of notes) this._log(n);
     for (const frame of frames) this._handleFrame(frame);
@@ -622,6 +658,7 @@ export class JkBms extends EventTarget {
       case FRAME_DEVICE_INFO:
         this.info = decodeDeviceInfo(frame);
         this._emit('device', this.info);
+        for (const w of this._infoWaiters.splice(0)) w();
         break;
       case FRAME_SETTINGS:
         this.settings = decodeSettings(frame);

@@ -122,6 +122,29 @@ unit test): no periodic command; the stream itself proves the link; one 0x96
 is sent only after 6 s without a frame, once, before the 12 s `STALE_MS` drop.
 A beep now means the link is already sick.
 
+0.9.34 (owner's log 2026-09-23 23:04, JK-PB1A16S15P fw 19.16 and JK_PB1A16S15P
+fw 15.21): a 0x96 written right behind 0x97 is ignored - the BMS is busy
+serving the 300 B device-info answer - so nothing streamed and the link fell
+about 10 s after connect. The order is now the JK app's: 0x97, wait for the
+device-info frame (`HANDSHAKE_WAIT_MS` 1.5 s at most), then 0x96 once
+(`_handshake()`, not blocking `connect()`); `NUDGE_MS` is 3 s and the nudge
+repeats every 3 s of silence (at most four before the 12 s drop); the first
+five non-frame notifications of a link are logged in hex (`rx NB not a
+frame`), because that log had something arriving 4 s after connect that no
+line explained. Unit tests replay both logs and drive `connect()` over a fake
+characteristic.
+
+## Memory caps (0.9.34, the "Aw, Snap" of 2026-09-23)
+
+The reader phone crashed on 0.9.31 after a day at 4 rows/s: today's file was
+88 MB, 314k rows, and start-up parsed the whole of today and yesterday into
+memory. Now `hist.readTail(day, MEM_TAIL_BYTES)` (24 MB, from the first whole
+line; the worker returns `{text, total, cut}`) is the most that is read for
+memory or a chart, the in-memory set is thinned evenly to `MEM_MAX_ROWS`
+(60k, `thinRows()`, newest row always kept) and the log says when either
+happened. The files keep every row. `readGz` no longer spreads a day into
+constructor arguments (an 88 MB day threw).
+
 ## Copyright & license
 
 Copyright (C) 2026 Kasidit Yusuf.

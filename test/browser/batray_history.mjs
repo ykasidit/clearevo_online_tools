@@ -67,6 +67,12 @@ const parsedRows = lines.map((l) => JSON.parse(l));
 const offsetsOk = parsedRows.every((r, i) => r.n === i + 1 && r.o === lines.slice(0, i).reduce((a, l) => a + new TextEncoder().encode(l).length + 1, 0));
 check('each row is one JSON line with its row number and byte offset in the file, short keys and the cell millivolts', lines.length === h.mem && lines.every((l) => /^\{"t":\d+,"n":\d+,"o":\d+,"p":"n11","soc":/.test(l)) && offsetsOk && /"c":\[\d+/.test(lines[0]) && h.todayBytes === text.length && h.todayRows === lines.length, { n: lines.length, mem: h.mem, first: lines[0].slice(0, 120), h });
 check('the day file is the UTC day', today === new Date().toISOString().slice(0, 10), today);
+// a huge day is never read whole into memory (the 2026-09-23 Aw, Snap: 88 MB, 314k rows): the worker serves a tail from a whole line
+const tailBytes = new TextEncoder().encode(lines[lines.length - 1]).length + 1 + 7;      // the last line plus a torn piece of the one before
+const tail = await evalJs(`window.__batrayTest.histReadTail('${today}', ${tailBytes})`);
+check('reading a day with a byte cap returns only its last whole lines, says it was cut and the full size', tail.cut === true && tail.total === new TextEncoder().encode(text).length && tail.text === lines[lines.length - 1] + '\n', JSON.stringify({ cut: tail.cut, total: tail.total, len: tail.text.length, want: lines[lines.length - 1].length + 1 }));
+const whole = await evalJs(`window.__batrayTest.histReadTail('${today}', 10 * 1048576)`);
+check('a cap larger than the file returns it whole, uncut', whole.cut === false && whole.text === text, JSON.stringify({ cut: whole.cut, len: whole.text.length }));
 
 // ---- 2. seed two hours of today plus a day of yesterday, flush, maintain -> yesterday gzipped ----
 await evalJs(`(() => {

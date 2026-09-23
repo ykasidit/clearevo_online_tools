@@ -90,13 +90,24 @@ const ops = {
     }
     return { days: [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : 1)) };
   },
-  /** The day's text: the gz part (if any) followed by the raw part, each cut at its last newline. */
-  async read({ day }) {
+  /** The day's text: the gz part (if any) followed by the raw part, each cut at its last newline. With `tail`
+   *  only the last `tail` bytes (from the first whole line in them) are returned: a day at 4 rows/s is 88 MB
+   *  and parsing all of it crashed a phone. `total` is the day's clean byte count, `cut` says a prefix was left. */
+  async read({ day, tail = 0 }) {
     const d = await dir();
     const raw = clean(await fileBytes(d, rawName(day)));
     const g = await fileBytes(d, gzName(day));
-    const parts = []; if (g !== null) parts.push(clean(await gunzip(g))); if (raw !== null) parts.push(raw);
-    return { text: parts.map((b) => dec.decode(b)).join('') };
+    let parts = []; if (g !== null) parts.push(clean(await gunzip(g))); if (raw !== null) parts.push(raw);
+    const total = parts.reduce((n, b) => n + b.length, 0);
+    let cut = false;
+    if (tail > 0 && total > tail) {
+      cut = true; let keep = tail; const kept = [];
+      for (let i = parts.length - 1; i >= 0 && keep > 0; i--) { const b = parts[i]; const piece = b.length > keep ? b.subarray(b.length - keep) : b; kept.unshift(piece); keep -= piece.length; }
+      parts = kept;
+      const first = parts[0]; let nl = -1; for (let i = 0; i < first.length; i++) if (first[i] === 10) { nl = i; break; }
+      parts[0] = nl >= 0 ? first.subarray(nl + 1) : first.subarray(first.length);       // start at a whole line
+    }
+    return { text: parts.map((b) => dec.decode(b)).join(''), total, cut };
   },
   /** The day as one gzip: a past day's file as is; a day still raw (today) gzipped from its clean prefix. */
   async readGz({ day, from = 0 }) {
@@ -105,7 +116,8 @@ const ops = {
     const g = await fileBytes(d, gzName(day));
     if (raw === null || raw.length === 0) return { bytes: g, gz: g !== null, rawBytes: 0, from: 0 };
     if (g === null && from > 0) { if (from > raw.length) return { bytes: null, gz: false, rawBytes: raw.length, from }; const tail = raw.subarray(from); return { bytes: tail.length ? await gzip(tail) : null, gz: false, rawBytes: raw.length, from }; }
-    const all = g ? new Uint8Array([...clean(await gunzip(g)), ...raw]) : raw;
+    let all = raw;
+    if (g) { const gg = clean(await gunzip(g)); all = new Uint8Array(gg.length + raw.length); all.set(gg); all.set(raw, gg.length); }   // never spread a day into arguments: 88 MB threw
     return { bytes: await gzip(all), gz: g !== null, rawBytes: raw.length, from: 0 };
   },
   /** Gzip a past day's raw file into <day>.ndjson.gz and remove the raw one. */

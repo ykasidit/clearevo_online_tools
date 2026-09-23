@@ -19,7 +19,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCommand, decodeCellInfo, decodeDeviceInfo, decodeSettings, errorLabels, feedFrames, swMajor, JkBms,
-  isStale, STALE_MS, queuedAfterGap, linkGone, nudgeDecision, NUDGE_MS,
+  isStale, STALE_MS, queuedAfterGap, linkGone, nudgeDecision, NUDGE_MS, HANDSHAKE_WAIT_MS,
 } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -419,7 +419,7 @@ test('linkGone: a frame from before this link\'s connect does not count against 
   assert.equal(linkGone(t - 1_000, t - 5_000, t), false, 'a frame after the connect is this link\'s own');
 });
 
-// ---- no poll: the BMS streams by itself; one nudge only when it goes quiet ----
+// ---- no poll: the BMS streams by itself; nudges only while it is quiet ----
 // Replay of the owner's reader log, 2026-09-23 05:22:54 UTC (n11, JK_B1A24S15P
 // fw 11.38): frame times relative to "gatt connected". The 3 s poll of 0.9.32
 // made the BMS answer with settings + device-info every 3.02 s (228 pairs in
@@ -427,31 +427,68 @@ test('linkGone: a frame from before this link\'s connect does not count against 
 test('nudgeDecision: a streaming BMS is never nudged (replay 2026-09-23)', () => {
   const t0 = 5_000_000;
   const frames = [153, 3163, 3716, 4302, 4829, 5351, 5891, 6162, 6722, 7276, 7810, 8330, 8870, 9400];
-  let lastRx = null, nudged = null, nudges = 0;
+  let lastRx = null, nudged = t0 + 200, nudges = 0;                // the handshake ask at +0.2 s
   for (let now = t0; now <= t0 + 10_000; now += 1000) {         // the 1 s check loop
     lastRx = frames.filter((f) => t0 + f <= now).map((f) => t0 + f).pop() || null;
     if (nudgeDecision(lastRx, t0, nudged, now)) { nudges++; nudged = now; }
   }
-  assert.equal(nudges, 0, 'frames every ~0.5 s: no command ever sent after connect');
+  assert.equal(nudges, 0, 'frames every ~0.5 s: no command ever sent after the handshake');
 });
 
-test('nudgeDecision: quiet link gets one nudge, then the STALE_MS drop', () => {
+test('nudgeDecision: a quiet link is nudged every NUDGE_MS until the STALE_MS drop', () => {
   const t0 = 5_000_000, last = t0 + 9_400;                     // last frame of the replay above
-  let nudged = null; const sent = [];
-  for (let now = last; now <= last + 13_000; now += 1000) {
+  let nudged = t0 + 200; const sent = [];
+  for (let now = last; now <= last + STALE_MS; now += 1000) {
     if (nudgeDecision(last, t0, nudged, now)) { sent.push(now - last); nudged = now; }
   }
-  assert.deepEqual(sent, [NUDGE_MS], 'exactly one nudge, at NUDGE_MS of silence');
+  assert.deepEqual(sent, [NUDGE_MS, 2 * NUDGE_MS, 3 * NUDGE_MS, 4 * NUDGE_MS], 'one ask per 3 s of silence, 4 at most before 12 s');
   assert.equal(linkGone(last, t0, last + STALE_MS + 1), true, 'still silent: the watchdog drops the link');
-  assert.equal(nudgeDecision(last + 7_000, t0, nudged, last + 7_500), false, 'a frame after the nudge: fresh again, no nudge');
-  assert.equal(nudgeDecision(last + 7_000, t0, nudged, last + 7_000 + NUDGE_MS), true, 'quiet again after that frame: one more nudge allowed');
+  assert.equal(nudgeDecision(last + 7_000, t0, nudged, last + 7_500), false, 'a frame after a nudge: fresh again');
 });
 
-test('nudgeDecision: connected but never answered is nudged once at NUDGE_MS', () => {
-  const t0 = 7_000_000;
+// Replay of 2026-09-23 23:04:45 (m-00, JK-PB1A16S15P fw 19.16): 0x03 at +0.12 s,
+// the 0x96 sent right behind 0x97 ignored, nothing else, link dropped at +10.6 s.
+test('nudgeDecision: connected, device info only, no stream -> nudged from 3 s on', () => {
+  const t0 = 7_000_000, info = t0 + 122, ask = t0 + 200;
+  const sent = []; let nudged = ask;
+  for (let now = t0; now <= t0 + 10_000; now += 1000) if (nudgeDecision(info, t0, nudged, now)) { sent.push(now - t0); nudged = now; }
+  assert.deepEqual(sent, [4_000, 7_000, 10_000], 'asked at 3 s of silence and every 3 s after (1 s check grid)');
   assert.equal(nudgeDecision(null, null, null, t0), false, 'not connected: nothing to nudge');
-  assert.equal(nudgeDecision(null, t0, null, t0 + 5_000), false);
-  assert.equal(nudgeDecision(null, t0, null, t0 + NUDGE_MS), true);
-  assert.equal(nudgeDecision(null, t0, t0 + NUDGE_MS, t0 + 15_000), false, 'not twice; linkGone takes over at 20 s');
-  assert.equal(linkGone(null, t0, t0 + 20_001), true);
+  assert.equal(nudgeDecision(null, t0, null, t0 + 2_000), false);
+  assert.equal(nudgeDecision(null, t0, null, t0 + NUDGE_MS), true, 'never answered: nudged at 3 s');
+});
+
+test('handshake: 0x97 first, 0x96 only after the device-info answer (JK app order)', async () => {
+  const b = new JkBms();
+  const writes = [];
+  let onValue = null;
+  const char = {
+    addEventListener: (_, fn) => { onValue = fn; },
+    startNotifications: async () => {},
+    writeValueWithoutResponse: async (bytes) => {
+      writes.push({ cmd: bytes[4], at: Date.now() });
+      if (bytes[4] === 0x97) setTimeout(() => onValue({ target: { value: new DataView(F.AIO_32S_DEV.buffer) } }), 30);   // the answer, a little later
+    },
+  };
+  const device = { name: 'fake', gatt: { connected: true, connect: async () => ({ getPrimaryService: async () => ({ getCharacteristic: async () => char }) }), disconnect() { this.connected = false; } }, addEventListener() {} };
+  const seen = []; b.addEventListener('log', (e) => seen.push(e.detail));
+  await b.connect(device);
+  assert.deepEqual(writes.map((w) => w.cmd), [0x97], 'connect() resolves with only the device-info command sent');
+  await new Promise((r) => setTimeout(r, 120));
+  assert.deepEqual(writes.map((w) => w.cmd), [0x97, 0x96], 'cell-info follows once the device-info frame arrived');
+  assert.ok(writes[1].at - writes[0].at >= 25, 'not back to back');
+  assert.ok(seen.some((l) => /handshake: device info in \d+ ms/.test(l)), seen.join('\n'));
+  b.drop('test end');
+});
+
+test('handshake: no device-info answer -> cell-info asked anyway after HANDSHAKE_WAIT_MS', async () => {
+  const b = new JkBms();
+  const writes = [];
+  const char = { addEventListener() {}, startNotifications: async () => {}, writeValueWithoutResponse: async (bytes) => writes.push(bytes[4]) };
+  const device = { name: 'mute', gatt: { connected: true, connect: async () => ({ getPrimaryService: async () => ({ getCharacteristic: async () => char }) }), disconnect() { this.connected = false; } }, addEventListener() {} };
+  await b.connect(device);
+  assert.deepEqual(writes, [0x97]);
+  await new Promise((r) => setTimeout(r, HANDSHAKE_WAIT_MS + 150));
+  assert.deepEqual(writes, [0x97, 0x96], 'asked after the wait');
+  b.drop('test end');
 });
