@@ -46,7 +46,7 @@ export function cellBalance(deltaMv) { return deltaMv <= CELL_OK_MV ? 'ok' : del
  * Returns { title, lead, tone, rows: [[k, v]], options: [{ id, label, on }], actions: [{ id, label, primary }] }.
  */
 export function sheetModel(kind, ctx, T) {
-  const m = { title: '', lead: '', tone: '', rows: [], options: [], actions: [] };
+  const m = { title: '', lead: '', tone: '', rows: [], options: [], actions: [], items: [] };
   const d = ctx.d;
   switch (kind) {
     case 'soc': {
@@ -117,6 +117,14 @@ export function sheetModel(kind, ctx, T) {
       m.title = T.uploadLog; m.lead = pct === null ? T.uploadStarting : T.uploadProgress(pct, Math.round(loaded / 1024), Math.round(total / 1024));
       m.progress = pct === null ? 0 : pct;
       m.actions = [{ id: 'cancel', label: T.cancel, primary: false }];
+      break;
+    }
+    case 'browse': {                                     // one kind of storage, file by file, each with its own Delete (owner ask 2026-09-23)
+      const b = ctx.browse || { type: 'hist', items: [] };
+      m.title = T.browseTitle(T[{ hist: 'stHistory', set: 'stSettings', log: 'stLogs' }[b.type]] || b.type);
+      m.lead = b.items.length ? T.browseLead(b.items.length, b.sizeText || '') : T.browseEmpty;
+      m.items = b.items.map((i) => ({ id: i.id, name: i.name, size: i.sizeText || String(i.bytes), del: !!i.del }));
+      m.actions = [{ id: 'close', label: T.close, primary: false }];
       break;
     }
     case 'resetSettings':

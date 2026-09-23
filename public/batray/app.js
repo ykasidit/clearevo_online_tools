@@ -29,7 +29,7 @@ import { Ema } from './trend.js';
 import { historyState, dayKey, dayStartMs, rowFromReading, rowLine, lineBytes, nextPos, rowDue, parseLines, rolloverDecision, retentionDecision, quotaDecision, historySummary, recentSlice, transferPlan, histReqDecision, replicaDecision, releaseHeld, chunkB64, rxChunk, mergeRows, downsample, chartRange, chartSeries, energyWh, rowsBetween, spanMs, trimRows, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, RECENT_STEP_MS, XFER_BACKLOG, REPLICA_GIVE_UP, RANGES } from './history-logic.js';
 import { tarPack, tarParse, backupDays, restorePlan, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
-import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel } from './storage-logic.js';
+import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems } from './storage-logic.js';
 import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
@@ -804,6 +804,35 @@ async function resetSettings() {
   if (!window.__batrayTest) setTimeout(() => location.reload(), 1500);
   return Object.keys(snap).length;
 }
+// Browse: one engine for the three kinds of storage - the list comes from the store, the sheet shows it, Delete removes one
+const browseS = { type: null, items: [], sizeText: '' };
+async function browseData(type) {
+  if (type === 'hist') { histS.days = await hist.list().catch(() => histS.days); return browseItems('hist', { days: histS.days, today: histS.day }); }
+  if (type === 'set') return browseItems('set', { snapshot: settingsSnapshot(settingsEntries()) });
+  logS.files = await hist.logList().catch(() => logS.files); return browseItems('log', { files: logS.files, current: logS.file });
+}
+async function refreshBrowse() {
+  const items = await browseData(browseS.type);
+  browseS.items = items.map((i) => ({ ...i, sizeText: fmtSize(i.bytes) })); browseS.sizeText = fmtSize(items.reduce((a, i) => a + i.bytes, 0));
+}
+async function openBrowse(type) {
+  browseS.type = type; await refreshBrowse();
+  log(`browse: ${type} (${browseS.items.length} items)`);
+  await openSheet('browse');
+  renderStorage();
+}
+async function browseDelete(id) {
+  const t = browseS.type;
+  if (t === 'hist') { await flushHistory(); await hist.remove(id); histMem.dayCache.delete(id); if (id === histS.day) { histS.todayBytes = 0; histS.todayRows = 0; histS.pendBytes = 0; histMem.pending.delete(id); } }
+  else if (t === 'set') { try { localStorage.removeItem(id); } catch { /* */ } }
+  else { if (id === logS.file) { logS.pending = []; logS.pendBytes = 0; logS.file = null; logS.fileBytes = 0; } await hist.logRemove(id); }
+  log(`browse: deleted ${t} ${id}`);
+  await refreshBrowse(); updateSheet('browse'); renderStorage();
+  if (t === 'hist' && active) renderTrend(active);
+}
+$('histBrowse').addEventListener('click', () => openBrowse('hist'));
+$('setBrowse').addEventListener('click', () => openBrowse('set'));
+$('logBrowse').addEventListener('click', () => openBrowse('log'));
 $('setBackup').addEventListener('click', () => backupSettings());
 $('setRestore').addEventListener('click', () => $('setFile').click());
 $('setFile').addEventListener('change', async () => { const f = $('setFile').files[0]; $('setFile').value = ''; if (!f) return; if (f.size > 1048576) { toast(T.setBad, 6000); return; } restoreSettings(await f.text(), f.name).catch((e) => log(`settings: restore failed: ${e.message}`)); });
@@ -1668,7 +1697,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, histHeld: () => histMem.held.slice(), remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, lineBytes, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, mem: histMem.rows.length, pending: [...histMem.pending.values()].reduce((a, l) => a + l.length, 0), plot: !!histMem.plot }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histRows: () => histMem.rows.slice(), histSeed: (rows) => memAdd(rows, true).length, histHeld: () => histMem.held.slice(), remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, lineBytes, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.list(), histRead: (d) => hist.read(d), connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
@@ -1679,7 +1708,7 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 let sheetResolve = null, suppressPop = 0;
 function sheetCtx() {
   const p = active;
-  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
+  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, browse: browseS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
 function openSheet(kind) {
@@ -1687,7 +1716,7 @@ function openSheet(kind) {
   const m = sheetModel(kind, sheetCtx(), T), d = sheetOpen(uiS, kind);
   $('sheetTitle').textContent = m.title;
   const lead = $('sheetLead'); lead.textContent = m.lead || ''; lead.className = 'lead' + (m.tone ? ' ' + m.tone : ''); lead.hidden = !m.lead;
-  renderSheetProgress(m);
+  renderSheetProgress(m); renderSheetItems(m);
   $('sheetRows').innerHTML = m.rows.map(([k, v]) => `<div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>`).join('');
   $('sheetOpts').innerHTML = m.options.map((o) => `<button type="button" data-opt="${esc(o.id)}"${o.on ? ' class="on"' : ''}>${esc(o.label)}</button>`).join('');
   $('sheetActs').innerHTML = m.actions.map((x) => `<button type="button" data-act="${esc(x.id)}" class="${x.primary ? 'demobtn' : 'linkbtn'}"${x.primary ? ' style="padding:10px 18px"' : ''}>${esc(x.label)}</button>`).join('');
@@ -1697,12 +1726,16 @@ function openSheet(kind) {
   return new Promise((ok) => { sheetResolve = ok; });
 }
 function renderSheetProgress(m) { const p = $('sheetProg'); p.hidden = m.progress === undefined; if (!p.hidden) $('sheetBar').style.width = `${m.progress}%`; }
+function renderSheetItems(m) {
+  const el = $('sheetItems'); const items = m.items || []; el.hidden = !items.length;
+  el.innerHTML = items.map((i) => `<div class="item"><span class="nm">${esc(i.name)}</span><span class="sz">${esc(i.size)}</span>${i.del ? `<button type="button" class="stBtn danger" data-del="${esc(i.id)}">${esc(T.browseDel)}</button>` : ''}</div>`).join('');
+}
 /** Refresh the open sheet's text and bar from the state (a progress sheet), without touching history. */
 function updateSheet(kind) {
   if (!uiS.sheet || uiS.sheet.kind !== kind) return;
   const m = sheetModel(kind, sheetCtx(), T);
   const lead = $('sheetLead'); lead.textContent = m.lead || ''; lead.hidden = !m.lead;
-  renderSheetProgress(m);
+  renderSheetProgress(m); renderSheetItems(m);
 }
 function closeSheet(result = null, why = 'dismiss') {
   const d = sheetClose(uiS);
@@ -1716,6 +1749,7 @@ function closeSheet(result = null, why = 'dismiss') {
   $('sheetBack').addEventListener('click', () => closeSheet(null, 'tap outside'));
   $('sheetOpts').addEventListener('click', (e) => { const b = e.target.closest('[data-opt]'); if (b) closeSheet(b.dataset.opt, 'pick'); });
   $('sheetActs').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) closeSheet(b.dataset.act, 'action'); });
+  $('sheetItems').addEventListener('click', (e) => { const b = e.target.closest('[data-del]'); if (b) browseDelete(b.dataset.del).catch((err) => log(`browse: delete failed: ${err.message}`)); });
   // drag down to dismiss, like a messenger's sheet
   const box = $('sheetBox'); let y0 = null, dy = 0;
   box.addEventListener('touchstart', (e) => { if (box.scrollTop > 0) return; y0 = e.touches[0].clientY; dy = 0; }, { passive: true });

@@ -42,6 +42,14 @@ export function settingsRestorePlan(obj) {
   if (settingsBytes(apply) > SETTINGS_MAX_BYTES) return { ok: false, why: 'too big' };
   return { ok: true, apply, skipped: Object.keys(obj.settings).length - keys.length };
 }
+/** The Browse sheet's list for one kind of storage: every file (or key) with its size, and whether it may go on its own.
+ *  hist: [{day, raw, gz, bytes}] with `today`; set: a settings snapshot; log: [{name, bytes}] with the current file. */
+export function browseItems(type, data) {
+  if (type === 'hist') return [...(data.days || [])].sort((a, b) => (a.day < b.day ? 1 : -1)).map((d) => ({ id: d.day, name: d.day + (d.gz ? '.ndjson.gz' : '.ndjson') + (d.day === data.today ? ' (today, live)' : ''), bytes: d.bytes || 0, del: true }));
+  if (type === 'set') return Object.entries(data.snapshot || {}).sort().map(([k, v]) => ({ id: k, name: k, bytes: utf8.encode(k).length + utf8.encode(v).length, del: true }));
+  if (type === 'log') return [...(data.files || [])].sort((a, b) => (a.name < b.name ? 1 : -1)).map((f) => ({ id: f.name, name: f.name + (f.name === data.current ? ' (this session, live)' : ''), bytes: f.bytes || 0, del: true }));
+  return [];
+}
 /** Percent of the browser's maximum, readable at both ends (0.02 %, 100 %). */
 export function usagePct(usage, quota) {
   if (!quota) return null;

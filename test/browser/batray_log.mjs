@@ -143,11 +143,20 @@ await evalJs(`const cou = URL.createObjectURL.bind(URL); URL.createObjectURL = (
 const dl = await evalJs('window.__batrayTest.downloadLogs()');
 const tarInfo = await evalJs(`(async () => { const bytes = new Uint8Array(await window.__logBlob.arrayBuffer()); const m = window.__batrayTest.tarParse(bytes); return { name: window.__dlName, members: m.map((e) => e.name), gz: m.every((e) => e.bytes[0] === 0x1f && e.bytes[1] === 0x8b) }; })()`);
 check('Download debug logs gives batray-logs-<day>.tar with one gzip per session file', dl && dl.files >= 1 && /^batray-logs-\d{4}-\d{2}-\d{2}\.tar$/.test(tarInfo.name) && tarInfo.members.every((n) => /^batray-logs\/log-.*\.txt\.gz$/.test(n)) && tarInfo.gz, { dl, tarInfo });
+// Browse: every log file listed with its size, Delete removes just that one
+await evalJs(`document.getElementById('logBrowse').click(); 1`); await sleep(400);
+const br = await evalJs(`({ open: !document.getElementById('sheet').hidden, title: document.getElementById('sheetTitle').textContent, lead: document.getElementById('sheetLead').textContent, items: [...document.querySelectorAll('#sheetItems .item')].map((i) => [i.querySelector('.nm').textContent, i.querySelector('.sz').textContent, !!i.querySelector('[data-del]')]) })`);
+check('Browse opens a sheet listing each debug log file with its size and a Delete of its own; the live file is marked', br.open && /Debug logs: file by file/.test(br.title) && /\d+ files?, \d+ KB/.test(br.lead) && br.items.length === mine.length && br.items.some(([n]) => /this session, live/.test(n)) && br.items.every(([n, s, d]) => /^log-/.test(n) && /KB|B/.test(s) && d), br);
+const victim = br.items.find(([n]) => !/live/.test(n))[0];
+await evalJs(`[...document.querySelectorAll('#sheetItems [data-del]')].find((b) => b.dataset.del === '${victim}').click(); 1`); await sleep(500);
+const afterDel = await evalJs(`(async () => ({ items: [...document.querySelectorAll('#sheetItems .item .nm')].map((n) => n.textContent), list: await window.__batrayTest.logList().then((l) => l.map((f) => f.name)), row: document.getElementById('stLogSize').textContent }))()`);
+check('deleting one file in Browse removes only that file, the sheet and the Storage row update in place', !afterDel.items.includes(victim) && afterDel.items.length === br.items.length - 1 && !afterDel.list.includes(victim) && afterDel.list.length === br.items.length - 1 && /1 file /.test(afterDel.row), { victim, afterDel });
+await evalJs(`document.querySelector('#sheetActs [data-act=close]').click(); 1`); await sleep(300);
 await evalJs(`document.getElementById('logClear').click(); 1`); await sleep(300);
 const sh = await evalJs(`({ open: !document.getElementById('sheet').hidden, title: document.getElementById('sheetTitle').textContent, btns: [...document.querySelectorAll('#sheet button')].map((b) => b.textContent.trim()) })`);
 await evalJs(`[...document.querySelectorAll('#sheet button')].find((b) => b.textContent.trim() === 'Delete').click(); 1`); await sleep(400);
 const gone = await evalJs(`window.__batrayTest.logList()`);
-check('Delete debug logs asks in a sheet and empties the store (logging then continues in a fresh file)', sh.open && sh.title === 'Delete debug logs' && sh.btns.includes('Delete') && gone.length <= 1 && gone.every((f) => !mine.some((m) => m.name === f.name)), { sh, gone, mine });
+check('Clear asks in a sheet and empties the store (logging then continues in a fresh file)', sh.open && sh.title === 'Delete debug logs' && sh.btns.includes('Delete') && gone.length <= 1 && gone.every((f) => !mine.some((m) => m.name === f.name)), { sh, gone, mine });
 await evalJs(`window.__batrayTest.logSet('fileMax', 10 * 1048576); window.__batrayTest.logSet('filesMax', 10); 1`);
 
 // --- share setup: name prefill, the last-link option, and what Start saves ---

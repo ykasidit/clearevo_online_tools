@@ -107,6 +107,9 @@ test('choice sheets: language, TV resolution, keep-awake mark the current choice
   const up1 = sheetModel('uploading', ctx({ upload: { loaded: 51200, total: 204800 } }), T);
   assert.equal(up1.progress, 25); assert.match(up1.lead, /25 %/); assert.match(up1.lead, /50 .* 200 KB/);
   assert.equal(sheetModel('uploading', ctx({ upload: { loaded: 999999, total: 1000 } }), T).progress, 100, 'never over 100');
+  const br = sheetModel('browse', ctx({ browse: { type: 'log', sizeText: '9 KB', items: [{ id: 'log-a.txt', name: 'log-a.txt (this session, live)', bytes: 4000, sizeText: '4 KB', del: true }, { id: 'log-b.txt', name: 'log-b.txt', bytes: 5000, sizeText: '5 KB', del: true }] } }), T);
+  assert.equal(br.title, T.browseTitle(T.stLogs)); assert.match(br.lead, /2 files, 9 KB/); assert.deepEqual(br.items.map((i) => [i.id, i.size, i.del]), [['log-a.txt', '4 KB', true], ['log-b.txt', '5 KB', true]]); assert.deepEqual(br.actions.map((a) => a.id), ['close']);
+  assert.equal(sheetModel('browse', ctx({ browse: { type: 'hist', items: [] } }), T).lead, T.browseEmpty);
   const rs = sheetModel('resetSettings', ctx({ setCount: 7 }), T);
   assert.equal(rs.title, T.resetTitle); assert.match(rs.lead, /7 values/); assert.equal(rs.actions[1].label, T.resetGo);
   const cl = sheetModel('clearLogs', ctx({ logFiles: 4, logSize: '31.2 MB' }), T);
