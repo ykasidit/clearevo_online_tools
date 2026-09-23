@@ -108,6 +108,20 @@ line, charged / discharged Wh for the window. DEMO readings never touch
 the files. "Delete stored history" is a sheet. Without OPFS (or a failed
 worker) the same store runs in memory for the session and the card says so.
 
+## Link keepalive: no poll (0.9.33, owner's beep report 2026-09-23)
+
+A JK BMS streams cell-info frames (type 0x02) on its own, 2-3 per second, once
+the connect has sent device-info (0x97) and cell-info (0x96) once. Until 0.9.32
+the driver also re-sent 0x96 every 3 s as a "poll". The owner's full-frame logs
+(2026-09-22, two packs; 2026-09-23, n11) show what that did: every poll was
+answered with a settings frame (0x01) and a device-info frame (0x03), one pair
+per 3.02 s, 228 pairs per session - the read the JK app does once at connect -
+and the BMS beeps each time it serves it. So the JK app beeped once, BatRay
+every 3 s. Now (`NUDGE_MS`, `nudgeDecision()` in jkbms.js, replayed in the
+unit test): no periodic command; the stream itself proves the link; one 0x96
+is sent only after 6 s without a frame, once, before the 12 s `STALE_MS` drop.
+A beep now means the link is already sick.
+
 ## Copyright & license
 
 Copyright (C) 2026 Kasidit Yusuf.

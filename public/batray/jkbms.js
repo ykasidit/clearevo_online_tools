@@ -380,8 +380,9 @@ export function feedFrames(buf, chunk) {
   return { buf, frames, notes };
 }
 
-// A JK BMS answers every poll, so silence means the link is gone even while
-// the GATT flag still says connected. Pure so both rules stay under test.
+// A JK BMS streams cell-info frames 2-3 times a second on its own, so silence
+// means the link is gone even while the GATT flag still says connected. Pure
+// so both rules stay under test.
 export const STALE_MS = 12000;
 
 /** Has this link gone quiet for longer than a working link ever does? */
@@ -409,14 +410,37 @@ export function queuedAfterGap(lastRxAt, now = Date.now(), limitMs = STALE_MS) {
   return !!lastRxAt && now - lastRxAt > limitMs;
 }
 
+// A JK BMS streams cell-info frames on its own, 2-3 per second, once it has
+// been asked who it is at connect. The old 3 s "poll" (command 0x96) did not
+// fetch cell data at all: the owner's logs of 2026-09-22/23 show the BMS
+// answering EVERY poll with a settings frame (0x01) plus a device-info frame
+// (0x03), 228 pairs per session on both packs, one per 3.02 s - the same read
+// the JK app does once at connect, and the BMS beeps each time it serves it
+// (owner: "BatRay beeps every few seconds, the JK app once"). So no periodic
+// command any more: the stream itself proves the link, and one 0x96 is sent
+// only as a nudge when the stream has been quiet for NUDGE_MS, before the
+// STALE_MS drop. A beep then means the link is already sick.
+export const NUDGE_MS = 6000;
+
+/** Send one nudge command now? Quiet for NUDGE_MS since the last frame (or
+ *  since connect when nothing has arrived yet) and not nudged since then. */
+export function nudgeDecision(lastRxAt, connectedAt, nudgedAt, now = Date.now(), quietMs = NUDGE_MS) {
+  const since = lastRxAt || connectedAt;
+  if (!since) return false;
+  if (now - since < quietMs) return false;
+  return !nudgedAt || nudgedAt < since;
+}
+
 export class JkBms extends EventTarget {
   constructor() {
     super();
     this.device = null;
     this.char = null;
     this.buf = new Uint8Array(0);
-    this.pollTimer = null;
-    this.pollMs = 3000;
+    this.nudgeTimer = null;
+    this.nudgeCheckMs = 1000;
+    this.nudgedAt = null;
+    this.connectedAt = null;
     this.info = null; // last decoded device-info frame
     this._listened = null;
     this._attempt = 0;
@@ -435,7 +459,7 @@ export class JkBms extends EventTarget {
    */
   drop(reason) {
     this._attempt = (this._attempt || 0) + 1;
-    this._stopPolling();
+    this._stopNudge();
     this.buf = new Uint8Array(0);
     this.lastRxAt = null;
     const dev = this.device;
@@ -480,7 +504,7 @@ export class JkBms extends EventTarget {
     if (this._listened !== device) {
       // reconnecting to the same device must not stack listeners
       device.addEventListener('gattserverdisconnected', () => {
-        this._stopPolling();
+        this._stopNudge();
         this.char = null;
         this._emit('disconnected');
       });
@@ -513,6 +537,8 @@ export class JkBms extends EventTarget {
       this._log('notifications on');
       // Device info first: its firmware version selects the frame layout. Some
       // units only start streaming after they've been asked who they are.
+      // These two are the ONLY commands of a healthy session (the JK app does
+      // the same, one beep); see NUDGE_MS for why there is no poll.
       await this._write(buildCommand(CMD_DEVICE_INFO));
       await this._write(buildCommand(CMD_CELL_INFO));
     })();
@@ -526,12 +552,12 @@ export class JkBms extends EventTarget {
     } finally {
       clearTimeout(timer);
     }
-    this._startPolling();
+    this._startNudge();
     this._emit('connected', device);
   }
 
   async disconnect() {
-    this._stopPolling();
+    this._stopNudge();
     if (this.device && this.device.gatt && this.device.gatt.connected) {
       this.device.gatt.disconnect();
     }
@@ -548,17 +574,26 @@ export class JkBms extends EventTarget {
     }
   }
 
-  _startPolling() {
-    this._stopPolling();
-    this.pollTimer = setInterval(() => {
+  // No periodic command (see NUDGE_MS): the BMS streams by itself, and a
+  // command every 3 s made it re-serve settings + device info and beep.
+  _startNudge() {
+    this._stopNudge();
+    this.nudgedAt = null;
+    this.connectedAt = Date.now();
+    this.nudgeTimer = setInterval(() => {
       if (!this.connected) return;
-      this._write(buildCommand(CMD_CELL_INFO)).catch((e) => this._log(`poll failed: ${e.message}`));
-    }, this.pollMs);
+      const now = Date.now();
+      if (!nudgeDecision(this.lastRxAt, this.connectedAt, this.nudgedAt, now)) return;
+      this.nudgedAt = now;
+      const quiet = Math.round((now - (this.lastRxAt || this.connectedAt)) / 1000);
+      this._log(`nudge: no frame for ${quiet} s, asking the BMS once (0x96)`);
+      this._write(buildCommand(CMD_CELL_INFO)).catch((e) => this._log(`nudge failed: ${e.message}`));
+    }, this.nudgeCheckMs);
   }
 
-  _stopPolling() {
-    if (this.pollTimer) clearInterval(this.pollTimer);
-    this.pollTimer = null;
+  _stopNudge() {
+    if (this.nudgeTimer) clearInterval(this.nudgeTimer);
+    this.nudgeTimer = null;
   }
 
   _onNotify(chunk, token) {

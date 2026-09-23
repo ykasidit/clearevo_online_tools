@@ -19,7 +19,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCommand, decodeCellInfo, decodeDeviceInfo, decodeSettings, errorLabels, feedFrames, swMajor, JkBms,
-  isStale, STALE_MS, queuedAfterGap, linkGone,
+  isStale, STALE_MS, queuedAfterGap, linkGone, nudgeDecision, NUDGE_MS,
 } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -419,3 +419,39 @@ test('linkGone: a frame from before this link\'s connect does not count against 
   assert.equal(linkGone(t - 1_000, t - 5_000, t), false, 'a frame after the connect is this link\'s own');
 });
 
+// ---- no poll: the BMS streams by itself; one nudge only when it goes quiet ----
+// Replay of the owner's reader log, 2026-09-23 05:22:54 UTC (n11, JK_B1A24S15P
+// fw 11.38): frame times relative to "gatt connected". The 3 s poll of 0.9.32
+// made the BMS answer with settings + device-info every 3.02 s (228 pairs in
+// the 2026-09-22 log, both packs) and beep each time; the JK app asks once.
+test('nudgeDecision: a streaming BMS is never nudged (replay 2026-09-23)', () => {
+  const t0 = 5_000_000;
+  const frames = [153, 3163, 3716, 4302, 4829, 5351, 5891, 6162, 6722, 7276, 7810, 8330, 8870, 9400];
+  let lastRx = null, nudged = null, nudges = 0;
+  for (let now = t0; now <= t0 + 10_000; now += 1000) {         // the 1 s check loop
+    lastRx = frames.filter((f) => t0 + f <= now).map((f) => t0 + f).pop() || null;
+    if (nudgeDecision(lastRx, t0, nudged, now)) { nudges++; nudged = now; }
+  }
+  assert.equal(nudges, 0, 'frames every ~0.5 s: no command ever sent after connect');
+});
+
+test('nudgeDecision: quiet link gets one nudge, then the STALE_MS drop', () => {
+  const t0 = 5_000_000, last = t0 + 9_400;                     // last frame of the replay above
+  let nudged = null; const sent = [];
+  for (let now = last; now <= last + 13_000; now += 1000) {
+    if (nudgeDecision(last, t0, nudged, now)) { sent.push(now - last); nudged = now; }
+  }
+  assert.deepEqual(sent, [NUDGE_MS], 'exactly one nudge, at NUDGE_MS of silence');
+  assert.equal(linkGone(last, t0, last + STALE_MS + 1), true, 'still silent: the watchdog drops the link');
+  assert.equal(nudgeDecision(last + 7_000, t0, nudged, last + 7_500), false, 'a frame after the nudge: fresh again, no nudge');
+  assert.equal(nudgeDecision(last + 7_000, t0, nudged, last + 7_000 + NUDGE_MS), true, 'quiet again after that frame: one more nudge allowed');
+});
+
+test('nudgeDecision: connected but never answered is nudged once at NUDGE_MS', () => {
+  const t0 = 7_000_000;
+  assert.equal(nudgeDecision(null, null, null, t0), false, 'not connected: nothing to nudge');
+  assert.equal(nudgeDecision(null, t0, null, t0 + 5_000), false);
+  assert.equal(nudgeDecision(null, t0, null, t0 + NUDGE_MS), true);
+  assert.equal(nudgeDecision(null, t0, t0 + NUDGE_MS, t0 + 15_000), false, 'not twice; linkGone takes over at 20 s');
+  assert.equal(linkGone(null, t0, t0 + 20_001), true);
+});

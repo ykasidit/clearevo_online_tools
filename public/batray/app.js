@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.32';
+export const APP_VERSION = '0.9.33';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -564,7 +564,7 @@ function recordRow(p, d, t, remoteRow = null) {
       if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') requestHistory();
     }
   } else {
-    // a JK BMS pushes cell frames faster than the 3 s poll (the 2026-09-22 log: ~4 rows/s for two packs, 24 MB
+    // a JK BMS pushes cell frames 2-3 times a second by itself (the 2026-09-22 log: ~4 rows/s for two packs, 24 MB
     // a day): the meters show every frame, the file keeps one row per pack every MIN_ROW_MS
     if (!rowDue(p.lastRowAt, t)) return null;
     p.lastRowAt = t;
@@ -1008,7 +1008,7 @@ function schedulePackBar() {
   requestAnimationFrame(() => { packBarQueued = false; renderPackBar(); });
 }
 
-// Link watchdog: a JK BMS answers every 3 s poll, so silence means the link is
+// Link watchdog: a JK BMS streams cell frames 2-3 times a second, so silence means the link is
 // gone even while Chrome still reports the GATT connection up (seen after an
 // hour with the phone locked: "connected", then an hour of queued readings
 // replayed, then a disconnect two minutes later). Freshness decides instead.
