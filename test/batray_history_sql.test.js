@@ -21,7 +21,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openSqlite } from './sqlite_node.mjs';
 import { ensureSchema, insertRows, maxId, rowCount, contigId, rowsAfter, lastRows, buckets, energyWh, span, dayInfo, dbBytes, mergeFrom, looksLikeDayDb, cellsToBlob, blobToCells, COLS } from '../public/batray/history-sql.js';
-import { rowFromReading } from '../public/batray/history-logic.js';
+import { rowFromReading, isCorruptError } from '../public/batray/history-logic.js';
 import { decodeCellInfo } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -167,4 +167,35 @@ test('same time: reads issued while writes are pending see a consistent table (o
 
 test('COLS is the wire and table order the app relies on', () => {
   assert.deepEqual(COLS, ['t', 'p', 'soc', 'v', 'i', 'w', 'ah', 'tm', 't1', 't2', 'ch', 'ds', 'bal', 'err']);
+});
+
+// ---- corruption (owner rule 2026-09-24): a damaged file raises SQLITE_CORRUPT on a read and on a write, the
+// classifier names it, a sound file never trips it. The image is a real day database with every byte after the
+// 100-byte header set to 0xFF (a bad flash block / a torn write), loaded through sqlite3_deserialize. ----
+const corruptImage = () => {
+  const db = mem(); insertRows(db, [mk(0), mk(1), mk(2)]);
+  const bytes = sqlite3.capi.sqlite3_js_db_export(db.pointer); db.close();
+  const junk = new Uint8Array(bytes); junk.fill(0xff, 100);
+  const bad = new sqlite3.oo1.DB(':memory:'); const p = sqlite3.wasm.allocFromTypedArray(junk); const c = sqlite3.capi;
+  assert.equal(c.sqlite3_deserialize(bad.pointer, 'main', p, junk.length, junk.length, c.SQLITE_DESERIALIZE_FREEONCLOSE | c.SQLITE_DESERIALIZE_RESIZEABLE), 0);
+  return bad;
+};
+test('a corrupt day file: every read raises SQLITE_CORRUPT and isCorruptError says so', () => {
+  const bad = corruptImage();
+  for (const fn of [() => rowsAfter(bad, 0, 10), () => dayInfo(bad), () => buckets(bad, { p: 'm-00', from: T0, to: T0 + 1e6, stepMs: 60000 }), () => energyWh(bad, { p: 'm-00', from: T0, to: T0 + 1e6 }), () => lastRows(bad, 'm-00', 1)]) {
+    let err = null; try { fn(); } catch (e) { err = e; }
+    assert.ok(err, 'threw'); assert.ok(isCorruptError(err), err.message); assert.match(err.message, /SQLITE_CORRUPT|malformed/);
+  }
+  bad.close();
+});
+test('a corrupt day file: a write raises SQLITE_CORRUPT too (nothing is silently dropped), and a sound file is not flagged', () => {
+  const bad = corruptImage();
+  let err = null; try { insertRows(bad, [mk(3)]); } catch (e) { err = e; }
+  assert.ok(err && isCorruptError(err), err && err.message);
+  bad.close();
+  const ok = mem(); insertRows(ok, [mk(0)]);
+  let e2 = null; try { ok.exec('INSERT INTO nowhere VALUES (1)'); } catch (e) { e2 = e; }
+  assert.ok(e2 && !isCorruptError(e2), 'a bad statement is not corruption: ' + (e2 && e2.message));
+  assert.equal(isCorruptError(new Error('database or disk is full')), false, 'a full disk is not corruption');
+  ok.close();
 });

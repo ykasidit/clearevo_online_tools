@@ -26,7 +26,7 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
-import { historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, TREND_REFRESH_MS } from './history-logic.js';
+import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, TREND_REFRESH_MS } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.40';
+export const APP_VERSION = '0.9.41';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -584,6 +584,7 @@ async function flushHistory() {
           if (r.ignored && !viewer) log(`history: ${r.ignored} of ${rows.length} rows for ${day} were already stored`);
           histWriteFailed = false; break;
         } catch (e) {
+          if (isCorrupt(e)) { await corruptDb(e, 'live write', rows); break; }
           if (e.name === 'QuotaExceededError' && attempt === 0) {           // full: the oldest past day goes, then one more try
             const q = quotaDecision(await hist.days().catch(() => histS.days), histS.day);
             log(`history: quota exceeded -> ${q.action} ${q.day || ''}`);
@@ -620,6 +621,28 @@ async function unspill() {
 window.addEventListener('pagehide', () => { const n = spillPending(); hist.release(); if (n) log(`history: ${n} queued rows kept for the next start`); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushHistory(); });
 /** Delete beyond the free-space headroom, refresh the listing and the summary line. */
+/** A corrupt day database (owner rule 2026-09-24, no repair at this stage): the worker closed it, named the day
+ *  and raised; here the caller decides. `where` is 'live write' (the flush: today's file is deleted, a new one
+ *  starts and the flush's rows go into it) or 'history read' (the file is deleted; today's counters start over). */
+const isCorrupt = (e) => !!(e && e.name === 'CorruptError' && e.day);
+async function corruptDb(e, where, rows) {
+  const day = e.day, d = corruptDecision(day, histS.day);
+  log(`history: ${where}: ${day} database is corrupt -> ${d.action}: ${d.live ? 'deleted, a new live file starts' : 'deleted'}`);
+  toast(d.live ? T.histCorruptLive : T.histCorruptDay(day), 10000);
+  try { await hist.remove(day); } catch (e2) { log(`history: could not delete ${day}: ${e2.message}`); }
+  if (d.live) { histS.todayRows = 0; histS.nextId = 1; histS.contig = 0; histS.gap = null; }
+  histMem.series = null;
+  if (d.live && rows && rows.length) {
+    try {
+      if (!viewer) for (const r of rows) r.id = nextRowId(histS);                // the reader numbers its new file from 1; a viewer keeps the reader's ids
+      const r = await hist.insert(day, rows); const info = await hist.info(day);
+      histS.todayRows = info.rows; histS.nextId = info.maxId + 1; histS.contig = info.contig;
+      log(`history: ${r.inserted} rows written into the new ${day}.sqlite`);
+    } catch (e3) { log(`history: rows for the new ${day}.sqlite failed: ${e3.message}`); }
+  }
+  try { histS.days = await hist.days(); } catch { histS.days = histS.days.filter((x) => x.day !== day); }
+  renderStorage(); if (active) renderTrend(active);
+}
 async function maintainHistory() {
   try {
     const est = await hist.estimate(); histS.usage = est.usage; histS.quota = est.quota;
@@ -627,29 +650,24 @@ async function maintainHistory() {
     for (const f of d.delete) { await hist.remove(f.day); log(`history: deleted ${f.day} (${f.bytes} B): under ${Math.round(HEADROOM_BYTES / 1048576)} MB free`); }
     histS.days = await hist.days();
     if (d.delete.length) { const e2 = await hist.estimate(); histS.usage = e2.usage; histS.quota = e2.quota; }
-  } catch (e) { /* the store logged it */ }
+  } catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); /* else the store logged it */ }
   renderHistNote();
 }
-/** Start: old NDJSON day files (before 0.9.40) are moved into day databases, then today's counters come from its
- *  database, so ids continue exactly where the last session stopped. */
+/** Start: today's counters come from its database, so ids continue exactly where the last session stopped. */
 async function initHistory() {
   histS.backend = await hist.ready;
   const now = Date.now(), today = dayKey(now);
   histS.day = today;
   try {
-    const mc = await hist.migrateCount();
-    if (mc.files) {
-      log(`history: ${mc.files} old day file${mc.files === 1 ? '' : 's'} (${Math.round(mc.bytes / 1048576)} MB) to move into SQLite`);
-      for (;;) { const r = await hist.migrate(); if (r.done) break; log(`history: moved ${r.file} into ${r.day}.sqlite: ${r.rows} rows${r.bad ? `, ${r.bad} bad lines` : ''} in ${r.ms} ms, ${r.remaining} to go`); }
-      histS.migrated = mc.files;
-    }
+    const old = await hist.oldFiles();                                        // before 0.9.40: NDJSON, not read, not migrated (owner: day 0)
+    if (old.files) log(`history: ${old.files} day file${old.files === 1 ? '' : 's'} from before 0.9.40 (${Math.round(old.bytes / 1048576)} MB, NDJSON) are not read any more; Clear stored history removes them`);
     await unspill();
     histS.days = await hist.days();
     const info = await hist.info(today);
     histS.todayRows = info.rows; histS.nextId = info.maxId + 1; histS.contig = info.contig;
     const sum = historySummary(histS.days, histS.todayRows, { usage: histS.usage, quota: histS.quota, today });
     log(`history: ${histS.backend}, ${sum.days} days, ${Math.round(sum.bytes / 1024)} KB, oldest ${sum.oldest || '-'}, today ${info.rows} rows (highest id ${info.maxId}, complete to ${info.contig})`);
-  } catch (e) { log(`history: load failed: ${e.message}`); }
+  } catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); else log(`history: load failed: ${e.message}`); }
   await maintainHistory();
   if (active) renderTrend(active);
 }
@@ -864,7 +882,7 @@ async function resetSettings() {
 // Browse: one engine for the three kinds of storage - the list comes from the store, the sheet shows it, Delete removes one
 const browseS = { type: null, items: [], sizeText: '' };
 async function browseData(type) {
-  if (type === 'hist') { histS.days = await hist.days().catch(() => histS.days); return browseItems('hist', { days: histS.days, today: histS.day }); }
+  if (type === 'hist') { histS.days = await hist.days().catch(async (e) => { if (isCorrupt(e)) await corruptDb(e, 'history read'); return histS.days; }); return browseItems('hist', { days: histS.days, today: histS.day }); }
   if (type === 'set') return browseItems('set', { snapshot: settingsSnapshot(settingsEntries()) });
   logS.files = await hist.logList().catch(() => logS.files); return browseItems('log', { files: logS.files, current: logS.file });
 }
@@ -899,7 +917,7 @@ $('setReset').addEventListener('click', async () => { const a = await openSheet(
  *  5 s while the card waits, plus what is still queued. */
 function refreshSpan(p) {
   const now = Date.now(); if (now - histMem.spanAt < 5000 || !p) return; histMem.spanAt = now;
-  hist.span(p.label, now - 86400e3, p.demo ? ['demo'] : undefined).then((r) => { histS.spanFirst = r.first; histS.spanLast = r.last; }).catch(() => {});
+  hist.span(p.label, now - 86400e3, p.demo ? ['demo'] : undefined).then((r) => { histS.spanFirst = r.first; histS.spanLast = r.last; }).catch((e) => { if (isCorrupt(e)) corruptDb(e, 'history read'); });
 }
 function spanForWait(p) {
   let first = histS.spanFirst, last = histS.spanLast;
@@ -939,7 +957,7 @@ async function drawHistory(p, force = false) {
     histMem.series = { s: seriesFromBuckets(q.parts), energy: q.energy, from, to }; histMem.drawAt = Date.now();
     if (q.first !== null) { histS.spanFirst = q.first; histS.spanLast = q.last; }
     paintHistory();
-  } catch (e) { /* the store logged it */ }
+  } catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); /* else the store logged it */ }
   finally { histMem.drawing = false; }
   if (histMem.redraw) { histMem.redraw = false; scheduleDraw(true); }
 }
@@ -1389,7 +1407,7 @@ async function histRequest(m) {
         if (rows.length < XFER_ROWS) break;
       }
     }
-  } catch (e) { log(`history: transfer failed: ${e.message}`); }
+  } catch (e) { log(`history: transfer failed: ${e.message}`); if (isCorrupt(e)) await corruptDb(e, 'history read'); }
   finally { histS.xfer = null; }
 }
 function sendSnapshots() {
@@ -1757,7 +1775,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), histSpin: (ms) => hist.spin(ms), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });

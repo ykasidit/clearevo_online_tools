@@ -36,14 +36,14 @@ export const TREND_REFRESH_MS = 10000;          // a live chart is re-queried th
 // Every store call has a deadline (owner rule 2026-09-24: "no block forever"): a stuck worker or a stuck
 // OPFS handle must never freeze the page. The store rejects at the deadline, logs it, and after
 // STUCK_RESTART timeouts in a row restarts the worker.
-export const OP_TIMEOUT_MS = { ping: 25000, insert: 8000, query: 15000, rows: 15000, days: 8000, remove: 15000, clear: 30000, export: 60000, import: 60000, migrate: 180000, log: 8000, other: 15000 };
+export const OP_TIMEOUT_MS = { ping: 25000, insert: 8000, query: 15000, rows: 15000, days: 8000, remove: 15000, clear: 30000, export: 60000, import: 60000, log: 8000, other: 15000 };
 export const STUCK_RESTART = 3;
 export const STATS_LOG_MS = 60000;              // the read/write statistics line
 
 export function historyState() {
   return {
     day: null, todayRows: 0, nextId: 1, contig: 0, days: [], backend: 'none', persistent: null, range: '6h', usage: 0, quota: 0,
-    reqAt: 0, wasLive: false, gapAsks: 0, xfer: null, rx: null, gap: null, migrated: null, spanFirst: null, spanLast: null,
+    reqAt: 0, wasLive: false, gapAsks: 0, xfer: null, rx: null, gap: null, spanFirst: null, spanLast: null,
   };
 }
 
@@ -223,6 +223,16 @@ export function daysNeeded(days, from, to) {
 }
 
 // ---- store call bookkeeping: timeouts, failures, statistics (owner ask 2026-09-24) ----
+// ---- a corrupt day database (owner rule 2026-09-24): no repair at this stage. The worker names the day and
+// raises; the caller decides - the live writer deletes today's file and starts a new one, a history reader deletes
+// the file. Whole files only: rows are never removed by SQL and a file is never compacted in place - one file per
+// day is the space rule (a node test greps the sources for it). ----
+export const CORRUPT_RX = /SQLITE_CORRUPT|SQLITE_NOTADB|disk image is malformed|not a database|database corruption/i;
+/** Does this SQLite error mean the file itself is damaged (as opposed to full, busy, or a bad statement)? */
+export function isCorruptError(e) { return CORRUPT_RX.test(String((e && e.message) || e || '')); }
+/** What to do with a corrupt day: today's file is renewed (deleted, a new one starts), a past day is dropped. */
+export function corruptDecision(day, today) { return { action: day === today ? 'renew' : 'drop', live: day === today }; }
+
 export function opTimeoutMs(op) { return OP_TIMEOUT_MS[op] || OP_TIMEOUT_MS.other; }
 export function statsState() { return { since: 0, ops: {}, timeouts: 0, fails: 0, restarts: 0, timeoutsInRow: 0 }; }
 /** Record one store call: kind, duration, outcome ('ok' | 'fail' | 'timeout'), rows or bytes moved. */

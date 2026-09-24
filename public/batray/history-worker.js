@@ -17,17 +17,20 @@
 // handles only a worker has. One database per UTC day, the live day
 // included; the pool keeps them in the origin's private directory
 // batray-history-db/. Plain text files (the debug log sessions, the device
-// notes) stay in batray-history/, where the old NDJSON day files also live
-// until `migrate` has moved their rows into day databases (owner decision
-// 2026-09-24: no more NDJSON, no more gz). Nothing here decides anything:
+// notes) stay in batray-history/. Old NDJSON day files from before 0.9.40
+// are neither read nor migrated (owner 2026-09-24: "no more ndjson, no more
+// gz", day 0 is a breaking change); start counts them once for the log and
+// Clear stored history removes them. Nothing here decides anything:
 // the page's history logic module does, this only does I/O, and every SQL
 // statement is in the SQL module so node tests run the same code.
 
 import sqlite3InitModule from './sqlite3.js';
+import { isCorruptError } from './history-logic.js';
 import { ensureSchema, insertRows, rowsAfter, lastRows, buckets, energyWh, span, dayInfo, dbBytes, mergeFrom, looksLikeDayDb } from './history-sql.js';
 
-const DIR = 'batray-history';           // text files: logs/, devices.ndjson, and old day files awaiting migration
+const DIR = 'batray-history';           // text files: logs/, devices.ndjson (and old day files from before 0.9.40, unread)
 const DB_DIR = '/batray-history-db';    // the SQLite pool's directory (its files are opaque; export gives a real .sqlite)
+const OLD_RX = /^\d{4}-\d{2}-\d{2}\.ndjson(\.gz)?$/;   // a day file from before 0.9.40
 const IDLE_CLOSE_MS = 60000;            // a past day's database is closed after this without use (today's stays open)
 const enc = new TextEncoder(), dec = new TextDecoder();
 let dirP = null;
@@ -68,8 +71,10 @@ async function pause() { if (!pool || pool.isPaused()) return { paused: !!pool }
 async function resume() { if (pool && pool.isPaused()) await pool.unpauseVfs(); return { paused: false }; }
 async function room(n = 3) { if (pool.getFileCount() + n > pool.getCapacity()) await pool.addCapacity(Math.max(8, n)); }
 const DEMO_DAY = 'demo';                 // the DEMO pack's rows: an in-memory database, never on disk, never listed or exported
+let touching = null;                    // the day whose database the current op touches (named in a corruption error)
 async function open(day, create = true) {
   if (day !== DEMO_DAY && !DAY_RX.test(day)) throw new Error('bad day ' + day);
+  touching = day;
   const o = dbs.get(day);
   if (o) { o.usedAt = Date.now(); return o.db; }
   await init();
@@ -130,7 +135,7 @@ const ops = {
     return { first, last, n };
   },
   async remove({ day }) { await init(); await resume(); close(day); const had = pool.getFileNames().includes(dbName(day)); if (had) pool.unlink(dbName(day)); return { removed: had }; },
-  async clear() { await init(); await resume(); for (const day of [...dbs.keys()]) close(day); let n = 0; for (const day of daysOnDisk()) { pool.unlink(dbName(day)); n++; } return { removed: n }; },   // the demo's memory database goes too
+  async clear() { await init(); await resume(); for (const day of [...dbs.keys()]) close(day); let n = 0; for (const day of daysOnDisk()) { pool.unlink(dbName(day)); n++; } const d = await dir(); for await (const [name, h] of d.entries()) if (h.kind === 'file' && OLD_RX.test(name)) { await remove(d, name); n++; } return { removed: n }; },   // the demo's memory database goes too
   /** The day's database as bytes (a real SQLite file: DB Browser for SQLite, Python, DuckDB open it). */
   async export({ day }) { await init(); await resume(); const o = dbs.get(day); if (o) { try { o.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* not wal */ } } const name = dbName(day); if (!pool.getFileNames().includes(name)) return { bytes: null }; return { bytes: pool.exportFile(name) }; },
   /** A day file from a backup or from the reader: checked (SQLite header, our table), then stored as the day when
@@ -166,41 +171,15 @@ const ops = {
       throw e;
     }
   },
-  /** Move one old NDJSON day file (raw or gz) into its day database, then delete it. Returns what was done and
-   *  how many old files remain, so the page loops with a log line per file. */
-  async migrate() {
-    await init(); const d = await dir();
-    const old = [];
-    for await (const [name, h] of d.entries()) { const m = /^(\d{4}-\d{2}-\d{2})\.ndjson(\.gz)?$/.exec(name); if (m && h.kind === 'file') old.push({ name, day: m[1], gz: !!m[2] }); }
-    old.sort((a, b) => (a.name < b.name ? -1 : 1));
-    if (!old.length) return { done: true, remaining: 0 };
-    const f = old[0]; const t0 = Date.now();
-    const bytes = await fileBytes(d, f.name);
-    let stream = new Blob([bytes]).stream(); if (f.gz) stream = stream.pipeThrough(new DecompressionStream('gzip'));
-    const reader = stream.getReader(); const db = await open(f.day); let id = dayInfo(db).maxId; let carry = ''; let rows = 0, bad = 0; let batch = [];
-    const flush = () => { if (!batch.length) return; rows += insertRows(db, batch).inserted; batch = []; };
-    for (;;) {
-      const { value, done } = await reader.read();
-      const text = carry + (value ? dec.decode(value, { stream: true }) : '');
-      const lines = text.split('\n'); carry = done ? '' : lines.pop();
-      for (const line of lines) {
-        if (!line) continue;
-        try { const r = JSON.parse(line); if (r && typeof r.t === 'number' && r.p) { delete r.n; delete r.o; r.id = ++id; batch.push(r); } else bad++; } catch { bad++; }
-        if (batch.length >= 2000) flush();
-      }
-      if (done) break;
-    }
-    flush();
-    await remove(d, f.name);
-    return { done: false, file: f.name, day: f.day, rows, bad, bytes: bytes.length, ms: Date.now() - t0, remaining: old.length - 1 };
-  },
-  /** How many old day files wait for migration (a quick look at start). */
-  async migrateCount() { const d = await dir(); let n = 0, bytes = 0; for await (const [name, h] of d.entries()) if (h.kind === 'file' && /^\d{4}-\d{2}-\d{2}\.ndjson(\.gz)?$/.test(name)) { n++; bytes += (await h.getFile()).size; } return { files: n, bytes }; },
-  /** Test hook: hold the worker busy (the page's timeout must fire, never wait). */
+  /** Old NDJSON day files from before 0.9.40 (not read, not migrated): how many and how big, for one log line. */
+  async oldFiles() { const d = await dir(); let n = 0, bytes = 0; for await (const [name, h] of d.entries()) if (h.kind === 'file' && OLD_RX.test(name)) { n++; bytes += (await h.getFile()).size; } return { files: n, bytes }; },
   /** Test hooks. `slow` = a worker that does not answer for a while (a timer: terminate() ends it cleanly and the
    *  pool is free at once); `spin` = a worker stuck in JavaScript (a busy loop: Chrome's terminate() then never
    *  releases its access handles - the pool stays locked until the page is reloaded, probed 2026-09-24). */
   async slow({ ms }) { await new Promise((r) => setTimeout(r, Math.min(ms || 0, 120000))); return { slept: ms }; },
+  /** Test hook: damage a day's file in place (the header stays, every byte after it is 0xFF), as a bad flash
+   *  block or a torn write would. The next read or write of that day raises SQLITE_CORRUPT. */
+  async corrupt({ day }) { await init(); await resume(); close(day); const name = dbName(day); const bytes = pool.exportFile(name); bytes.fill(0xff, 100); pool.importDb(name, bytes); return { bytes: bytes.length }; },
   async spin({ ms }) { const end = Date.now() + Math.min(ms || 0, 120000); while (Date.now() < end) { /* busy */ } return { spun: ms }; },
   async note({ name, text }) {
     if (!/^[a-z]+\.ndjson$/.test(name)) throw new Error('bad note name');
@@ -237,5 +216,12 @@ self.onmessage = async (ev) => {
     if (!ops[op]) throw new Error('unknown op ' + op);
     const r = await ops[op](args || {});
     self.postMessage({ id, ok: true, r });
-  } catch (e) { self.postMessage({ id, ok: false, error: (e && e.message) || String(e), name: e && e.name }); }
+  } catch (e) {
+    if (isCorruptError(e)) {                                                // the file is damaged: close it, name the day, raise
+      const day = (args && args.day) || touching; close(day);
+      const msg = `${day} database is corrupt (${op}): ${(e && e.message) || e}`; wlog(msg);
+      self.postMessage({ id, ok: false, error: msg, name: 'CorruptError', data: { day, op } }); return;
+    }
+    self.postMessage({ id, ok: false, error: (e && e.message) || String(e), name: e && e.name });
+  }
 };

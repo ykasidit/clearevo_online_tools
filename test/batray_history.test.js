@@ -17,7 +17,7 @@
 // assembly, chart windows and buckets, and the store-call statistics.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { historyState, dayKey, dayStartMs, daysInRange, rowDue, rowFromReading, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, bucketsFromRows, energyFromRows, opTimeoutMs, statsState, statsAdd, stuckDecision, statsLine, statsReset, HEADROOM_BYTES, HIST_REQ_MS, GAP_REQ_MS, GAP_ASKS_MAX, MIN_ROW_MS, RANGES, XFER_CHUNK, OP_TIMEOUT_MS, STUCK_RESTART } from '../public/batray/history-logic.js';
+import { corruptDecision, isCorruptError, historyState, dayKey, dayStartMs, daysInRange, rowDue, rowFromReading, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, bucketsFromRows, energyFromRows, opTimeoutMs, statsState, statsAdd, stuckDecision, statsLine, statsReset, HEADROOM_BYTES, HIST_REQ_MS, GAP_REQ_MS, GAP_ASKS_MAX, MIN_ROW_MS, RANGES, XFER_CHUNK, OP_TIMEOUT_MS, STUCK_RESTART } from '../public/batray/history-logic.js';
 import { decodeCellInfo } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -156,4 +156,15 @@ test('store-call bookkeeping: timeouts per kind, statistics per kind, the stuck 
   st.restarts++; statsReset(st, 99); assert.deepEqual(st.ops, {}); assert.equal(st.since, 99);
   assert.equal(statsLine(st), 'history stats: no calls yet · restarts=1');
   assert.equal(statsLine(statsState()), 'history stats: no calls yet');
+});
+
+test('a corrupt day: today is renewed (deleted, a new live file), a past day is dropped; the classifier reads SQLite\'s own words', () => {
+  assert.deepEqual(corruptDecision('2026-09-24', '2026-09-24'), { action: 'renew', live: true });
+  assert.deepEqual(corruptDecision('2026-09-23', '2026-09-24'), { action: 'drop', live: false });
+  assert.ok(isCorruptError(new Error('SQLITE_CORRUPT: sqlite3 result code 11: database disk image is malformed')));
+  assert.ok(isCorruptError(new Error('SQLITE_NOTADB: file is not a database')));
+  assert.ok(isCorruptError({ message: '2026-09-24 database is corrupt (insert): SQLITE_CORRUPT' }));
+  assert.equal(isCorruptError(new Error('SQLITE_FULL: database or disk is full')), false);
+  assert.equal(isCorruptError(new Error('insert timed out after 8 s')), false);
+  assert.equal(isCorruptError(null), false);
 });

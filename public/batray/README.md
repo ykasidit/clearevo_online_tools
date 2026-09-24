@@ -177,15 +177,15 @@ database that is never listed, exported or on disk. The chart is built
 from bucket queries per window (`buckets()`, at most 800 points) and the
 energy from a window function, refreshed after each flush: the page keeps
 no table of rows, so a day of 300k rows costs nothing at start (the 0.9.34
-"Aw, Snap"). Old `.ndjson` / `.ndjson.gz` files found at start are moved
-into day databases one file per call and deleted.
+"Aw, Snap"). Old `.ndjson` / `.ndjson.gz` files from before 0.9.40 are
+neither read nor migrated (owner: day 0 is a breaking change); start logs
+how many there are and Clear stored history removes them.
 
 Owner rules, all tested: **read, write, insert and read tests including
 same-time tests** (`batray_history_sql.test.js` on the real wasm in node,
 20 inserts + 20 queries + 5 infos fired together in the browser),
 **no block forever** - every store call carries a deadline
-(`OP_TIMEOUT_MS`: insert 8 s, query 15 s, export/import 60 s, migrate
-180 s ...) and rejects with a `TimeoutError` at it, three timeouts in a row
+(`OP_TIMEOUT_MS`: insert 8 s, query 15 s, export/import 60 s ...) and rejects with a `TimeoutError` at it, three timeouts in a row
 terminate the worker and start a fresh one (pending calls fail at once),
 **failures go to the debug log** (once per distinct op + message, a full
 disk every 10 s is one line) and **read/write statistics go to the debug
@@ -209,6 +209,30 @@ day, the reader answers with the rows after `contig` as gzipped JSON in
 `hist-file` base64 chunks. Backup is a `.tar` of the `.sqlite` files
 (DB Browser for SQLite or Python opens a day); restore attaches each file
 and merges the rows the local day lacks.
+
+## Corrupt day files and the no-SQL-delete rule (0.9.41, owner 2026-09-24)
+
+One file per day is also the space rule: a day is freed by unlinking its
+file, never by a SQL delete (free pages stay until a compaction rewrites the
+whole file). `batray_no_sql_delete.test.js` greps every first-party source
+for `DELETE FROM`, `VACUUM`, `DROP TABLE` and `TRUNCATE TABLE` and fails on
+a hit.
+
+A damaged file (a bad flash block, a torn write) makes SQLite raise
+`SQLITE_CORRUPT` / `SQLITE_NOTADB` on the next read or write. No repair at
+this stage: the worker closes the file, logs `<day> database is corrupt
+(<op>): ...`, and raises a `CorruptError` carrying the day and the op; the
+store logs the failure and rethrows it; the caller decides
+(`corruptDecision(day, today)`): the live writer (`flushHistory`) deletes
+today's file, starts a new one and writes the flush's rows into it
+(numbered from 1 on the reader; a viewer keeps the reader's ids), toasts
+"Today's history file was damaged..."; a history reader (the chart query,
+the day listing, the span, a transfer, Browse) deletes that day's file and
+toasts "The history file of <day> was damaged and has been deleted."
+Tested on the real wasm in node (a deserialized image with every byte after
+the header set to 0xFF raises on every read and on a write, a full disk or a
+bad statement does not) and in the browser through the `corrupt` worker
+hook (today while live, a past day on a read).
 
 ## Copyright & license
 

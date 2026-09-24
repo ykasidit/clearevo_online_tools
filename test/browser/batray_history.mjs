@@ -18,7 +18,7 @@
 // its deadline rejects and is logged and three in a row restart the worker,
 // the statistics line, backup as a .tar of .sqlite files and a merging
 // restore, Browse / delete, rows received from a reader (and junk refused),
-// migration of old NDJSON day files, ids continuing after a reload, the chart
+// old NDJSON day files left alone, ids continuing after a reload, the chart
 // drawn from bucket queries, and Delete through a sheet.
 // Run through ./run.sh, or: BASE=... node batray_history.mjs
 import { OWNER_32S_CELL, AIO_32S_DEV } from '../batray_frames.js';
@@ -171,7 +171,7 @@ check('a live row from a reader beyond this copy\'s complete prefix is stored, m
 const plan = await evalJs(`(async () => { const before = window.__batrayTest.logLines().length; await window.__batrayTest.histRequest({ from: 'v1abcd', have: [] }); return window.__batrayTest.logLines().slice(before).join(' | '); })()`);
 check('a history request while not sharing is logged and ignored', /request from v1abcd ignored \(not sharing\)/.test(plan), plan);
 
-// ---- 7. migration: old NDJSON day files (raw and gz) from before 0.9.40 are moved into day databases at start ----
+// ---- 7. old NDJSON day files (raw and gz) from before 0.9.40 are neither read nor migrated (owner: day 0); one log line ----
 const oldA = new Date(Date.now() - 3 * 86400e3).toISOString().slice(0, 10), oldB = new Date(Date.now() - 4 * 86400e3).toISOString().slice(0, 10);
 await evalJs(`(async () => {
   const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('batray-history', { create: true });
@@ -184,14 +184,12 @@ await evalJs(`(async () => {
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(4000);
 ll = await logs(); list = await evalJs('window.__batrayTest.histList()');
 const leftover = await evalJs(`(async () => { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('batray-history'); const names = []; for await (const [n] of d.entries()) names.push(n); return names.filter((n) => /^\\d{4}-\\d{2}-\\d{2}\\.ndjson/.test(n)); })()`);
-check('old NDJSON day files are moved into SQLite at start (rows counted, a torn line skipped) and deleted; the log tells', ll.some((l) => /history: 2 old day files \(\d+ MB\) to move into SQLite/.test(l)) && ll.some((l) => new RegExp(`moved ${oldA}\\.ndjson into ${oldA}\\.sqlite: 50 rows, 1 bad lines? in \\d+ ms, [01] to go`).test(l)) && ll.some((l) => new RegExp(`moved ${oldB}\\.ndjson\\.gz into ${oldB}\\.sqlite: 40 rows in \\d+ ms, [01] to go`).test(l)) && list.find((d) => d.day === oldA)?.rows === 50 && list.find((d) => d.day === oldB)?.rows === 40 && leftover.length === 0, { leftover, a: list.find((d) => d.day === oldA), b: list.find((d) => d.day === oldB), logs: ll.filter((l) => /history:/.test(l)) });
-const migRows = await evalJs(`window.__batrayTest.histRows('${oldA}', 0, 3)`);
-check('migrated rows keep their values and cells, ids are dense', migRows.length === 3 && migRows.map((r) => r.id).join() === '1,2,3' && migRows[0].p === 'old' && migRows[0].w === 200 && migRows[0].c.join() === '3300,3301', migRows);
+check('old NDJSON day files are left alone at start: one log line says they are not read any more, they are not listed as days', ll.some((l) => /history: 2 day files from before 0\.9\.40 \(\d+ MB, NDJSON\) are not read any more; Clear stored history removes them/.test(l)) && !list.some((d) => d.day === oldA || d.day === oldB) && leftover.length === 2 && !ll.some((l) => /moved .* into/.test(l)), { leftover, list, logs: ll.filter((l) => /history:/.test(l)) });
 
 // ---- 8. reload: ids continue from the database, the chart draws at once from bucket queries, 7 d reads the past days ----
 h = await hist();
-check('after a reload today\'s counters come from its database: rows, next id, complete prefix', h.backend === 'opfs' && h.todayRows === 124 && h.nextId === 129 && h.contig === 123 && h.days.length === 6, h);
-check('the start line says what is stored', ll.some((l) => /history: opfs, 6 days, \d+ KB, oldest 2026-09-01, today 124 rows \(highest id 128, complete to 123\)/.test(l)), ll.filter((l) => /history: opfs/.test(l)));
+check('after a reload today\'s counters come from its database: rows, next id, complete prefix', h.backend === 'opfs' && h.todayRows === 124 && h.nextId === 129 && h.contig === 123 && h.days.length === 4, h);
+check('the start line says what is stored', ll.some((l) => /history: opfs, 4 days, \d+ KB, oldest 2026-09-01, today 124 rows \(highest id 128, complete to 123\)/.test(l)), ll.filter((l) => /history: opfs/.test(l)));
 const known = await evalJs(`({ shown: !document.getElementById('connectKnown').hidden, txt: document.getElementById('connectKnown').textContent })`);
 check('the remembered BMS shows as a green "Connect to n11" button after a reload', known.shown && known.txt === 'Connect to n11', known);
 await evalJs(`document.getElementById('connectKnown').click(); 1`); await sleep(1500); await notify(AIO_32S_DEV); await notify(OWNER_32S_CELL); await sleep(1200);
@@ -206,13 +204,15 @@ check('the memory line counts queued readings, not a table in memory', /· \d+ r
 
 // ---- 9. Browse deletes one day; Delete through a sheet empties the store, never confirm() ----
 const del = await evalJs(`(async () => { const T = window.__batrayTest; T.openBrowse('hist'); await new Promise((r) => setTimeout(r, 400)); await T.browseDelete('2026-09-10'); await new Promise((r) => setTimeout(r, 300)); history.back(); await new Promise((r) => setTimeout(r, 300)); return (await T.histList()).map((d) => d.day); })()`);
-check('Browse deletes one day database on its own', del.length === 5 && !del.includes('2026-09-10'), del);
+check('Browse deletes one day database on its own', del.length === 3 && !del.includes('2026-09-10'), del);
 await evalJs(`window.__confirms = 0; window.confirm = () => { window.__confirms++; return true; }; document.getElementById('histClear').click(); 1`); await sleep(400);
 const sheet = await evalJs(`({ open: !document.getElementById('sheet').hidden, text: document.getElementById('sheet').textContent.replace(/\\s+/g, ' ').slice(0, 160), buttons: [...document.querySelectorAll('#sheet button')].map((b) => b.textContent.trim()) })`);
 check('Delete stored history opens a sheet with Cancel / Delete and the size', sheet.open && sheet.buttons.includes('Delete') && sheet.buttons.includes('Cancel') && /\d+ days?, \d+ KB/.test(sheet.text), sheet);
 await evalJs(`[...document.querySelectorAll('#sheet button')].find((b) => b.textContent.trim() === 'Delete').click(); 1`); await sleep(1000);
 h = await hist(); list = await evalJs('window.__batrayTest.histList()');
 const after = await evalJs(`({ confirms: window.__confirms, toast: document.getElementById('toast').textContent, wait: getComputedStyle(document.getElementById('trendWait')).display !== 'none', card: document.getElementById('trendCard').hidden })`);
+const oldLeft = await evalJs(`(async () => { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('batray-history'); const names = []; for await (const [n] of d.entries()) names.push(n); return names.filter((n) => /^\\d{4}-\\d{2}-\\d{2}\\.ndjson/.test(n)); })()`);
+check('Clear stored history also removes the old NDJSON day files', oldLeft.length === 0, oldLeft);
 check('the store is empty afterwards, a toast says so, and the History tab shows the collecting bar again', list.length === 0 && h.days.length === 0 && h.nextId === 1 && after.confirms === 0 && /deleted/i.test(after.toast) && after.wait && after.card, { h, list, after });
 
 // ---- last: a worker stuck in JavaScript. Chrome's terminate() never releases its OPFS access handles (probed in
@@ -230,6 +230,44 @@ check('a worker stuck in JavaScript: restarted, the pool stays locked, the store
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(4000);
 ll = await logs();
 check('a reload takes the pool back: SQLite over OPFS again', ll.some((l) => /history: SQLite 3\.\d+\.\d+ over opfs-sahpool/.test(l)) && ll.some((l) => /history: opfs, 0 days/.test(l)), ll.filter((l) => /history/.test(l)));
+
+// ---- corruption (owner rule 2026-09-24): a damaged day file raises on read and on write; no repair - the live
+// writer deletes today's file and starts a new one with the flush's rows, a history reader deletes the file.
+// Both log and toast. The page is fresh after the reload above (the pool taken back, nothing stored). ----
+await connect();
+for (let i = 0; i < 2; i++) { await sleep(3100); await notify(OWNER_32S_CELL); }
+await evalJs('window.__batrayTest.flushHistory()');
+const before = await evalJs(`window.__batrayTest.histInfo('${today}')`);
+const live = await evalJs(`(async () => {
+  const T = window.__batrayTest; const before = T.logLines().length;
+  const dmg = await T.histCorrupt('${today}');
+  await new Promise((r) => setTimeout(r, 3100));                          // one stored row per pack per 3 s
+  window.__notify([${[...OWNER_32S_CELL].join(',')}]); await new Promise((r) => setTimeout(r, 200));
+  await T.flushHistory();
+  const info = await T.histInfo('${today}'); const rows = await T.histRows('${today}', 0, 10);
+  return { dmg, info, ids: rows.map((r) => r.id), state: T.histState(), toast: document.getElementById('toast').textContent, hidden: document.getElementById('toast').hidden, logs: T.logLines().slice(before).filter((l) => /history/.test(l)), stats: T.histStatsRaw() };
+})()`);
+// whichever touches the damaged file first raises: the span refresh on the reading (a history read) or the flush's
+// insert (the live write); today is renewed either way and the flush's row lands in the new file as id 1
+check("a damaged today's file: the worker names the day and raises, the caller logs it, toasts, deletes the file, a new one starts and the flush's row is its id 1", before.rows >= 2 && live.dmg.bytes > 0
+  && live.logs.some((l) => new RegExp(`history worker: ${today} database is corrupt \\((insert|span|query|info|days)\\): SQLITE_CORRUPT`).test(l))
+  && live.logs.some((l) => new RegExp(`history: (insert|span|query|info|days) failed after \\d+ ms: ${today} database is corrupt`).test(l))
+  && live.logs.some((l) => new RegExp(`history: (live write|history read): ${today} database is corrupt -> renew: deleted, a new live file starts`).test(l))
+  && live.info.rows === 1 && live.info.maxId === 1 && live.info.contig === 1 && live.ids.join() === '1' && live.state.nextId === 2 && live.state.todayRows === 1
+  && !live.hidden && /damaged: it was deleted and a new one started/.test(live.toast) && live.stats.restarts === 0, live);
+const more = await evalJs(`(async () => { const T = window.__batrayTest; window.__notify([${[...OWNER_32S_CELL].join(',')}]); await new Promise((r) => setTimeout(r, 3200)); window.__notify([${[...OWNER_32S_CELL].join(',')}]); await new Promise((r) => setTimeout(r, 200)); await T.flushHistory(); return (await T.histRows('${today}', 0, 10)).map((r) => r.id); })()`);
+check('the new live file keeps taking rows with dense ids', more.join() === '1,2', more);
+await evalJs(`window.__batrayTest.histInsert('2026-09-05', Array.from({ length: 20 }, (_, i) => ({ id: i + 1, t: Date.UTC(2026, 8, 5, 0, 0, 0) + i * 60000, p: 'n11', soc: 50, v: 52, w: 100 })))`);
+const past = await evalJs(`(async () => {
+  const T = window.__batrayTest; const before = T.logLines().length; document.getElementById('toast').hidden = true;
+  await T.histCorrupt('2026-09-05');
+  await T.maintainHistory();                                                 // a history read: the day listing opens every file
+  const list = (await T.histList()).map((d) => d.day); const info = await T.histInfo('${today}');
+  return { list, today: info.rows, toast: document.getElementById('toast').textContent, hidden: document.getElementById('toast').hidden, logs: T.logLines().slice(before).filter((l) => /history/.test(l)) };
+})()`);
+check('history read of a damaged past day: the worker raises, the reader logs it, toasts and deletes that file; today is untouched', past.logs.some((l) => /history worker: 2026-09-05 database is corrupt \((days|info)\): SQLITE_CORRUPT/.test(l))
+  && past.logs.some((l) => /history: history read: 2026-09-05 database is corrupt -> drop: deleted$/.test(l))
+  && !past.list.includes('2026-09-05') && past.list.includes(today) && past.today === 2 && !past.hidden && /history file of 2026-09-05 was damaged and has been deleted/.test(past.toast), past);
 
 const thrown = events.filter((e) => e.method === 'Runtime.exceptionThrown').map((e) => e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text);
 check('no page exceptions', thrown.length === 0, thrown);

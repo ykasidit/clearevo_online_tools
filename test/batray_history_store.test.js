@@ -34,6 +34,7 @@ function fakeWorkerFactory(state) {
     w.postMessage = ({ id, op, args }) => {
       if (w.terminated) throw new Error('terminated');
       if (state.hang && w === state.workers[0]) return;                     // the first worker is stuck: never answers
+      if (state.corrupt && op !== 'ping') { setTimeout(() => w.onmessage({ data: { id, ok: false, error: `${state.corrupt} database is corrupt (${op}): SQLITE_CORRUPT: sqlite3 result code 11: database disk image is malformed`, name: 'CorruptError', data: { day: state.corrupt, op } } }), 1); return; }
       if (state.locked && state.workers.length > 1 && w === state.workers[state.workers.length - 1]) { setTimeout(() => w.onmessage({ data: { id, ok: false, error: "Failed to execute 'createSyncAccessHandle' on 'FileSystemFileHandle': Access Handles cannot be created if there is another open Access Handle or Writable stream associated with the same file.", name: 'InvalidStateError' } }), 1); return; }
       setTimeout(async () => { if (w.terminated) return; try { const r = await be[op](args || {}); w.onmessage({ data: { id, ok: true, r } }); } catch (e) { w.onmessage({ data: { id, ok: false, error: e.message, name: e.name } }); } }, state.delayMs || 1);
     };
@@ -125,6 +126,16 @@ test('a pool still locked after the restart (a worker killed while busy): the st
   assert.equal(h.stats.lockouts, 1);
 });
 
+test('a corrupt day database: the worker names the day, the store logs it and raises a CorruptError carrying day + op for the caller to decide', async () => {
+  const st = { logs: [], workers: [] }; const h = store(st);
+  await h.ready; st.corrupt = '2026-09-24';
+  await assert.rejects(h.insert('2026-09-24', [{ ...mk(0), id: 1 }]), (e) => e.name === 'CorruptError' && e.day === '2026-09-24' && e.op === 'insert' && /database is corrupt \(insert\): SQLITE_CORRUPT/.test(e.message));
+  await assert.rejects(h.rows('2026-09-24'), (e) => e.name === 'CorruptError' && e.day === '2026-09-24' && e.op === 'rows');
+  assert.ok(st.logs.some((l) => /history: insert failed after \d+ ms: 2026-09-24 database is corrupt \(insert\): SQLITE_CORRUPT/.test(l)), st.logs);
+  assert.ok(st.logs.some((l) => /history: rows failed after \d+ ms: 2026-09-24 database is corrupt \(rows\)/.test(l)), st.logs);
+  assert.equal(h.stats.fails, 2); assert.equal(h.stats.restarts, 0, 'corruption is not a stuck worker');
+});
+
 test('the memory-only store answers the same calls (and says export gives nothing, import is refused)', async () => {
   const logs = []; const h = new HistoryStore({ log: (m) => logs.push(m), forceMemory: true });
   assert.equal(await h.ready, 'memory');
@@ -133,10 +144,10 @@ test('the memory-only store answers the same calls (and says export gives nothin
   assert.equal((await h.info('2026-09-24')).contig, 3, 'ids handed out 1..3');
   assert.equal(await h.exportDay('2026-09-24'), null);
   await assert.rejects(h.importDay('2026-09-24', new Uint8Array(1)));
-  assert.deepEqual(await h.migrate(), { done: true, remaining: 0 });
+  assert.deepEqual(await h.oldFiles(), { files: 0, bytes: 0 });
   await h.remove('2026-09-24'); assert.deepEqual(await h.days(), []);
 });
 
 test('deadlines per kind are the documented ones', () => {
-  assert.equal(OP_TIMEOUT_MS.insert, 8000); assert.equal(OP_TIMEOUT_MS.query, 15000); assert.equal(OP_TIMEOUT_MS.migrate, 180000);
+  assert.equal(OP_TIMEOUT_MS.insert, 8000); assert.equal(OP_TIMEOUT_MS.query, 15000); assert.equal(OP_TIMEOUT_MS.export, 60000);
 });

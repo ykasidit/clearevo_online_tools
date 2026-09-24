@@ -58,8 +58,7 @@ class MemoryBackend {
   async clear() { const n = this.store.size; this.store.clear(); return { removed: n }; }
   async export() { return { bytes: null }; }
   async import() { throw new Error('this browser cannot store files'); }
-  async migrate() { return { done: true, remaining: 0 }; }
-  async migrateCount() { return { files: 0, bytes: 0 }; }
+  async oldFiles() { return { files: 0, bytes: 0 }; }
   async pause() { return { paused: false }; }
   async resume() { return { paused: false }; }
   async slow({ ms }) { await new Promise((r) => setTimeout(r, ms)); return { slept: ms }; }
@@ -79,7 +78,7 @@ class WorkerBackend {
   start() {
     this.generation++;
     this.w = this.makeWorker();
-    this.w.onmessage = (ev) => { const m = ev.data; if (m && m.log) { this.log('history worker: ' + m.log); return; } const p = this.waiting.get(m.id); if (!p) return; this.waiting.delete(m.id); clearTimeout(p.timer); m.ok ? p.res(m.r) : p.rej(Object.assign(new Error(m.error), { name: m.name || 'Error' })); };
+    this.w.onmessage = (ev) => { const m = ev.data; if (m && m.log) { this.log('history worker: ' + m.log); return; } const p = this.waiting.get(m.id); if (!p) return; this.waiting.delete(m.id); clearTimeout(p.timer); m.ok ? p.res(m.r) : p.rej(Object.assign(new Error(m.error), { name: m.name || 'Error' }, m.data || {})); };
     this.w.onerror = (e) => { this.log('history: worker error ' + (e.message || e)); this.failAll(new Error('worker failed')); };
   }
   failAll(err) { for (const p of this.waiting.values()) { clearTimeout(p.timer); p.rej(err); } this.waiting.clear(); }
@@ -100,7 +99,7 @@ class WorkerBackend {
 }
 
 const POOL_LOCKED_RX = /Access Handles? cannot be created|pool not taken/i;
-const KIND = { ping: 'ping', pause: 'other', resume: 'other', insert: 'insert', days: 'days', info: 'days', rows: 'rows', last: 'rows', query: 'query', span: 'query', remove: 'remove', clear: 'clear', export: 'export', import: 'import', migrate: 'migrate', migrateCount: 'days', slow: 'other', spin: 'other', note: 'log', logAppend: 'log', logList: 'log', logRead: 'log', logRemove: 'log', logClear: 'log', logAllGz: 'export', estimate: 'days' };
+const KIND = { ping: 'ping', pause: 'other', resume: 'other', insert: 'insert', days: 'days', info: 'days', rows: 'rows', last: 'rows', query: 'query', span: 'query', remove: 'remove', clear: 'clear', export: 'export', import: 'import', oldFiles: 'days', slow: 'other', spin: 'other', corrupt: 'other', note: 'log', logAppend: 'log', logList: 'log', logRead: 'log', logRemove: 'log', logClear: 'log', logAllGz: 'export', estimate: 'days' };
 
 export class HistoryStore {
   /** opts: { log(msg), forceMemory, backend (tests), makeWorker (tests), timeouts (tests: {op: ms}) } */
@@ -184,8 +183,7 @@ export class HistoryStore {
   clear() { return this.call('clear'); }
   async exportDay(day) { const r = await this.call('export', { day }); if (r.bytes) this.stats.ops.export.rows += r.bytes.length; return r.bytes; }
   importDay(day, bytes) { return this.call('import', { day, bytes }, bytes.length); }
-  migrate() { return this.call('migrate'); }
-  migrateCount() { return this.call('migrateCount'); }
+  oldFiles() { return this.call('oldFiles'); }
   /** Hand the pool back (pagehide): the worker is stopped, which releases its access handles; the next call starts
    *  a new one. Not SQLite's pauseVfs(): pausing the VFS while the page went into the back/forward cache crashed
    *  the renderer in the sandbox (2026-09-24). */
@@ -193,6 +191,7 @@ export class HistoryStore {
   estimate() { return this.call('estimate'); }
   slow(ms) { return this.call('slow', { ms }); }
   spin(ms) { return this.call('spin', { ms }); }
+  corrupt(day) { return this.call('corrupt', { day }); }
   note(name, line) { return this.call('note', { name, text: line + '\n' }); }
   // ---- the debug log's files ----
   logAppend(name, text) { return this.call('logAppend', { name, text }, text.length); }
