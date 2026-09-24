@@ -12,8 +12,9 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools//
 // Backup and restore of the whole history as one .tar (ustar) holding the
-// daily gzip files, uncompressed on the outside because the members already
-// are: 7-Zip, Windows 11 and every Unix open it. Pure functions over bytes.
+// day databases (<day>.sqlite): 7-Zip, Windows 11 and every Unix open the
+// tar, DB Browser for SQLite / Python / DuckDB open the files. Pure functions
+// over bytes.
 
 export const BACKUP_MAX_BYTES = 512 * 1048576;
 export const BACKUP_DIR = 'batray-history/';
@@ -58,20 +59,13 @@ export function tarParse(bytes) {
   }
   return out;
 }
-/** Day files inside a backup: {day, bytes} for members named <day>.ndjson.gz (with or without the directory). */
+/** Day databases inside a backup: {day, bytes} for members named <day>.sqlite (with or without the directory). */
 export function backupDays(entries) {
   const out = [];
   for (const e of entries) {
-    const m = /(?:^|\/)(\d{4}-\d{2}-\d{2})\.ndjson\.gz$/.exec(e.name);
+    const m = /(?:^|\/)(\d{4}-\d{2}-\d{2})\.sqlite$/.exec(e.name);
     if (m) out.push({ day: m[1], bytes: e.bytes });
   }
   return out;
-}
-/** Which backup days to write: the ones this device lacks, and the ones where the backup is larger (a fuller copy). */
-export function restorePlan(existing, incoming) {
-  const have = new Map(existing.map((d) => [d.day, d]));
-  const write = [], skip = [];
-  for (const d of incoming) { const h = have.get(d.day); if (!h || (d.bytes.length > h.bytes)) write.push(d); else skip.push(d.day); }
-  return { write, skip };
 }
 export const backupName = (dayKey) => `batray-history-${dayKey}.tar`;

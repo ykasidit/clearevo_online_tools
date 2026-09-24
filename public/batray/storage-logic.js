@@ -45,7 +45,7 @@ export function settingsRestorePlan(obj) {
 /** The Browse sheet's list for one kind of storage: every file (or key) with its size, and whether it may go on its own.
  *  hist: [{day, raw, gz, bytes}] with `today`; set: a settings snapshot; log: [{name, bytes}] with the current file. */
 export function browseItems(type, data) {
-  if (type === 'hist') return [...(data.days || [])].sort((a, b) => (a.day < b.day ? 1 : -1)).map((d) => ({ id: d.day, name: d.day + (d.gz ? '.ndjson.gz' : '.ndjson') + (d.day === data.today ? ' (today, live)' : ''), bytes: d.bytes || 0, del: true }));
+  if (type === 'hist') return [...(data.days || [])].sort((a, b) => (a.day < b.day ? 1 : -1)).map((d) => ({ id: d.day, name: d.day + '.sqlite' + (d.rows ? ` (${d.rows} rows)` : '') + (d.day === data.today ? ' (today, live)' : ''), bytes: d.bytes || 0, del: true }));
   if (type === 'set') return Object.entries(data.snapshot || {}).sort().map(([k, v]) => ({ id: k, name: k, bytes: utf8.encode(k).length + utf8.encode(v).length, del: true }));
   if (type === 'log') return [...(data.files || [])].sort((a, b) => (a.name < b.name ? 1 : -1)).map((f) => ({ id: f.name, name: f.name + (f.name === data.current ? ' (this session, live)' : ''), bytes: f.bytes || 0, del: true }));
   return [];

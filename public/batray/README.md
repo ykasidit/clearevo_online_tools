@@ -162,6 +162,54 @@ line shows in brackets and the `mem:` log line carries as `measured=`. On a
 page without the headers the line says so. `credentialless` keeps the GA tag
 and Google's cast sender loading.
 
+## SQLite history (0.9.40, owner decision 2026-09-24)
+
+"No more NDJSON, no more gz. SQLite, one file per day including live." The
+worker runs the official sqlite.org WebAssembly build (`sqlite3.js` +
+`sqlite3.wasm`, public domain, vendored) over its `opfs-sahpool` VFS: one
+database `<YYYY-MM-DD>.sqlite` per UTC day in the pool directory
+`batray-history-db`, today's included, with a `readings` table (dense `id`
+per day handed out by the reader, `t`, pack, soc, v, i, w, ah, temps, MOS
+flags, balance, error, cells as a u16 blob) and a unique `(p, t)` index.
+Live rows are queued in the page (the only readings in main memory) and
+inserted every 10 s and on hide; the DEMO pack goes into an in-memory
+database that is never listed, exported or on disk. The chart is built
+from bucket queries per window (`buckets()`, at most 800 points) and the
+energy from a window function, refreshed after each flush: the page keeps
+no table of rows, so a day of 300k rows costs nothing at start (the 0.9.34
+"Aw, Snap"). Old `.ndjson` / `.ndjson.gz` files found at start are moved
+into day databases one file per call and deleted.
+
+Owner rules, all tested: **read, write, insert and read tests including
+same-time tests** (`batray_history_sql.test.js` on the real wasm in node,
+20 inserts + 20 queries + 5 infos fired together in the browser),
+**no block forever** - every store call carries a deadline
+(`OP_TIMEOUT_MS`: insert 8 s, query 15 s, export/import 60 s, migrate
+180 s ...) and rejects with a `TimeoutError` at it, three timeouts in a row
+terminate the worker and start a fresh one (pending calls fail at once),
+**failures go to the debug log** (once per distinct op + message, a full
+disk every 10 s is one line) and **read/write statistics go to the debug
+log** (`history stats: insert=N(Nok/Ffail/Ttimeout) mean/max ms rows ·
+query=...` every heartbeat minute, then reset). The worker's own lines
+arrive as `history worker: ...`.
+
+Two Chrome facts, probed in the sandbox 2026-09-24, shape the edges:
+(1) `pool.pauseVfs()` at pagehide crashed the renderer when the page then
+entered the back/forward cache, so pagehide is synchronous: the queued rows
+spill to localStorage (`batray_hist_spill`, restored by the next start),
+the worker is terminated, and the next call starts a new one. (2) A worker
+killed while it is busy in JavaScript never releases its OPFS access
+handles (not after 2 minutes), so the fresh worker retries the pool for
+20 s and the store then goes memory-only for the session, logs "the
+storage pool stayed locked ... reload the page to store again" and the
+Storage box says not stored; a reload takes the pool back. A worker that is
+merely not answering (a timer) releases the pool on terminate at once. The
+viewer's copy is by row id: `hist-req` carries `{day, maxId, contig}` per
+day, the reader answers with the rows after `contig` as gzipped JSON in
+`hist-file` base64 chunks. Backup is a `.tar` of the `.sqlite` files
+(DB Browser for SQLite or Python opens a day); restore attaches each file
+and merges the rows the local day lacks.
+
 ## Copyright & license
 
 Copyright (C) 2026 Kasidit Yusuf.

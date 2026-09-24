@@ -39,7 +39,7 @@ test('the Storage box: percent readable at both ends, three rows with what each 
   assert.ok(s.canBackup && s.canRestore && s.canDelete && s.count === 7);
   assert.ok(l.canBackup && !l.canRestore && l.canDelete && l.files === 3 && l.sid === 'abc123');
   const hi = browseItems('hist', { days: [{ day: '2026-09-21', gz: true, bytes: 900 }, { day: '2026-09-23', raw: true, bytes: 50 }], today: '2026-09-23' });
-  assert.deepEqual(hi.map((i) => [i.id, i.name, i.bytes, i.del]), [['2026-09-23', '2026-09-23.ndjson (today, live)', 50, true], ['2026-09-21', '2026-09-21.ndjson.gz', 900, true]], 'newest first, today marked');
+  assert.deepEqual(hi.map((i) => [i.id, i.name, i.bytes, i.del]), [['2026-09-23', '2026-09-23.sqlite (today, live)', 50, true], ['2026-09-21', '2026-09-21.sqlite', 900, true]], 'newest first, today marked');
   assert.deepEqual(browseItems('set', { snapshot: { batray_lang: 'th', batray_cutoff_pct: '12' } }).map((i) => [i.id, i.bytes]), [['batray_cutoff_pct', 19], ['batray_lang', 13]]);
   assert.deepEqual(browseItems('log', { files: [{ name: 'log-a-x.txt', bytes: 1 }, { name: 'log-b-y.txt', bytes: 2 }], current: 'log-b-y.txt' }).map((i) => i.name), ['log-b-y.txt (this session, live)', 'log-a-x.txt']);
   assert.deepEqual(browseItems('other', {}), []);
