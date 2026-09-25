@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import {
   buildCommand, decodeCellInfo, decodeDeviceInfo, decodeSettings, errorLabels, feedFrames, swMajor, JkBms,
   isStale, STALE_MS, queuedAfterGap, linkGone, nudgeDecision, NUDGE_MS, HANDSHAKE_WAIT_MS,
-} from '../public/batray/jkbms.js';
+  startupAskDecision } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
@@ -456,6 +456,21 @@ test('nudgeDecision: connected, device info only, no stream -> nudged from 3 s o
   assert.equal(nudgeDecision(null, null, null, t0), false, 'not connected: nothing to nudge');
   assert.equal(nudgeDecision(null, t0, null, t0 + 2_000), false);
   assert.equal(nudgeDecision(null, t0, null, t0 + NUDGE_MS), true, 'never answered: nudged at 3 s');
+});
+
+test('startupAskDecision: replay of the m-00 log 2026-09-25 01:19 - AT chatter must not postpone the re-ask; asks every 3 s from the ask until cell info', () => {
+  const t = (s) => Date.parse('2026-09-25T01:19:00Z') + s * 1000;
+  const asked = t(49.668);                                                  // handshake: device info in 133 ms, asking (0x96)
+  const rx = [t(49.725), t(49.755), t(49.905), t(50.056), t(50.212), t(51.0), t(52.0), t(53.4)];   // 20 B echo, then "AT\r\n" chatter
+  let lastRx = asked, nudged = asked; const sent = [];
+  for (let now = t(49.7); now <= t(61); now += 100) {
+    while (rx.length && rx[0] <= now) lastRx = rx.shift();
+    if (startupAskDecision(null, nudged, now)) { sent.push(Math.round((now - asked) / 100) / 10); nudged = now; }
+    assert.equal(nudgeDecision(lastRx, t(49.533), nudged, now) && now < t(56.4), false, 'the silence nudge (what 0.9.41 did) would have waited for the chatter to end: ' + now);
+  }
+  assert.deepEqual(sent, [3, 6, 9], 'three more asks, 3 s apart from the ask, chatter or not');
+  assert.equal(startupAskDecision(t(56), t(55), t(58.5)), false, 'once cell info flows the startup asks stop');
+  assert.equal(startupAskDecision(null, null, t(58.5)), false, 'nothing asked yet: nothing to repeat');
 });
 
 test('handshake: 0x97 first, 0x96 only after the device-info answer (JK app order)', async () => {

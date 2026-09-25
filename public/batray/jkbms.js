@@ -434,6 +434,15 @@ export function nudgeDecision(lastRxAt, connectedAt, nudgedAt, now = Date.now(),
   if (!since) return false;
   return now - Math.max(since, nudgedAt || 0) >= quietMs;
 }
+/** Before the first cell-info frame the clock runs from the LAST ASK, not from the last byte received: the owner's
+ *  m-00 (PB1A16S15P fw 19.16, log 2026-09-25 01:19) answered the handshake's 0x96 with a 20 B command echo and
+ *  "AT\r\n" chatter for seconds (each one bumped lastRxAt, so the silence nudge came only at +7 s and +10 s,
+ *  which it ignored, then dropped the link), while the 0.9.31 poll at +3 s had always started its stream. So
+ *  until cell info flows: ask again every NUDGE_MS after the previous ask, whatever else arrives. */
+export function startupAskDecision(firstCellAt, askedAt, now = Date.now(), everyMs = NUDGE_MS) {
+  if (firstCellAt || !askedAt) return false;
+  return now - askedAt >= everyMs;
+}
 
 export class JkBms extends EventTarget {
   constructor() {
@@ -571,7 +580,7 @@ export class JkBms extends EventTarget {
     const got = await this._waitInfo(HANDSHAKE_WAIT_MS);
     if (this._attempt !== token || !this.char) return;                 // link gone or superseded meanwhile
     this._log(got ? `handshake: device info in ${Date.now() - t0} ms, asking for cell info (0x96)` : `handshake: no device info in ${HANDSHAKE_WAIT_MS} ms, asking for cell info anyway (0x96)`);
-    this.nudgedAt = Date.now();                                          // the nudge clock starts at this ask
+    this.nudgedAt = Date.now(); this._asks = 0;                          // the ask clock starts here
     await this._write(buildCommand(CMD_CELL_INFO)).catch((e) => this._log(`handshake failed: ${e.message}`));
   }
 
@@ -608,9 +617,18 @@ export class JkBms extends EventTarget {
     this._stopNudge();
     this.nudgedAt = null;
     this.connectedAt = Date.now();
+    this.firstCellAt = null; this._rxOtherAll = 0; this._rxOtherAt = null;
     this.nudgeTimer = setInterval(() => {
       if (!this.connected) return;
       const now = Date.now();
+      if (startupAskDecision(this.firstCellAt, this.nudgedAt, now)) {          // no cell info yet: every 3 s after the ask
+        this.nudgedAt = now; this._asks = (this._asks || 0) + 1;
+        const other = this._rxOtherAll ? `, ${this._rxOtherAll} non-frame notifications so far, last ${((now - this._rxOtherAt) / 1000).toFixed(1)} s ago` : '';
+        this._log(`startup: no cell info ${Math.round(NUDGE_MS / 1000)} s after the ask${other}, asking again (0x96, ask ${this._asks + 1})`);
+        this._write(buildCommand(CMD_CELL_INFO)).catch((e) => this._log(`startup ask failed: ${e.message}`));
+        return;
+      }
+      if (this.firstCellAt === null) return;
       if (!nudgeDecision(this.lastRxAt, this.connectedAt, this.nudgedAt, now)) return;
       this.nudgedAt = now;
       const quiet = Math.round((now - (this.lastRxAt || this.connectedAt)) / 1000);
@@ -643,9 +661,9 @@ export class JkBms extends EventTarget {
     // an "AT" splice, whatever the module says on its own): the first few are
     // logged in full - the 2026-09-23 log had something arriving 4 s after
     // connect that was not a frame, and nothing said what.
-    if (!frames.length && chunk.length <= 40 && findHeader(chunk, 0) < 0 && this._rxOther < 5) {
-      this._rxOther++;
-      this._log(`rx ${chunk.length}B not a frame: ${hex(chunk)}`);
+    if (!frames.length && chunk.length <= 40 && findHeader(chunk, 0) < 0) {
+      this._rxOtherAll = (this._rxOtherAll || 0) + 1; this._rxOtherAt = now;
+      if (this._rxOther < 5) { this._rxOther++; this._log(`rx ${chunk.length}B not a frame: ${hex(chunk)}`); }
     }
     this.buf = buf;
     for (const n of notes) this._log(n);
@@ -665,6 +683,7 @@ export class JkBms extends EventTarget {
         this._emit('settings', this.settings);
         break;
       case FRAME_CELL_INFO: {
+        if (this.firstCellAt === null) { this.firstCellAt = Date.now(); if (this._asks) this._log(`startup: cell info after ${this._asks + 1} asks${this._rxOtherAll ? `, ${this._rxOtherAll} non-frame notifications` : ''}`); }
         const data = decodeCellInfo(frame, this.info ? this.info.swMajor : null);
         if (data.ok) this._emit('data', data);
         else this._log(`cell-info decode failed: ${data.reason}`);

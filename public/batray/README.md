@@ -134,6 +134,28 @@ frame`), because that log had something arriving 4 s after connect that no
 line explained. Unit tests replay both logs and drive `connect()` over a fake
 characteristic.
 
+### Startup asks (0.9.42, owner's log 2026-09-25 01:19)
+
+The m-00 pack (JK-PB1A16S15P, hw 19A, fw 19.16) stopped streaming on
+0.9.33-0.9.41 while s-01 (fw 15.21) was fine. Its log: device info at
++133 ms, the handshake's 0x96 at +134 ms, then a 20 B command echo
+(`aa 55 90 eb c8 01 01 ...`) and "AT\r\n" chatter, no settings frame, no
+cell info; the silence nudge waited for the chatter to end (every byte had
+bumped lastRxAt) and asked at +7 s and +10 s, which the pack ignored, then
+it dropped the link 0.6 s after the +10 s ask (the same 10.6 s death as in
+the 0.9.33 log). On 0.9.31 the same pack had streamed every time, started
+by the 3 s poll's 0x96 at +3 s. So `startupAskDecision(firstCellAt,
+askedAt, now)`: until the first cell-info frame, 0x96 is asked again every
+NUDGE_MS after the previous ask, whatever else arrives (log `startup: no
+cell info 3 s after the ask, N non-frame notifications so far ... asking
+again (0x96, ask k)`, then `startup: cell info after k asks`); once cell
+info flows the silence nudge takes over as before, so a streaming pack is
+never polled and never beeps. The replay test runs today's log timing.
+Non-frame notifications are counted (the first five still logged in full)
+so the next log shows how long the chatter lasted. If m-00 still does not
+stream, the next thing to try is delaying the handshake's first 0x96 to
++3 s after connect (0.9.31's timing exactly).
+
 ## Memory caps (0.9.34, the "Aw, Snap" of 2026-09-23)
 
 The reader phone crashed on 0.9.31 after a day at 4 rows/s: today's file was
