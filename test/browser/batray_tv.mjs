@@ -109,7 +109,7 @@ const tog = await evalJs(`(async () => {
   return { src0, closed, reopened, logs: T.logLines().slice(before).filter((l) => /tv: card/.test(l)) };
 })()`);
 check('collapsing the TV card unloads the preview, expanding it loads the preview again at the live edge', /index\.m3u8$/.test(tog.src0 || '') && tog.closed === null && /index\.m3u8$/.test(tog.reopened || '') && tog.logs.some((l) => /card collapsed -> unload/.test(l)) && tog.logs.some((l) => /card expanded -> load/.test(l)), tog);
-const ui = await evalJs(`({ stat: document.getElementById('tvStat').textContent, note: !document.getElementById('tvNote').hidden, link: document.getElementById('tvLink').textContent, videoSrc: document.getElementById('tvVideo').getAttribute('src'), canHls: !!document.getElementById('tvVideo').canPlayType('application/vnd.apple.mpegurl'), noPreview: !document.getElementById('tvNoPreview').hidden, castRow: !document.getElementById('tvCastRow').hidden, castHint: document.getElementById('tvCastHint').textContent })`);
+const ui = await evalJs(`({ stat: document.getElementById('tvStat').textContent, note: !document.getElementById('tvNote').hidden, link: document.getElementById('tvLink').textContent, videoSrc: document.getElementById('tvVideo').getAttribute('src'), canHls: !!document.getElementById('tvVideo').canPlayType('application/vnd.apple.mpegurl'), noPreview: !document.getElementById('tvNoPreview').hidden, castRow: !document.getElementById('tvCastRow').hidden, castHint: document.getElementById('tvCastHint').textContent.replace(/^Cast to TV - /, '') })`);
 check('status line, status-bar note and link are set; the preview follows the browser\'s own HLS support; Cast is always offered', /segments/.test(ui.stat) && ui.note && ui.link === url && ui.castRow && /Google/.test(ui.castHint) && (ui.canHls ? ui.videoSrc === url && !ui.noPreview : ui.videoSrc === null && ui.noPreview), ui);
 
 // Cast: a fake of Google's cast library that behaves like the Android sender
@@ -139,7 +139,7 @@ await evalJs(`
   1`);
 // A: the tap that loads the library waits for discovery to flip, then opens the picker and loads the playlist
 await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(1500);
-const cst = await evalJs(`({ loads: window.__castLoads, req: window.__castReq, script: window.__castScript, hint: document.getElementById('tvCastHint').textContent, opts: window.cast.framework.CastContext.getInstance().opts, scripts: [...document.scripts].filter((s) => /gstatic/.test(s.src)).length, log: window.__batrayTest.logLines().filter((l) => /cast:/.test(l)).slice(-8) })`);
+const cst = await evalJs(`({ loads: window.__castLoads, req: window.__castReq, script: window.__castScript, hint: document.getElementById('tvCastHint').textContent.replace(/^Cast to TV - /, ''), opts: window.cast.framework.CastContext.getInstance().opts, scripts: [...document.scripts].filter((s) => /gstatic/.test(s.src)).length, log: window.__batrayTest.logLines().filter((l) => /cast:/.test(l)).slice(-8) })`);
 check('Cast loads the playlist as live HLS (fmp4) on the default media receiver and names the TV', cst.loads.length === 1 && cst.loads[0].url === url && cst.loads[0].type === 'application/x-mpegURL' && cst.loads[0].stream === 'LIVE' && cst.loads[0].seg === 'fmp4' && cst.loads[0].vseg === 'fmp4' && cst.loads[0].autoplay === true && /BatRay/.test(cst.loads[0].title) && cst.opts.receiverApplicationId === 'CC1AD845' && /Living room TV/.test(cst.hint) && cst.scripts === 0 && cst.script === 1, cst);
 check('...the picker opened only after the availability flipped (NO_DEVICES seen first), one request', cst.req === 1 && cst.log.some((l) => /state NO_DEVICES_AVAILABLE/.test(l)) && cst.log.some((l) => /load accepted by "Living room TV"/.test(l)), cst.log);
 // B: a request the library never settles: a second tap must not ask again (that is the invalid_parameter trap)
@@ -149,14 +149,23 @@ const h1 = await evalJs(`document.getElementById('tvCastHint').textContent`);
 // on the phones a later state event re-enabled the button while the request hung; same here
 await evalJs(`window.cast.framework.CastContext.getInstance().emit('NOT_CONNECTED'); 1`);
 await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(300);
-const b2 = await evalJs(`({ req: window.__castReq, hint: document.getElementById('tvCastHint').textContent, log: window.__batrayTest.logLines().filter((l) => /cast:/.test(l)).slice(-3) })`);
+const b2 = await evalJs(`({ req: window.__castReq, hint: document.getElementById('tvCastHint').textContent.replace(/^Cast to TV - /, ''), log: window.__batrayTest.logLines().filter((l) => /cast:/.test(l)).slice(-3) })`);
 check('a pending picker request blocks a second one and says what to do', /pick your TV/.test(h1) && b2.req === 2 && /reload the page/.test(b2.hint) && b2.log.some((l) => /tap -> pending/.test(l)), { h1, ...b2 });
 // C: the TV's own player state reaches the hint and the log
 await evalJs(`window.__castNoSession = false; window.__castPlayer('PLAYING'); 1`); await sleep(100);
 const c1 = await evalJs(`document.getElementById('tvCastHint').textContent`);
 await evalJs(`window.__castPlayer('IDLE', 'ERROR'); 1`); await sleep(100);
-const c2 = await evalJs(`({ hint: document.getElementById('tvCastHint').textContent, log: window.__batrayTest.logLines().filter((l) => /cast: player state/.test(l)).slice(-2) })`);
+const c2 = await evalJs(`({ hint: document.getElementById('tvCastHint').textContent.replace(/^Cast to TV - /, ''), log: window.__batrayTest.logLines().filter((l) => /cast: player state/.test(l)).slice(-2) })`);
 check("the receiver's player state shows under the button and an IDLE/ERROR is called out", /TV player: playing/.test(c1) && /could not play/.test(c2.hint) && c2.log.some((l) => /player=PLAYING/.test(l)) && c2.log.some((l) => /player=IDLE idle=ERROR/.test(l)), { c1, ...c2 });
+// the Cast buttons are the standard cast icon (owner 2026-09-26): one in the row, one on the preview itself, both
+// named for screen readers, both the same action (with the stub session up, a tap is 'load-media'); the words are in the hint line
+const icons = await evalJs(`(async () => {
+  const T = window.__batrayTest; const b = document.getElementById('tvCast'), o = document.getElementById('tvCastOverlay');
+  const before = T.logLines().length;
+  o.click(); await new Promise((r) => setTimeout(r, 300));
+  return { rowSvg: !!b.querySelector('svg.casticon'), rowText: b.textContent.trim(), rowLabel: b.getAttribute('aria-label'), overSvg: !!o.querySelector('svg.casticon'), overLabel: o.getAttribute('aria-label'), overOnVideo: o.parentElement === document.getElementById('tvVideo').parentElement, rawHint: document.getElementById('tvCastHint').textContent, size: [o.getBoundingClientRect().width, b.getBoundingClientRect().width], logs: T.logLines().slice(before).filter((l) => /^.{14}cast:/.test(l)) };
+})()`);
+check('both Cast buttons are the cast icon with the name "Cast to TV", the overlay sits on the preview, the hint line carries the words, and the overlay runs the same Cast flow', icons.rowSvg && icons.rowText === '' && icons.rowLabel === 'Cast to TV' && icons.overSvg && icons.overLabel === 'Cast to TV' && icons.overOnVideo && /^Cast to TV - /.test(icons.rawHint) && icons.size[0] >= 40 && icons.size[1] >= 40 && icons.logs.some((l) => /cast: tap -> load-media/.test(l)), icons);
 
 // stop by pressing the sunk toolbar button: the last fragment is flushed, the relay is told, a toast says so
 await evalJs(`document.getElementById('tv').click(); 1`); await sleep(700);

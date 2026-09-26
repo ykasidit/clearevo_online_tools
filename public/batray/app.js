@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.43';
+export const APP_VERSION = '0.9.44';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -326,6 +326,7 @@ function applyLang(code) {
   $('keepAwake').textContent = T[{ auto: 'keepAwakeAuto', always: 'keepAwakeAlways', never: 'keepAwakeNever' }[wakeS.mode]] || wakeS.mode;
   document.querySelectorAll('[data-i18n]').forEach((el) => { const v = T[el.dataset.i18n]; if (typeof v === 'string') el.textContent = v; });
   document.querySelectorAll('[data-i18n-html]').forEach((el) => { const v = T[el.dataset.i18nHtml]; if (typeof v === 'string') el.innerHTML = v; });
+  document.querySelectorAll('[data-i18n-aria]').forEach((el) => { const v = T[el.dataset.i18nAria]; if (typeof v === 'string') { el.setAttribute('aria-label', v); el.title = v; } });
   renderServerNote();
   $('fSysLbl').textContent = T.system;
   setStatus(statusThunk, statusKind);
@@ -1627,7 +1628,10 @@ function loadCastSdk() {
   }).catch((e) => { castLoad = null; throw e; });
   return castLoad;
 }
-function castHint(txt, disabled = false) { $('tvCastHint').textContent = txt; $('tvCast').disabled = disabled; }
+// the Cast buttons are the standard cast icon (Material Design icon "cast", Apache 2.0); the words live in the hint
+// line: "Cast to TV - <state>". Chrome's OWN cast button inside the <video> controls cannot appear for this stream:
+// Chromium marks every source incompatible with remote playback until its demuxer proves it (see the README).
+function castHint(txt, disabled = false) { $('tvCastHint').textContent = `${T.tvCast} - ${txt}`; $('tvCast').disabled = disabled; $('tvCastOverlay').disabled = disabled; }
 // Cast picker rules live in cast-logic.js over the one `castS` object (why: a
 // picker opened before Chrome finished discovering TVs never settles, and a
 // second request while one is pending fails with invalid_parameter until the
@@ -1800,6 +1804,7 @@ async function stopTv(why = 'card') {
   $('tvStart').addEventListener('click', () => startTv().catch(() => {}));
   $('tvStop').addEventListener('click', () => stopTv('card'));
   $('tvCast').addEventListener('click', () => castToTv());
+  $('tvCastOverlay').addEventListener('click', () => castToTv());          // the same icon on the preview itself
   $('tvCopy').addEventListener('click', async () => { if (!tv) return; try { await navigator.clipboard.writeText(tv.state.url); toast(T.linkCopied, 6000); } catch { toast(T.linkCopyManual, 8000); } });
   $('tvQrBtn').addEventListener('click', () => { const c = $('tvQr'); if (!tv) return; if (c.hidden) { renderQr(tv.state.url, c); c.hidden = false; } else c.hidden = true; });
   window.addEventListener('pagehide', () => { if (tv) { const t = tv; tv = null; tvStopped(tvS); t.stop(); } });

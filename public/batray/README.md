@@ -89,6 +89,29 @@ after the TV shows the icon) says which. Collapsing the TV card pauses and
 unloads the preview; expanding it loads the preview again at the live edge
 (the old preview sat on a position the 30 s window had left behind).
 
+## The cast icon (0.9.44, owner ask 2026-09-26)
+
+Both Cast buttons are now the standard cast icon (Google's Material Design
+"cast" glyph, Apache 2.0, inlined as SVG): one in the row under the preview
+and one laid over the preview's top-right corner, both named "Cast to TV"
+for screen readers, both the same action; the words moved into the hint
+line ("Cast to TV - <state>").
+
+Why the preview's own controls show no cast icon, unlike videos on other
+sites: that icon is Chrome's, and Chrome draws it only for a source it has
+judged castable. In Chromium, `HTMLMediaElement::LoadResource` calls
+`RemotePlaybackCompatibilityChanged(src, false)` for every new source
+("consider it incompatible until proved otherwise"), and only
+`WebMediaPlayerImpl::UpdateRemotePlaybackCompatibility(true)` from the
+media pipeline flips it, which happens for plain progressive files the
+demuxer parses (an MP4 or WebM URL - what other sites' videos are). An HLS
+playlist played by Android's own player never gets that call, so
+`RemotePlayback::GetAvailabilityUrl` returns nothing, `watchAvailability`
+stays false and the native icon never appears (the same reason the Remote
+Playback API never lit up in 0.9.18). MSE and blob sources are excluded the
+same way. The only way to get Chrome's own icon would be a progressive live
+MP4 URL instead of HLS - a relay redesign, not done.
+
 ## Stored history (0.9.29, owner decisions 2026-09-21)
 
 The reader appends one NDJSON row per reading (short keys, cell millivolts
