@@ -25,9 +25,33 @@
 //   invalid_parameter ("Already requesting session") until the page reloads;
 // - PresentationRequest.start() needs the tap's user activation (~5 s).
 
-export const CAST_DISCOVERY_WAIT_MS = 8000;
+export const CAST_DISCOVERY_WAIT_MS = 20000;   // the whole tap flow's budget (owner 2026-09-26: a progress sheet with a 20 s timeout, cancellable)
+export const CAST_FLOW_TIMEOUT_MS = CAST_DISCOVERY_WAIT_MS;
 
-export function castState() { return { events: 0, flipped: false, castState: null, requestAt: 0 }; }
+export function castState() { return { events: 0, flipped: false, castState: null, requestAt: 0, busy: false, phase: null, since: 0 }; }
+
+// ---- the tap flow as the user sees it (owner 2026-09-26: "after the first tap there is no way to know that it is
+// searching or waiting, so the user presses again"): one progress sheet from the tap to the TV's answer, phases
+// loading -> looking -> picking -> sending, a 20 s timeout on loading/looking (picking is in the user's hands:
+// Google's list is on the screen), Cancel, and both Cast buttons greyed with a wait icon meanwhile ----
+/** May a tap start the flow? Not while one runs (the buttons are greyed then; a programmatic tap is ignored). */
+export function castTapAllowed(cs) { return !cs.busy; }
+export function castFlowStart(cs, now, phase = 'loading') { cs.busy = true; cs.phase = phase; cs.since = now; }
+export function castFlowPhase(cs, phase) { cs.phase = phase; }
+export function castFlowEnd(cs) { cs.busy = false; cs.phase = null; cs.since = 0; }
+/** Progress of the running flow: percent of the budget used, seconds left, and whether the budget is spent. The
+ *  picking phase never times out (the user is in Google's list). */
+export function castProgress(cs, now, timeoutMs = CAST_FLOW_TIMEOUT_MS) {
+  const el = cs.busy ? Math.max(0, now - cs.since) : 0;
+  const timesOut = cs.phase === 'loading' || cs.phase === 'looking';
+  return { pct: Math.min(100, Math.round(el * 100 / timeoutMs)), leftS: Math.max(0, Math.ceil((timeoutMs - el) / 1000)), timedOut: timesOut && el >= timeoutMs };
+}
+/** Both Cast buttons: greyed with the wait icon while the flow runs or a picker request is still open. */
+export function castButtons(cs) { const busy = cs.busy || !!cs.requestAt; return { disabled: busy, busy }; }
+/** What a CAST_STATE_CHANGED event may touch: while the flow runs, only the sheet - never the hint or the buttons
+ *  (the owner's log 2026-09-26: NOT_CONNECTED 0.2 s after the library loaded rewrote the hint to "tap Cast to pick
+ *  it" and re-enabled the button while the wait ran, which is why the second tap came). */
+export function castStateUi(cs) { return cs.busy || cs.requestAt ? 'sheet' : 'hint'; }
 
 /** A CAST_STATE_CHANGED event. Returns true once discovery has spoken (the third event). */
 export function onCastStateEvent(cs, castState) {

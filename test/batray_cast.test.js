@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, CAST_DISCOVERY_WAIT_MS } from '../public/batray/cast-logic.js';
+import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, CAST_DISCOVERY_WAIT_MS, CAST_FLOW_TIMEOUT_MS, castFlowStart, castFlowPhase, castFlowEnd, castProgress, castButtons, castStateUi, castTapAllowed } from '../public/batray/cast-logic.js';
 
 test('new phone: the loading tap waits for discovery; the flip 6 s in is past the tap, so it asks for another; the next tap requests once; a third tap while pending does not', () => {
   const cs = castState(); const t0 = 1000;
@@ -82,4 +82,27 @@ test('replay 2026-09-26 00:09: a second tap requests while the first still waits
   castRequestEnded(cs, tok);                                                                                            // 34.818: the session started
   assert.equal(cs.requestAt, 0);
   assert.equal(castTapDecision(cs, { loadedBeforeTap: true, hasSession: true, now: t(40) }).action, 'load-media');
+});
+
+test('the tap flow (owner 2026-09-26): from the tap on, a second tap is "busy", both buttons are greyed with the wait icon, a state event may only touch the sheet - replay of the 00:09 log where NOT_CONNECTED 0.2 s after the load rewrote the hint and re-enabled the button', () => {
+  const cs = castState(); const t = (s) => Math.round(s * 1000);
+  assert.deepEqual(castButtons(cs), { disabled: false, busy: false }); assert.equal(castStateUi(cs), 'hint');
+  castFlowStart(cs, t(19.390), 'loading');
+  assert.deepEqual(castButtons(cs), { disabled: true, busy: true });
+  assert.equal(castTapAllowed(cs), false, 'a second tap does nothing');
+  assert.equal(castTapDecision(cs, { loadedBeforeTap: true, hasSession: false, activationActive: true, now: t(19.5) }).action, 'request', 'the running flow itself still decides normally');
+  onCastStateEvent(cs, 'NOT_CONNECTED');                                                                               // 19.625
+  assert.equal(castStateUi(cs), 'sheet', 'the state event must not rewrite the hint or free the button');
+  castFlowPhase(cs, 'looking');
+  assert.deepEqual(castProgress(cs, t(19.390 + 5), 20000), { pct: 25, leftS: 15, timedOut: false });
+  assert.deepEqual(castProgress(cs, t(19.390 + 20), 20000), { pct: 100, leftS: 0, timedOut: true }, 'looking times out at 20 s');
+  castFlowPhase(cs, 'picking'); castRequestStarted(cs, t(30));
+  assert.equal(castProgress(cs, t(60), 20000).timedOut, false, 'picking never times out: the list is on the screen');
+  castFlowEnd(cs);
+  assert.deepEqual(castButtons(cs), { disabled: true, busy: true }, 'a request still open keeps the buttons greyed');
+  assert.equal(castStateUi(cs), 'sheet');
+  castRequestEnded(cs);
+  assert.deepEqual(castButtons(cs), { disabled: false, busy: false }); assert.equal(castStateUi(cs), 'hint'); assert.equal(castTapAllowed(cs), true);
+  assert.equal(castProgress(cs, t(99)).pct, 0, 'no flow, no progress');
+  assert.equal(CAST_FLOW_TIMEOUT_MS, 20000); assert.equal(CAST_DISCOVERY_WAIT_MS, 20000);
 });

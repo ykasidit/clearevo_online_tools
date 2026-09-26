@@ -12,7 +12,7 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
-import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision } from './cast-logic.js';
+import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castProgress, castButtons, castStateUi, castTapAllowed, CAST_FLOW_TIMEOUT_MS } from './cast-logic.js';
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
 import { trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.44';
+export const APP_VERSION = '0.9.45';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -1631,7 +1631,14 @@ function loadCastSdk() {
 // the Cast buttons are the standard cast icon (Material Design icon "cast", Apache 2.0); the words live in the hint
 // line: "Cast to TV - <state>". Chrome's OWN cast button inside the <video> controls cannot appear for this stream:
 // Chromium marks every source incompatible with remote playback until its demuxer proves it (see the README).
-function castHint(txt, disabled = false) { $('tvCastHint').textContent = `${T.tvCast} - ${txt}`; $('tvCast').disabled = disabled; $('tvCastOverlay').disabled = disabled; }
+function castHint(txt) { $('tvCastHint').textContent = `${T.tvCast} - ${txt}`; }
+let castFlowMs = CAST_FLOW_TIMEOUT_MS;                                       // test hook shortens it
+/** Both Cast buttons follow castS: greyed with the wait icon while the tap flow runs or a picker request is open. */
+function renderCastButtons() {
+  const b = castButtons(castS);
+  for (const id of ['tvCast', 'tvCastOverlay']) { const el = $(id); el.disabled = b.disabled; el.classList.toggle('busy', b.busy); }
+}
+function castSheetCtx() { return { phase: castS.phase, ...castProgress(castS, Date.now(), castFlowMs) }; }
 // Cast picker rules live in cast-logic.js over the one `castS` object (why: a
 // picker opened before Chrome finished discovering TVs never settles, and a
 // second request while one is pending fails with invalid_parameter until the
@@ -1646,6 +1653,7 @@ function wireCastState() {
     log(`cast: state ${e.castState}`);
     const S = cast.framework.CastState;
     if (onCastStateEvent(castS, e.castState)) { for (const w of castWaiters) w(); castWaiters = []; }
+    if (castStateUi(castS) === 'sheet') { updateSheet('casting'); renderCastButtons(); return; }   // the flow owns the hint and the buttons meanwhile
     if (e.castState === S.NO_DEVICES_AVAILABLE) castHint(T.tvCastNone);
     else if (e.castState === S.NOT_CONNECTED) castHint(T.tvCastReady);
     else if (e.castState === S.CONNECTING) castHint(T.tvCastConnecting);
@@ -1687,25 +1695,45 @@ function watchCastMedia(sess) {
 const castDiscovery = (ms) => new Promise((ok) => { if (discoveryKnown(castS)) return ok(); const t = setTimeout(ok, ms); castWaiters.push(() => { clearTimeout(t); ok(); }); });
 async function castToTv() {
   if (!tv || !tv.state.url) return;
+  if (!castTapAllowed(castS)) { log('cast: tap -> busy'); return; }
   const loadedBeforeTap = !!(window.cast && window.cast.framework);
-  castHint(T.tvCastLoading, true);
+  // one progress sheet from the tap to the TV's answer; Cancel ends the flow (a picker request already handed to
+  // Google's library cannot be taken back: closing its list is the cancel there)
+  castFlowStart(castS, Date.now(), 'loading'); renderCastButtons(); castHint(T.castLoading);
+  let ended = null;                                                          // 'cancel' | 'timeout' once the sheet or the clock ended the flow
+  const endFlow = (why, hint) => {
+    if (!castS.busy) return;
+    ended = ended || why; castFlowEnd(castS); renderCastButtons(); castHint(hint);
+    if (uiS.sheet && uiS.sheet.kind === 'casting') closeSheet('done', why);
+    for (const w of castWaiters) w(); castWaiters = [];
+  };
+  openSheet('casting').then((r) => { if (castS.busy && r !== 'done') { log(`cast: cancelled by the user (${castS.phase})`); endFlow('cancel', castS.phase === 'picking' ? T.tvCastStuck : T.tvCastCancelled); } });
+  const tick = setInterval(() => {
+    if (!castS.busy) { clearInterval(tick); return; }
+    const p = castProgress(castS, Date.now(), castFlowMs);
+    if (p.timedOut) { log(`cast: no TV list within ${Math.round(castFlowMs / 1000)} s (${castS.phase})`); endFlow('timeout', T.tvCastTimeout); clearInterval(tick); return; }
+    updateSheet('casting');
+  }, 500);
+  const phase = (ph, hint) => { castFlowPhase(castS, ph); castHint(hint); updateSheet('casting'); };
   try {
     await loadCastSdk();
+    if (ended) return;
     wireCastState();
     const ctx = cast.framework.CastContext.getInstance();
     const inp = () => ({ loadedBeforeTap, hasSession: !!ctx.getCurrentSession(), activationActive: navigator.userActivation ? navigator.userActivation.isActive : undefined, now: Date.now() });
     let d = castTapDecision(castS, inp());
-    if (d.action === 'wait-discovery') { castHint(T.tvCastLooking, true); await castDiscovery(d.ms); d = castAfterDiscovery(castS, inp()); }
+    if (d.action === 'wait-discovery') { phase('looking', T.castLooking); await castDiscovery(d.ms); if (ended) return; d = castAfterDiscovery(castS, inp()); }
     log(`cast: tap -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}${d.ageS !== undefined ? ' ' + d.ageS + ' s' : ''} (events=${castS.events} flipped=${castS.flipped} state=${castS.castState})`);
-    if (d.action === 'pending') { castHint(T.tvCastPending); return; }
-    if (d.action === 'no-devices') { castHint(T.tvCastNone); return; }
-    if (d.action === 'tap-again') { castHint(T.tvCastTapAgain); return; }
+    if (d.action === 'pending') { endFlow('done', T.tvCastPending); return; }
+    if (d.action === 'no-devices') { endFlow('done', T.tvCastNone); return; }
+    if (d.action === 'tap-again') { endFlow('done', d.why === 'discovery' ? T.tvCastTimeout : T.tvCastTapAgain); return; }
     if (d.action === 'request') {
-      castHint(T.tvCastPick, true); const mine = castRequestStarted(castS, Date.now());
-      try { await ctx.requestSession(); } finally { castRequestEnded(castS, mine); }
+      phase('picking', T.tvCastPick); const mine = castRequestStarted(castS, Date.now()); renderCastButtons();
+      try { await ctx.requestSession(); } finally { castRequestEnded(castS, mine); renderCastButtons(); }
     }
     const sess = ctx.getCurrentSession();
     if (!sess) throw new Error('no cast session');
+    if (castS.busy) phase('sending', T.castSending);
     const info = new chrome.cast.media.MediaInfo(tv.state.url, 'application/x-mpegURL');
     info.streamType = chrome.cast.media.StreamType.LIVE;
     info.hlsSegmentFormat = chrome.cast.media.HlsSegmentFormat.FMP4;
@@ -1716,17 +1744,17 @@ async function castToTv() {
     const dev = sess.getCastDevice ? sess.getCastDevice().friendlyName : '';
     log(`cast: load accepted by "${dev}" (${tv.state.segs} segments on the relay) - watching its player state`);
     watchCastMedia(sess);
-    castHint(T.tvCastConnected(dev));
+    endFlow('done', T.tvCastConnected(dev)); castHint(T.tvCastConnected(dev));
     toast(T.tvCastConnected(dev), 8000);
   } catch (e) {
     const msg = e && (e.message || e.code || String(e));
     const kind = castErrorDecision(msg);
-    if (kind === 'closed') { log('cast: picker closed without a choice'); castHint(T.tvCastReady); return; }
+    if (kind === 'closed') { log('cast: picker closed without a choice'); endFlow('done', T.tvCastReady); castHint(T.tvCastReady); return; }
     log(`cast: ${msg}${e && e.description ? ' - ' + e.description : ''}`);
-    if (kind === 'stuck') { castHint(T.tvCastStuck); toast(T.tvCastStuck, 9000); return; }
-    castHint(T.tvCastFailed(msg));
+    if (kind === 'stuck') { endFlow('done', T.tvCastStuck); castHint(T.tvCastStuck); toast(T.tvCastStuck, 9000); return; }
+    endFlow('done', T.tvCastFailed(msg)); castHint(T.tvCastFailed(msg));
     toast(T.tvCastFailed(msg), 9000);
-  }
+  } finally { clearInterval(tick); if (castS.busy) endFlow('done', T.tvCastReady); renderCastButtons(); }
 }
 // every button and note of the TV card and the toolbar follow tvS (tv-logic.js)
 function renderTvButtons() {
@@ -1812,7 +1840,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms) => { castFlowMs = ms; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
@@ -1823,7 +1851,7 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 let sheetResolve = null, suppressPop = 0;
 function sheetCtx() {
   const p = active;
-  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, browse: browseS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
+  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, cast: castSheetCtx(), browse: browseS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
 function openSheet(kind) {
@@ -1851,6 +1879,8 @@ function updateSheet(kind) {
   const m = sheetModel(kind, sheetCtx(), T);
   const lead = $('sheetLead'); lead.textContent = m.lead || ''; lead.hidden = !m.lead;
   renderSheetProgress(m); renderSheetItems(m);
+  const acts = m.actions.map((x) => `<button type="button" data-act="${esc(x.id)}" class="${x.primary ? 'demobtn' : 'linkbtn'}"${x.primary ? ' style="padding:10px 18px"' : ''}>${esc(x.label)}</button>`).join('');
+  if ($('sheetActs').innerHTML !== acts) $('sheetActs').innerHTML = acts;       // a phase may add or drop Cancel
 }
 function closeSheet(result = null, why = 'dismiss') {
   const d = sheetClose(uiS);

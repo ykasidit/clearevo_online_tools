@@ -89,6 +89,29 @@ after the TV shows the icon) says which. Collapsing the TV card pauses and
 unloads the preview; expanding it loads the preview again at the live edge
 (the old preview sat on a position the 30 s window had left behind).
 
+## The Cast progress sheet (0.9.45, owner ask 2026-09-26)
+
+"After the first tap there is no way to know that it is searching or
+waiting, so the user presses again." The 2026-09-26 log also showed the
+worse half: 0.2 s after the library loaded, its first `NOT_CONNECTED`
+event rewrote the hint to "tap Cast to pick it" and re-enabled the button
+while the discovery wait was still running - the page itself asked for
+the second tap. Now the tap opens a progress sheet that follows the flow
+in `castS` (`castFlowStart / castFlowPhase / castFlowEnd`, phases loading
+-> looking -> picking -> sending, `castProgress` = percent of the 20 s
+budget and seconds left, `sheetModel('casting')`), both Cast buttons are
+greyed with a wait icon (`castButtons`), a tap meanwhile does nothing
+(`castTapAllowed`), and a state event may only refresh the sheet
+(`castStateUi`). Loading and looking time out at 20 s ("no TV list within
+20 s - check that the phone is on the TV's Wi-Fi, then tap Cast again");
+picking has no clock, Google's list is on the screen and closing it is
+the cancel there. The sheet's Cancel ends the flow; during picking it can
+only hide the sheet (the request already handed to the library cannot be
+taken back: the "reload the page" hint), and if the list answers later
+the stream is still sent. Replays in batray_cast.test.js, the sheet in
+batray_ui.test.js, the whole flow over the stub library in
+browser/batray_tv.mjs (looking, hang, cancel, release).
+
 ## The cast icon (0.9.44, owner ask 2026-09-26)
 
 Both Cast buttons are now the standard cast icon (Google's Material Design

@@ -126,7 +126,7 @@ await evalJs(`
     emit(st) { this.state = st; for (const f of listeners.CAST_STATE_CHANGED || []) f({ castState: st }); },
     getCastState() { return this.state; },
     getCurrentSession: () => (window.__castNoSession ? null : sess),
-    requestSession() { window.__castReq++; return window.__castHang ? new Promise(() => {}) : new Promise((ok) => setTimeout(() => { window.__castNoSession = false; ok(); }, 100)); } };
+    requestSession() { window.__castReq++; return window.__castHang ? new Promise((ok) => { window.__castRelease = () => { window.__castNoSession = false; ok(); }; }) : new Promise((ok) => setTimeout(() => { window.__castNoSession = false; ok(); }, 100)); } };
   const player = { playerState: null, isMediaLoaded: false, isConnected: true, currentTime: 0, mediaInfo: null }, pcl = {};
   function RemotePlayer() { return player; }
   function RemotePlayerController() { return { addEventListener(t, f) { (pcl[t] = pcl[t] || []).push(f); } }; }
@@ -137,20 +137,39 @@ await evalJs(`
   const realAppend = document.head.appendChild.bind(document.head);
   document.head.appendChild = (el) => { if (el.tagName === 'SCRIPT' && /gstatic/.test(el.src)) { window.__castScript++; setTimeout(() => { window.cast = { framework: fw }; window.__onGCastApiAvailable(true); }, 50); return el; } return realAppend(el); };
   1`);
-// A: the tap that loads the library waits for discovery to flip, then opens the picker and loads the playlist
-await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(1500);
+// A: the tap that loads the library waits for discovery to flip, then opens the picker and loads the playlist.
+// From the tap on, a progress sheet says what is happening (owner 2026-09-26), both Cast buttons are greyed with
+// the wait icon, and a second tap is impossible - the stub flips availability 300-400 ms after init, so at 150 ms
+// the flow is still "looking"
+await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(150);
+const mid = await evalJs(`(async () => {
+  const T = window.__batrayTest; const before = T.logLines().length; const req0 = window.__castReq;
+  const b = document.getElementById('tvCast'), o = document.getElementById('tvCastOverlay');
+  b.click(); o.click(); await new Promise((r) => setTimeout(r, 50));                                    // a second (and third) tap while it works
+  return { sheet: !document.getElementById('sheet').hidden, title: document.getElementById('sheetTitle').textContent, lead: document.getElementById('sheetLead').textContent, bar: !document.getElementById('sheetProg').hidden, acts: [...document.querySelectorAll('#sheet [data-act]')].map((x) => x.dataset.act), busy: [b.disabled, b.classList.contains('busy'), o.disabled, o.classList.contains('busy')], waitIcon: getComputedStyle(b.querySelector('.waiticon')).display, castIcon: getComputedStyle(b.querySelector('.casticon')).display, req: window.__castReq - req0, hint: document.getElementById('tvCastHint').textContent, flow: T.castFlow(), taps: T.logLines().slice(before).filter((l) => /cast: tap/.test(l)) };
+})()`);
+check('from the tap on, a progress sheet says it is looking for TVs with the seconds left and a Cancel, both Cast buttons are greyed with the wait icon, and taps meanwhile do nothing', mid.sheet && mid.title === 'Cast to TV' && /looking for TVs on this Wi-Fi… \(\d+ s left\)/.test(mid.lead) && mid.bar && mid.acts.join() === 'cancel' && mid.busy.every(Boolean) && mid.waitIcon === 'block' && mid.castIcon === 'none' && mid.req === 0 && mid.taps.length === 0 && mid.flow.busy && mid.flow.phase === 'looking' && /looking for TVs/.test(mid.hint), mid);
+await sleep(1400);
+const done = await evalJs(`({ sheet: !document.getElementById('sheet').hidden, busy: [document.getElementById('tvCast').disabled, document.getElementById('tvCast').classList.contains('busy')], flow: window.__batrayTest.castFlow() })`);
+check('once the TV took the stream the sheet is gone and the buttons are back', !done.sheet && !done.busy[0] && !done.busy[1] && !done.flow.busy && !done.flow.requestAt, done);
 const cst = await evalJs(`({ loads: window.__castLoads, req: window.__castReq, script: window.__castScript, hint: document.getElementById('tvCastHint').textContent.replace(/^Cast to TV - /, ''), opts: window.cast.framework.CastContext.getInstance().opts, scripts: [...document.scripts].filter((s) => /gstatic/.test(s.src)).length, log: window.__batrayTest.logLines().filter((l) => /cast:/.test(l)).slice(-8) })`);
 check('Cast loads the playlist as live HLS (fmp4) on the default media receiver and names the TV', cst.loads.length === 1 && cst.loads[0].url === url && cst.loads[0].type === 'application/x-mpegURL' && cst.loads[0].stream === 'LIVE' && cst.loads[0].seg === 'fmp4' && cst.loads[0].vseg === 'fmp4' && cst.loads[0].autoplay === true && /BatRay/.test(cst.loads[0].title) && cst.opts.receiverApplicationId === 'CC1AD845' && /Living room TV/.test(cst.hint) && cst.scripts === 0 && cst.script === 1, cst);
 check('...the picker opened only after the availability flipped (NO_DEVICES seen first), one request', cst.req === 1 && cst.log.some((l) => /state NO_DEVICES_AVAILABLE/.test(l)) && cst.log.some((l) => /load accepted by "Living room TV"/.test(l)), cst.log);
-// B: a request the library never settles: a second tap must not ask again (that is the invalid_parameter trap)
+// B: a request the library never settles: the sheet says "pick your TV in the list" without a clock, a state event
+// meanwhile must not rewrite the hint or free the buttons (the 2026-09-26 log), the buttons stay greyed so no second
+// request can happen (the invalid_parameter trap), and the sheet's Cancel leaves the "reload the page" hint
 await evalJs(`window.__castNoSession = true; window.__castHang = true; 1`);
 await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(300);
 const h1 = await evalJs(`document.getElementById('tvCastHint').textContent`);
-// on the phones a later state event re-enabled the button while the request hung; same here
-await evalJs(`window.cast.framework.CastContext.getInstance().emit('NOT_CONNECTED'); 1`);
+await evalJs(`window.cast.framework.CastContext.getInstance().emit('NOT_CONNECTED'); 1`); await sleep(100);
+const hang = await evalJs(`({ sheet: !document.getElementById('sheet').hidden, lead: document.getElementById('sheetLead').textContent, bar: !document.getElementById('sheetProg').hidden, hint: document.getElementById('tvCastHint').textContent, busy: document.getElementById('tvCast').disabled && document.getElementById('tvCast').classList.contains('busy'), flow: window.__batrayTest.castFlow() })`);
+check('while the picker request hangs: the sheet says pick your TV with no clock, a state event changes nothing, the buttons stay greyed', hang.sheet && /pick your TV in the list/.test(hang.lead) && !hang.bar && /pick your TV/.test(hang.hint) && hang.busy && hang.flow.phase === 'picking' && hang.flow.requestAt > 0, hang);
+await evalJs(`[...document.querySelectorAll('#sheet [data-act]')].find((x) => x.dataset.act === 'cancel').click(); 1`); await sleep(200);
 await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(300);
 const b2 = await evalJs(`({ req: window.__castReq, hint: document.getElementById('tvCastHint').textContent.replace(/^Cast to TV - /, ''), log: window.__batrayTest.logLines().filter((l) => /cast:/.test(l)).slice(-3) })`);
-check('a pending picker request blocks a second one and says what to do', /pick your TV/.test(h1) && b2.req === 2 && /reload the page/.test(b2.hint) && b2.log.some((l) => /tap -> pending/.test(l)), { h1, ...b2 });
+await evalJs(`window.__castRelease(); 1`); await sleep(400);                                            // the user finally picked: the flow completes on its own
+const rel = await evalJs(`({ loads: window.__castLoads.length, busy: document.getElementById('tvCast').disabled, flow: window.__batrayTest.castFlow() })`);
+check('a pending picker request blocks a second one and says what to do; when the list finally answers the stream is sent and the buttons come back', /pick your TV/.test(h1) && b2.req === 2 && /reload the page/.test(b2.hint) && b2.log.some((l) => /cancelled by the user \(picking\)/.test(l)) && rel.loads === 2 && !rel.busy && !rel.flow.busy && !rel.flow.requestAt, { h1, ...b2 });
 // C: the TV's own player state reaches the hint and the log
 await evalJs(`window.__castNoSession = false; window.__castPlayer('PLAYING'); 1`); await sleep(100);
 const c1 = await evalJs(`document.getElementById('tvCastHint').textContent`);

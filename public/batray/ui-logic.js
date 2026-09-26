@@ -119,6 +119,14 @@ export function sheetModel(kind, ctx, T) {
       m.actions = [{ id: 'cancel', label: T.cancel, primary: false }];
       break;
     }
+    case 'casting': {                                    // the Cast tap flow (owner ask 2026-09-26): phase, seconds left, Cancel
+      const c = ctx.cast || {}; const phase = c.phase || 'loading';
+      const lead = { loading: T.castLoading, looking: T.castLooking, picking: T.castPicking, sending: T.castSending }[phase] || T.castLoading;
+      m.title = T.tvCast; m.lead = phase === 'picking' ? lead : `${lead} ${T.castLeft(c.leftS === undefined ? 0 : c.leftS)}`;
+      if (phase !== 'picking') m.progress = c.pct || 0;
+      m.actions = [{ id: 'cancel', label: T.cancel, primary: false }];
+      break;
+    }
     case 'browse': {                                     // one kind of storage, file by file, each with its own Delete (owner ask 2026-09-23)
       const b = ctx.browse || { type: 'hist', items: [] };
       m.title = T.browseTitle(T[{ hist: 'stHistory', set: 'stSettings', log: 'stLogs' }[b.type]] || b.type);
