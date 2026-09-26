@@ -46,13 +46,17 @@ export function castTapDecision(cs, inp) {
 }
 /** After the discovery wait (or when the library was already loaded before the tap). */
 export function castAfterDiscovery(cs, inp) {
+  // the owner's log 2026-09-26 00:09: a second tap requested while the first tap still waited for discovery; the
+  // flip came 0.1 s later, the first tap's wait ended and it requested too -> invalid_parameter, "stuck" toast
+  if (cs.requestAt) return { action: 'pending', ageS: Math.max(0, Math.round((inp.now - cs.requestAt) / 1000)) };
   if (cs.castState === 'NO_DEVICES_AVAILABLE') return { action: 'no-devices' };
   if (!inp.loadedBeforeTap && !cs.flipped) return { action: 'tap-again', why: 'discovery' };
   if (inp.activationActive === false) return { action: 'tap-again', why: 'activation' };
   return { action: 'request' };
 }
-export function castRequestStarted(cs, now) { cs.requestAt = now; }
-export function castRequestEnded(cs) { cs.requestAt = 0; }
+/** Returns the request's token (its start time); only the request that set it may clear it. */
+export function castRequestStarted(cs, now) { cs.requestAt = now; return now; }
+export function castRequestEnded(cs, token) { if (token === undefined || cs.requestAt === token) cs.requestAt = 0; }
 
 /** 'closed' (picker dismissed), 'stuck' (library holds an earlier request), 'failed'. */
 export function castErrorDecision(code) {

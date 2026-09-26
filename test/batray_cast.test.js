@@ -64,3 +64,22 @@ test('error codes: cancel is a closed picker, invalid_parameter a stuck library,
   assert.equal(castErrorDecision('session_error'), 'failed');
   assert.equal(castErrorDecision(undefined), 'failed');
 });
+
+test('replay 2026-09-26 00:09: a second tap requests while the first still waits for discovery; the flip 0.1 s later must NOT make the first tap request too (it did: invalid_parameter, "stuck" toast), and the failed call must not clear the pending request', () => {
+  const cs = castState(); const t = (s) => Math.round(s * 1000);
+  let d = castTapDecision(cs, { loadedBeforeTap: false, hasSession: false, activationActive: true, now: t(19.390) });   // tap 1 loads the library
+  assert.deepEqual(d, { action: 'wait-discovery', ms: CAST_DISCOVERY_WAIT_MS });
+  assert.equal(onCastStateEvent(cs, 'NOT_CONNECTED'), false);                                                          // 19.625
+  d = castTapDecision(cs, { loadedBeforeTap: true, hasSession: false, activationActive: true, now: t(26.610) });        // tap 2, 7 s later: the picker
+  assert.deepEqual(d, { action: 'request' });
+  const tok = castRequestStarted(cs, t(26.610));
+  assert.equal(onCastStateEvent(cs, 'NO_DEVICES_AVAILABLE'), false);                                                   // 26.650
+  assert.equal(onCastStateEvent(cs, 'NOT_CONNECTED'), true);                                                            // 26.752: tap 1's wait ends
+  d = castAfterDiscovery(cs, { loadedBeforeTap: false, activationActive: false, now: t(26.753) });
+  assert.deepEqual(d, { action: 'pending', ageS: 0 }, 'tap 1 sees the request tap 2 opened and does nothing');
+  castRequestEnded(cs, t(26.753));                                                                                      // a stray end with another token
+  assert.equal(cs.requestAt, t(26.610), 'the pending request is still pending');
+  castRequestEnded(cs, tok);                                                                                            // 34.818: the session started
+  assert.equal(cs.requestAt, 0);
+  assert.equal(castTapDecision(cs, { loadedBeforeTap: true, hasSession: true, now: t(40) }).action, 'load-media');
+});

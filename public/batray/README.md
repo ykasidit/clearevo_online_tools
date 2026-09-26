@@ -64,6 +64,31 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## Cast: one request at a time, and the TV's own word (0.9.43, owner's log 2026-09-26)
+
+The owner's log: the first Cast tap loaded the library and waited for
+discovery; a second tap 7 s later requested the picker; the availability
+flip came 0.1 s after that, the first tap's wait ended and it requested too
+- `invalid_parameter` ("Already requesting session"), the "stuck" toast,
+while the first request's picker was still open and later worked. Now
+`castAfterDiscovery` answers `pending` while a request is open, and
+`castRequestEnded(cs, token)` clears only the request that set it (replay
+test). The TV accepted the load, reported IDLE twice within a millisecond,
+and the log was uploaded 6 s later - too early for the receiver's verdict.
+`watchCastMedia(sess)` now logs every media status update the TV sends
+(`cast: tv update +Ns: player=IDLE idle=ERROR ...`, a vanished media
+session) and polls every 3 s for 2 min; the phone's own preview player logs
+playing / waiting / stalled / time updates, the nearest witness to what a
+TV will do with the stream. The receiver's failure itself is still
+unexplained: the stream is video-only H.264 High (avc1.640028) 1080p at
+1 fps, one key frame per 1 s fMP4 segment, `EXT-X-VERSION:7` + `EXT-X-MAP`,
+target duration 2 s, CORS `*` on the relay. Suspects, in order: the
+Default Media Receiver's HLS player and a video-only 1 fps fMP4 stream, the
+H.264 High profile, the 30 s live window. The next log (upload a minute
+after the TV shows the icon) says which. Collapsing the TV card pauses and
+unloads the preview; expanding it loads the preview again at the live edge
+(the old preview sat on a position the 30 s window had left behind).
+
 ## Stored history (0.9.29, owner decisions 2026-09-21)
 
 The reader appends one NDJSON row per reading (short keys, cell millivolts

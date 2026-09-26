@@ -19,7 +19,7 @@ import { trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntim
 import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
-import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted } from './tv-logic.js';
+import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, tvPreviewToggle } from './tv-logic.js';
 import { startDemo } from './demo.js';
 import { I18N, detectLang } from './i18n.js';
 import { Publisher, Viewer } from './live.js';
@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.42';
+export const APP_VERSION = '0.9.43';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -1593,6 +1593,11 @@ function startPreview(v, url) {
   let tries = 0;
   const kick = () => v.play().catch((e) => log(`tv preview: play refused: ${e.message}`));
   v.addEventListener('loadedmetadata', () => { log('tv preview: metadata loaded'); kick(); });
+  let frames = 0;                                                            // the phone's own HLS player is the nearest witness to what a TV will do with the stream
+  v.addEventListener('playing', () => log(`tv preview: playing (${v.videoWidth}x${v.videoHeight})`));
+  v.addEventListener('waiting', () => log('tv preview: waiting for data'));
+  v.addEventListener('stalled', () => log('tv preview: stalled'));
+  v.addEventListener('timeupdate', () => { if (++frames === 1 || frames === 10 || frames % 60 === 0) log(`tv preview: t=${v.currentTime.toFixed(1)}s (update ${frames})`); });
   v.addEventListener('canplay', kick, { once: true });
   v.addEventListener('error', () => {
     const err = v.error ? `${v.error.code} ${v.error.message || ''}` : '?';
@@ -1656,6 +1661,25 @@ function wireCastState() {
   pc.addEventListener(E.IS_MEDIA_LOADED_CHANGED, () => report('media loaded change'));
   pc.addEventListener(E.MEDIA_INFO_CHANGED, () => report('media info change'));
 }
+/** Every status the TV reports for the loaded media (owner's log 2026-09-26: the load was accepted, the player said
+ *  IDLE twice within a millisecond and nothing more was logged before the upload 6 s later; the TV showed the cast
+ *  icon for a while and went dark - the receiver's own word on WHY is in these updates: idleReason ERROR /
+ *  FINISHED / CANCELLED / INTERRUPTED, and a media session that vanishes). Polled too, in case no update comes. */
+function watchCastMedia(sess) {
+  const ms = sess.getMediaSession && sess.getMediaSession();
+  if (!ms) { log('cast: no media session after the load'); return; }
+  const t0 = Date.now(); let last = '';
+  const line = (why, alive) => {
+    const m = sess.getMediaSession && sess.getMediaSession();
+    const cur = m || ms;
+    const txt = `player=${cur.playerState || '-'}${cur.idleReason ? ' idle=' + cur.idleReason : ''} t=${Math.round((cur.getEstimatedTime ? cur.getEstimatedTime() : cur.currentTime) || 0)}s${m ? '' : ' (media session gone)'}${alive === false ? ' alive=false' : ''}`;
+    if (why === 'poll' && txt === last) return; last = txt;
+    log(`cast: tv ${why} +${Math.round((Date.now() - t0) / 1000)}s: ${txt}`);
+  };
+  line('status', true);
+  try { ms.addUpdateListener((alive) => line('update', alive)); } catch (e) { log(`cast: no update listener: ${e.message}`); }
+  const poll = setInterval(() => { if (Date.now() - t0 > 120000 || !sess.getMediaSession) { clearInterval(poll); return; } line('poll', true); }, 3000);
+}
 const castDiscovery = (ms) => new Promise((ok) => { if (discoveryKnown(castS)) return ok(); const t = setTimeout(ok, ms); castWaiters.push(() => { clearTimeout(t); ok(); }); });
 async function castToTv() {
   if (!tv || !tv.state.url) return;
@@ -1673,8 +1697,8 @@ async function castToTv() {
     if (d.action === 'no-devices') { castHint(T.tvCastNone); return; }
     if (d.action === 'tap-again') { castHint(T.tvCastTapAgain); return; }
     if (d.action === 'request') {
-      castHint(T.tvCastPick, true); castRequestStarted(castS, Date.now());
-      try { await ctx.requestSession(); } finally { castRequestEnded(castS); }
+      castHint(T.tvCastPick, true); const mine = castRequestStarted(castS, Date.now());
+      try { await ctx.requestSession(); } finally { castRequestEnded(castS, mine); }
     }
     const sess = ctx.getCurrentSession();
     if (!sess) throw new Error('no cast session');
@@ -1687,6 +1711,7 @@ async function castToTv() {
     await sess.loadMedia(req);
     const dev = sess.getCastDevice ? sess.getCastDevice().friendlyName : '';
     log(`cast: load accepted by "${dev}" (${tv.state.segs} segments on the relay) - watching its player state`);
+    watchCastMedia(sess);
     castHint(T.tvCastConnected(dev));
     toast(T.tvCastConnected(dev), 8000);
   } catch (e) {
@@ -1759,6 +1784,13 @@ async function stopTv(why = 'card') {
     renderTvButtons();
     if (d.action === 'open-panel') $('tvPanel').scrollIntoView({ block: 'start', behavior: 'smooth' });
   });
+  $('tvPanel').addEventListener('toggle', () => {
+    const v = $('tvVideo'), open = $('tvPanel').open;
+    const d = tvPreviewToggle(open, !!(tv && tv.state.live), !!v.getAttribute('src'));
+    log(`tv: card ${open ? 'expanded' : 'collapsed'} -> ${d}`);
+    if (d === 'unload') { try { v.pause(); } catch { /* not playing */ } v.removeAttribute('src'); v.load(); }
+    else if (d === 'load') renderTv(tv.state);
+  });
   $('tvClose').addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
     const d = tvCloseDecision(tvS);
@@ -1775,7 +1807,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });

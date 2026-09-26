@@ -95,6 +95,20 @@ const ups = await evalJs(`window.__tvUploads.map((u) => ({ path: u.path, dur: u.
 check('an init segment and at least three media segments were uploaded within 9.5 s', ups[0] && ups[0].path === 'init.mp4' && ups.filter((u) => u.path.startsWith('seg/')).length >= 3, ups);
 check('media segments carry their duration and are numbered from 0', ups.filter((u) => u.path.startsWith('seg/')).every((u, i) => u.path === `seg/${i}` && Math.abs(+u.dur - 2) < 0.6), ups);
 check('the state counts segments and shows the fake TV pull', s.live && s.segs >= 3 && s.codec === 'vp09.00.10.08' && s.hits === 3 && s.pullAgeS === 2 && !s.error, s);
+// collapse / expand the TV card (owner 2026-09-26): with HLS support faked, collapsing unloads the preview and
+// expanding loads it again from the live playlist
+const tog = await evalJs(`(async () => {
+  const v = document.getElementById('tvVideo'); const p = document.getElementById('tvPanel'); const T = window.__batrayTest;
+  HTMLMediaElement.prototype.canPlayType = function (t) { return /mpegurl/i.test(t) ? 'maybe' : ''; };
+  T.renderTv(); const before = T.logLines().length;
+  const src0 = v.getAttribute('src');
+  p.open = false; await new Promise((r) => setTimeout(r, 200));
+  const closed = v.getAttribute('src');
+  p.open = true; await new Promise((r) => setTimeout(r, 200));
+  const reopened = v.getAttribute('src');
+  return { src0, closed, reopened, logs: T.logLines().slice(before).filter((l) => /tv: card/.test(l)) };
+})()`);
+check('collapsing the TV card unloads the preview, expanding it loads the preview again at the live edge', /index\.m3u8$/.test(tog.src0 || '') && tog.closed === null && /index\.m3u8$/.test(tog.reopened || '') && tog.logs.some((l) => /card collapsed -> unload/.test(l)) && tog.logs.some((l) => /card expanded -> load/.test(l)), tog);
 const ui = await evalJs(`({ stat: document.getElementById('tvStat').textContent, note: !document.getElementById('tvNote').hidden, link: document.getElementById('tvLink').textContent, videoSrc: document.getElementById('tvVideo').getAttribute('src'), canHls: !!document.getElementById('tvVideo').canPlayType('application/vnd.apple.mpegurl'), noPreview: !document.getElementById('tvNoPreview').hidden, castRow: !document.getElementById('tvCastRow').hidden, castHint: document.getElementById('tvCastHint').textContent })`);
 check('status line, status-bar note and link are set; the preview follows the browser\'s own HLS support; Cast is always offered', /segments/.test(ui.stat) && ui.note && ui.link === url && ui.castRow && /Google/.test(ui.castHint) && (ui.canHls ? ui.videoSrc === url && !ui.noPreview : ui.videoSrc === null && ui.noPreview), ui);
 

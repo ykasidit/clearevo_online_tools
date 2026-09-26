@@ -114,3 +114,11 @@ export function tvButtons(ts) {
 }
 /** A live playlist needs a few segments before a player will start: wait for 3. */
 export function tvPreviewWanted(s, canHls, hasSrc) { return !!(canHls && s.segs >= 3 && !hasSrc); }
+/** The TV card's own expand/collapse (owner 2026-09-26: collapsed then expanded, the preview stayed dark - the
+ *  paused player sat on a position the 30 s live window had left behind): collapsing pauses and unloads the
+ *  preview (the phone stops decoding, the TV stream goes on), expanding loads it again at the live edge. */
+export function tvPreviewToggle(open, live, hasSrc) {
+  if (!live) return 'none';
+  if (!open) return hasSrc ? 'unload' : 'none';
+  return hasSrc ? 'none' : 'load';
+}

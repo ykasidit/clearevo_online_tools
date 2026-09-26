@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, BoxSplitter, takeSegments, tvLink, isSegmentStart } from '../public/batray/tv-logic.js';
+import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, BoxSplitter, takeSegments, tvLink, isSegmentStart , tvPreviewToggle } from '../public/batray/tv-logic.js';
 import { Muxer, StreamTarget } from '../public/batray/mp4-muxer.js';
 
 const box = (type, payload = []) => { const n = 8 + payload.length; const u = new Uint8Array(n); new DataView(u.buffer).setUint32(0, n); u.set([...type].map((c) => c.charCodeAt(0)), 4); u.set(payload, 8); return u; };
@@ -97,4 +97,12 @@ test('the preview waits for three segments and is started once', () => {
   assert.equal(tvPreviewWanted({ segs: 3 }, true, false), true);
   assert.equal(tvPreviewWanted({ segs: 3 }, true, true), false);
   assert.equal(tvPreviewWanted({ segs: 9 }, false, false), false);
+});
+
+test('tvPreviewToggle: collapsing the TV card unloads a running preview, expanding loads it again; no stream, nothing', () => {
+  assert.equal(tvPreviewToggle(false, true, true), 'unload');
+  assert.equal(tvPreviewToggle(false, true, false), 'none');
+  assert.equal(tvPreviewToggle(true, true, false), 'load');
+  assert.equal(tvPreviewToggle(true, true, true), 'none', 'already showing');
+  assert.equal(tvPreviewToggle(true, false, false), 'none', 'no stream to preview');
 });
