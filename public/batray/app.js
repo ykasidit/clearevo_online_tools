@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.45';
+export const APP_VERSION = '0.9.46';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -1693,8 +1693,25 @@ function watchCastMedia(sess) {
   const poll = setInterval(() => { if (Date.now() - t0 > 120000 || !sess.getMediaSession) { clearInterval(poll); return; } line('poll', true); }, 3000);
 }
 const castDiscovery = (ms) => new Promise((ok) => { if (discoveryKnown(castS)) return ok(); const t = setTimeout(ok, ms); castWaiters.push(() => { clearTimeout(t); ok(); }); });
-async function castToTv() {
-  if (!tv || !tv.state.url) return;
+// A 6 s H.264 test pattern (baseline profile, progressive MP4) served next to the app: if the TV plays this and not our
+// live stream, the stream is the problem, not the TV, the session or the host. Google's sample buckets were not
+// reachable from the build sandbox (403), so the file is ours.
+const CAST_TEST_URL = new URL('./test-tv.mp4', import.meta.url).href;
+/** Every message the TV sends on the media namespace (MEDIA_STATUS, LOAD_FAILED with detailedErrorCode, ...): the
+ *  receiver's own words on why a load failed, which the RemotePlayer events never carried (2026-09-27 log). */
+function listenCastMedia(sess) {
+  if (sess.__batrayMediaListener) return;
+  try {
+    const raw = sess.getSessionObj ? sess.getSessionObj() : null;
+    const add = raw && raw.addMessageListener ? raw.addMessageListener.bind(raw) : sess.addMessageListener ? sess.addMessageListener.bind(sess) : null;
+    if (!add) { log('cast: no message listener on this session'); return; }
+    add('urn:x-cast:com.google.cast.media', (ns, msg) => log(`cast: tv message ${String(msg).slice(0, 600)}`));
+    sess.__batrayMediaListener = true;
+  } catch (e) { log(`cast: media message listener refused: ${e.message}`); }
+}
+async function castToTv(opts = {}) {
+  const testVideo = !!opts.test;
+  if (!testVideo && (!tv || !tv.state.url)) return;
   if (!castTapAllowed(castS)) { log('cast: tap -> busy'); return; }
   const loadedBeforeTap = !!(window.cast && window.cast.framework);
   // one progress sheet from the tap to the TV's answer; Cancel ends the flow (a picker request already handed to
@@ -1734,18 +1751,21 @@ async function castToTv() {
     const sess = ctx.getCurrentSession();
     if (!sess) throw new Error('no cast session');
     if (castS.busy) phase('sending', T.castSending);
-    const info = new chrome.cast.media.MediaInfo(tv.state.url, 'application/x-mpegURL');
-    info.streamType = chrome.cast.media.StreamType.LIVE;
-    info.hlsSegmentFormat = chrome.cast.media.HlsSegmentFormat.FMP4;
-    info.hlsVideoSegmentFormat = chrome.cast.media.HlsVideoSegmentFormat.FMP4;
-    info.metadata = new chrome.cast.media.GenericMediaMetadata(); info.metadata.title = `BatRay · ${shareS.name || (active ? active.label : '')}`;
+    listenCastMedia(sess);
+    const info = testVideo ? new chrome.cast.media.MediaInfo(CAST_TEST_URL, 'video/mp4') : new chrome.cast.media.MediaInfo(tv.state.url, 'application/x-mpegURL');
+    if (testVideo) { info.streamType = chrome.cast.media.StreamType.BUFFERED; }
+    else { info.streamType = chrome.cast.media.StreamType.LIVE; info.hlsSegmentFormat = chrome.cast.media.HlsSegmentFormat.FMP4; info.hlsVideoSegmentFormat = chrome.cast.media.HlsVideoSegmentFormat.FMP4; }
+    info.metadata = new chrome.cast.media.GenericMediaMetadata(); info.metadata.title = testVideo ? 'BatRay TV test pattern (6 s)' : `BatRay · ${shareS.name || (active ? active.label : '')}`;
     const req = new chrome.cast.media.LoadRequest(info); req.autoplay = true;
-    await sess.loadMedia(req);
+    const rc = await sess.loadMedia(req);                                     // CAF resolves with an error code on some failures instead of rejecting
     const dev = sess.getCastDevice ? sess.getCastDevice().friendlyName : '';
-    log(`cast: load accepted by "${dev}" (${tv.state.segs} segments on the relay) - watching its player state`);
+    log(`cast: loadMedia(${testVideo ? 'test video' : 'stream'}) resolved with ${rc === undefined || rc === null ? 'no error' : JSON.stringify(rc)} on "${dev}"${testVideo ? '' : ` (${tv.state.segs} segments on the relay)`} - watching its player state`);
+    if (rc) throw new Error(`load refused: ${JSON.stringify(rc)}`);
+    const ms = sess.getMediaSession && sess.getMediaSession();
     watchCastMedia(sess);
-    endFlow('done', T.tvCastConnected(dev)); castHint(T.tvCastConnected(dev));
-    toast(T.tvCastConnected(dev), 8000);
+    const hint = ms ? T.tvCastConnected(dev) : T.tvCastNoMedia;
+    endFlow('done', hint); castHint(hint);
+    toast(hint, 8000);
   } catch (e) {
     const msg = e && (e.message || e.code || String(e));
     const kind = castErrorDecision(msg);
@@ -1833,6 +1853,7 @@ async function stopTv(why = 'card') {
   $('tvStop').addEventListener('click', () => stopTv('card'));
   $('tvCast').addEventListener('click', () => castToTv());
   $('tvCastOverlay').addEventListener('click', () => castToTv());          // the same icon on the preview itself
+  $('tvCastTest').addEventListener('click', () => castToTv({ test: true }));
   $('tvCopy').addEventListener('click', async () => { if (!tv) return; try { await navigator.clipboard.writeText(tv.state.url); toast(T.linkCopied, 6000); } catch { toast(T.linkCopyManual, 8000); } });
   $('tvQrBtn').addEventListener('click', () => { const c = $('tvQr'); if (!tv) return; if (c.hidden) { renderQr(tv.state.url, c); c.hidden = false; } else c.hidden = true; });
   window.addEventListener('pagehide', () => { if (tv) { const t = tv; tv = null; tvStopped(tvS); t.stop(); } });

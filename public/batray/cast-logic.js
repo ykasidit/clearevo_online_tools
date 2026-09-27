@@ -25,8 +25,13 @@
 //   invalid_parameter ("Already requesting session") until the page reloads;
 // - PresentationRequest.start() needs the tap's user activation (~5 s).
 
-export const CAST_DISCOVERY_WAIT_MS = 20000;   // the whole tap flow's budget (owner 2026-09-26: a progress sheet with a 20 s timeout, cancellable)
-export const CAST_FLOW_TIMEOUT_MS = CAST_DISCOVERY_WAIT_MS;
+export const CAST_FLOW_TIMEOUT_MS = 20000;     // the whole tap flow's budget (owner 2026-09-26: a progress sheet with a 20 s timeout, cancellable)
+export const CAST_DISCOVERY_WAIT_MS = CAST_FLOW_TIMEOUT_MS;
+// How long the loading tap waits for the availability flip before it requests anyway. The 2026-09-20 phones flipped
+// 1-6 s after init on their own; the owner's phone on 2026-09-26 and 2026-09-27 never flipped until a request was
+// made, and then flipped 50-150 ms AFTER it and the picker worked - so the flip is not a precondition, only a hint.
+// A 20 s wait for it (0.9.45) was 20 s of "looking for TVs" for nothing.
+export const CAST_FLIP_WAIT_MS = 4000;
 
 export function castState() { return { events: 0, flipped: false, castState: null, requestAt: 0, busy: false, phase: null, since: 0 }; }
 
@@ -65,7 +70,7 @@ export function discoveryKnown(cs) { return cs.events >= 3; }
 export function castTapDecision(cs, inp) {
   if (inp.hasSession) return { action: 'load-media' };
   if (cs.requestAt) return { action: 'pending', ageS: Math.max(0, Math.round((inp.now - cs.requestAt) / 1000)) };
-  if (!inp.loadedBeforeTap && !discoveryKnown(cs)) return { action: 'wait-discovery', ms: CAST_DISCOVERY_WAIT_MS };
+  if (!inp.loadedBeforeTap && !discoveryKnown(cs)) return { action: 'wait-discovery', ms: CAST_FLIP_WAIT_MS };
   return castAfterDiscovery(cs, inp);
 }
 /** After the discovery wait (or when the library was already loaded before the tap). */
@@ -74,9 +79,8 @@ export function castAfterDiscovery(cs, inp) {
   // flip came 0.1 s later, the first tap's wait ended and it requested too -> invalid_parameter, "stuck" toast
   if (cs.requestAt) return { action: 'pending', ageS: Math.max(0, Math.round((inp.now - cs.requestAt) / 1000)) };
   if (cs.castState === 'NO_DEVICES_AVAILABLE') return { action: 'no-devices' };
-  if (!inp.loadedBeforeTap && !cs.flipped) return { action: 'tap-again', why: 'discovery' };
   if (inp.activationActive === false) return { action: 'tap-again', why: 'activation' };
-  return { action: 'request' };
+  return { action: 'request' };                        // flipped or not: the request itself starts discovery on some phones
 }
 /** Returns the request's token (its start time); only the request that set it may clear it. */
 export function castRequestStarted(cs, now) { cs.requestAt = now; return now; }

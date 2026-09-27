@@ -89,6 +89,32 @@ after the TV shows the icon) says which. Collapsing the TV card pauses and
 unloads the preview; expanding it loads the preview again at the live edge
 (the old preview sat on a position the 30 s window had left behind).
 
+## Cast, third round (0.9.46, owner's log 2026-09-27 23:25)
+
+Three facts from the log. (1) The first tap waited the whole 20 s for the
+availability flip that never came; the second tap requested at once and the
+flip (NO_DEVICES -> NOT_CONNECTED) arrived 60 and 150 ms AFTER the request,
+as on 2026-09-26: on this phone the request is what starts Chrome's
+discovery. The 2026-09-20 phones flipped 1 s after init on their own. So
+the loading tap now waits at most `CAST_FLIP_WAIT_MS` = 4 s for the flip
+and then requests anyway; "tap again (discovery)" is gone. (2) The TV
+accepted the load, then `getMediaSession()` was null and the RemotePlayer
+reported IDLE with no media: the receiver dropped the media at once and
+the TV showed only its idle icon. The sender's `loadMedia` promise can
+resolve with an error code rather than reject, so the result is logged
+(`cast: loadMedia(stream) resolved with ...`) and a code is treated as a
+failure; and every message the receiver sends on the media namespace
+(`urn:x-cast:com.google.cast.media`: MEDIA_STATUS, LOAD_FAILED with its
+detailedErrorCode) is logged as `cast: tv message ...` - the receiver's
+own reason, which no RemotePlayer event carried. The hint says "the TV
+accepted the stream but then reported nothing playing" in that case.
+(3) To tell the TV from the stream, the card offers "cast a 6 s test
+pattern instead": `test-tv.mp4` (H.264 baseline 640x360, a testsrc2
+pattern made with ffmpeg, 377 KB, served next to the app; Google's sample
+buckets answered 403 from the sandbox) as buffered `video/mp4`. If the
+pattern plays and the live stream does not, the HLS stream is the fault;
+if neither plays, the session or the TV is.
+
 ## The Cast progress sheet (0.9.45, owner ask 2026-09-26)
 
 "After the first tap there is no way to know that it is searching or

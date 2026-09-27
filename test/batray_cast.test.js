@@ -13,12 +13,12 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, CAST_DISCOVERY_WAIT_MS, CAST_FLOW_TIMEOUT_MS, castFlowStart, castFlowPhase, castFlowEnd, castProgress, castButtons, castStateUi, castTapAllowed } from '../public/batray/cast-logic.js';
+import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, CAST_DISCOVERY_WAIT_MS, CAST_FLOW_TIMEOUT_MS, castFlowStart, castFlowPhase, castFlowEnd, castProgress, castButtons, castStateUi, castTapAllowed, CAST_FLIP_WAIT_MS } from '../public/batray/cast-logic.js';
 
 test('new phone: the loading tap waits for discovery; the flip 6 s in is past the tap, so it asks for another; the next tap requests once; a third tap while pending does not', () => {
   const cs = castState(); const t0 = 1000;
   let d = castTapDecision(cs, { loadedBeforeTap: false, hasSession: false, activationActive: true, now: t0 });
-  assert.deepEqual(d, { action: 'wait-discovery', ms: CAST_DISCOVERY_WAIT_MS });
+  assert.deepEqual(d, { action: 'wait-discovery', ms: CAST_FLIP_WAIT_MS });
   assert.equal(onCastStateEvent(cs, 'NOT_CONNECTED'), false);        // the initial value, not discovery
   assert.equal(onCastStateEvent(cs, 'NO_DEVICES_AVAILABLE'), false);  // +6 s in the log
   assert.equal(onCastStateEvent(cs, 'NOT_CONNECTED'), true);          // +6.5 s: discovery has spoken
@@ -47,10 +47,13 @@ test('no TV on the Wi-Fi: the picker is never opened (it would never settle)', (
   assert.deepEqual(castTapDecision(cs, { loadedBeforeTap: true, hasSession: false, activationActive: true, now: 9000 }), { action: 'no-devices' });
 });
 
-test('availability that never flips: the loading tap asks for another, the next tap requests', () => {
+test('availability that never flips on its own (the owner\'s phone, logs 2026-09-26 and 2026-09-27): after the short flip wait the loading tap requests anyway - the request is what starts discovery there', () => {
   const cs = castState(); onCastStateEvent(cs, 'NOT_CONNECTED');
-  assert.deepEqual(castAfterDiscovery(cs, { loadedBeforeTap: false, activationActive: true, now: 8000 }), { action: 'tap-again', why: 'discovery' });
-  assert.deepEqual(castTapDecision(cs, { loadedBeforeTap: true, hasSession: false, activationActive: true, now: 9000 }), { action: 'request' });
+  assert.equal(CAST_FLIP_WAIT_MS, 4000);
+  assert.deepEqual(castAfterDiscovery(cs, { loadedBeforeTap: false, activationActive: true, now: 4000 }), { action: 'request' });
+  assert.deepEqual(castAfterDiscovery(cs, { loadedBeforeTap: false, activationActive: false, now: 4000 }), { action: 'tap-again', why: 'activation' }, 'only an expired activation asks for another tap');
+  onCastStateEvent(cs, 'NO_DEVICES_AVAILABLE');
+  assert.deepEqual(castAfterDiscovery(cs, { loadedBeforeTap: false, activationActive: true, now: 4100 }), { action: 'no-devices' });
 });
 
 test('a browser without userActivation (undefined) is not treated as expired', () => {
@@ -68,7 +71,7 @@ test('error codes: cancel is a closed picker, invalid_parameter a stuck library,
 test('replay 2026-09-26 00:09: a second tap requests while the first still waits for discovery; the flip 0.1 s later must NOT make the first tap request too (it did: invalid_parameter, "stuck" toast), and the failed call must not clear the pending request', () => {
   const cs = castState(); const t = (s) => Math.round(s * 1000);
   let d = castTapDecision(cs, { loadedBeforeTap: false, hasSession: false, activationActive: true, now: t(19.390) });   // tap 1 loads the library
-  assert.deepEqual(d, { action: 'wait-discovery', ms: CAST_DISCOVERY_WAIT_MS });
+  assert.deepEqual(d, { action: 'wait-discovery', ms: CAST_FLIP_WAIT_MS });
   assert.equal(onCastStateEvent(cs, 'NOT_CONNECTED'), false);                                                          // 19.625
   d = castTapDecision(cs, { loadedBeforeTap: true, hasSession: false, activationActive: true, now: t(26.610) });        // tap 2, 7 s later: the picker
   assert.deepEqual(d, { action: 'request' });
