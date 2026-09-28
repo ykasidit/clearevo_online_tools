@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.46';
+export const APP_VERSION = '0.9.47';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -1752,14 +1752,15 @@ async function castToTv(opts = {}) {
     if (!sess) throw new Error('no cast session');
     if (castS.busy) phase('sending', T.castSending);
     listenCastMedia(sess);
-    const info = testVideo ? new chrome.cast.media.MediaInfo(CAST_TEST_URL, 'video/mp4') : new chrome.cast.media.MediaInfo(tv.state.url, 'application/x-mpegURL');
-    if (testVideo) { info.streamType = chrome.cast.media.StreamType.BUFFERED; }
-    else { info.streamType = chrome.cast.media.StreamType.LIVE; info.hlsSegmentFormat = chrome.cast.media.HlsSegmentFormat.FMP4; info.hlsVideoSegmentFormat = chrome.cast.media.HlsVideoSegmentFormat.FMP4; }
+    // The TV gets the stream as one growing MP4 (video/mp4, live), the same path its player took for the test
+    // pattern; the HLS playlist stays for TV browsers and VLC (the receiver's HLS player refused it, 2026-09-27/28).
+    const info = testVideo ? new chrome.cast.media.MediaInfo(CAST_TEST_URL, 'video/mp4') : new chrome.cast.media.MediaInfo(tv.state.mp4Url, 'video/mp4');
+    info.streamType = testVideo ? chrome.cast.media.StreamType.BUFFERED : chrome.cast.media.StreamType.LIVE;
     info.metadata = new chrome.cast.media.GenericMediaMetadata(); info.metadata.title = testVideo ? 'BatRay TV test pattern (6 s)' : `BatRay · ${shareS.name || (active ? active.label : '')}`;
     const req = new chrome.cast.media.LoadRequest(info); req.autoplay = true;
     const rc = await sess.loadMedia(req);                                     // CAF resolves with an error code on some failures instead of rejecting
     const dev = sess.getCastDevice ? sess.getCastDevice().friendlyName : '';
-    log(`cast: loadMedia(${testVideo ? 'test video' : 'stream'}) resolved with ${rc === undefined || rc === null ? 'no error' : JSON.stringify(rc)} on "${dev}"${testVideo ? '' : ` (${tv.state.segs} segments on the relay)`} - watching its player state`);
+    log(`cast: loadMedia(${testVideo ? 'test video' : 'stream mp4'}) resolved with ${rc === undefined || rc === null ? 'no error' : JSON.stringify(rc)} on "${dev}"${testVideo ? '' : ` (${tv.state.segs} segments on the relay)`} - watching its player state`);
     if (rc) throw new Error(`load refused: ${JSON.stringify(rc)}`);
     const ms = sess.getMediaSession && sess.getMediaSession();
     watchCastMedia(sess);

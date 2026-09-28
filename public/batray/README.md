@@ -89,6 +89,31 @@ after the TV shows the icon) says which. Collapsing the TV card pauses and
 unloads the preview; expanding it loads the preview again at the live edge
 (the old preview sat on a position the 30 s window had left behind).
 
+## Cast, fourth round: the TV plays a growing MP4, not HLS (0.9.47, owner's log 2026-09-28 00:03)
+
+The 2026-09-28 log settled the split. The 6 s test pattern (a plain MP4
+from clearevo.com) went BUFFERING -> PLAYING on the Family Room TV by the
+receiver's own player state; the live HLS stream, loaded on the same
+session seconds earlier, produced no player state at all for 2.5 min and
+no media session - the Default Media Receiver's HLS player refused it
+silently (its media-namespace messages never reached the sender's
+listener; the SDK keeps that namespace). So the TV, the session and the
+host are fine and the HLS path is the fault. The receiver's own `<video>`
+element is the path that works, and it plays a fragmented MP4 that keeps
+growing.
+
+The relay's Tv object now serves `GET stream.mp4`: one response, no
+Content-Length, `Accept-Ranges: none`, that starts with the init segment
+and the last three kept segments (`burst`, STREAM_BURST = 3) and then
+carries every new segment as the phone uploads it (`fanout` to the open
+subscribers, in-memory channels; delete or the 2 min expiry closes them).
+Cast loads it as `video/mp4`, streamType LIVE - the same load the test
+pattern took. The HLS playlist stays for TV browsers and VLC. Unverified
+until the owner's next log: the receiver's `<video>` on a live, never-
+ending fMP4 at 1 fps (Chromium's media pipeline treats a response without
+length as a streaming source; the sandbox has no receiver to try). If it
+still shows nothing, the next candidates are MPEG-TS HLS or DASH.
+
 ## Cast, third round (0.9.46, owner's log 2026-09-27 23:25)
 
 Three facts from the log. (1) The first tap waited the whole 20 s for the

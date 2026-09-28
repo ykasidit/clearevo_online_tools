@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, BoxSplitter, takeSegments, tvLink, isSegmentStart , tvPreviewToggle } from '../public/batray/tv-logic.js';
+import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, BoxSplitter, takeSegments, tvLink, isSegmentStart , tvPreviewToggle , tvMp4Link } from '../public/batray/tv-logic.js';
 import { Muxer, StreamTarget } from '../public/batray/mp4-muxer.js';
 
 const box = (type, payload = []) => { const n = 8 + payload.length; const u = new Uint8Array(n); new DataView(u.buffer).setUint32(0, n); u.set([...type].map((c) => c.charCodeAt(0)), 4); u.set(payload, 8); return u; };
@@ -67,6 +67,7 @@ test('the real muxer in fragmented mode yields an init segment and one media seg
 
 test('links and segment boundaries', () => {
   assert.equal(tvLink('https://www.clearevo.com', 'abc'), 'https://www.clearevo.com/batray/api/tv/abc/index.m3u8');
+  assert.equal(tvMp4Link('https://www.clearevo.com', 'abc'), 'https://www.clearevo.com/batray/api/tv/abc/stream.mp4');
   assert.ok(isSegmentStart(0, 1, 4) && !isSegmentStart(3, 1, 4) && isSegmentStart(4, 1, 4) && isSegmentStart(8, 2, 4) && !isSegmentStart(7, 2, 4));
 });
 

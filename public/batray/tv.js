@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
 import { Muxer, StreamTarget } from './mp4-muxer.js';
-import { BoxSplitter, takeSegments, tvLink, isSegmentStart } from './tv-logic.js';
+import { BoxSplitter, takeSegments, tvLink, tvMp4Link, isSegmentStart } from './tv-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
 const API = '/batray/api';
@@ -35,7 +35,7 @@ export class TvStream {
     this.bitrate = o.bitrate || Math.round(this.width * this.height * 0.25);   // ~500 kbps at 1080p: a near-static picture needs far less
     this.model = o.model || (() => ({ waiting: true })); this.log = o.log || (() => {}); this.onState = o.onState || (() => {});
     this.codecs = o.codecs || TV_CODECS;
-    this.state = { live: false, url: null, id: null, codec: null, segs: 0, bytes: 0, hits: 0, pullAgeS: null, error: null, uploading: 0 };
+    this.state = { live: false, url: null, mp4Url: null, id: null, codec: null, segs: 0, bytes: 0, hits: 0, pullAgeS: null, error: null, uploading: 0 };
     this.frame = 0; this.n = 0; this.tick = 0; this.sinceKey = 0; this.pendingDurs = []; this.initSent = false;
     this.chain = Promise.resolve(); this.stopped = false;
   }
@@ -50,7 +50,7 @@ export class TvStream {
     if (!this.codec) { const e = new Error('no supported video encoder'); e.code = 'nocodec'; throw e; }
     const { tv, token } = await j('tv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ codecs: this.codec, target: this.segS + 1 }) });
     this.id = tv; this.token = token;
-    this.state.id = tv; this.state.url = tvLink(location.origin, tv); this.state.codec = this.codec;
+    this.state.id = tv; this.state.url = tvLink(location.origin, tv); this.state.mp4Url = tvMp4Link(location.origin, tv); this.state.codec = this.codec;
     this.canvas = document.createElement('canvas'); this.canvas.width = this.width; this.canvas.height = this.height;
     this.ctx = this.canvas.getContext('2d', { alpha: false });
     this.splitter = new BoxSplitter();

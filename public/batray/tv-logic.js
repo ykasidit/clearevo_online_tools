@@ -81,6 +81,9 @@ export function takeSegments(splitter) {
 
 /** The playlist URL a TV fetches. */
 export function tvLink(origin, id) { return `${origin}/batray/api/tv/${id}/index.m3u8`; }
+/** The same stream as one growing fragmented MP4 (what a TV's own <video> element plays: Chromecast's default
+ *  receiver took a plain MP4 and silently refused the HLS playlist, owner's logs 2026-09-27/28). */
+export function tvMp4Link(origin, id) { return `${origin}/batray/api/tv/${id}/stream.mp4`; }
 
 /** Segment boundary rule: frame k starts a new segment (key frame) every segS seconds. */
 export function isSegmentStart(frame, fps, segS) { return frame % Math.max(1, Math.round(fps * segS)) === 0; }
