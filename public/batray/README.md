@@ -89,6 +89,22 @@ after the TV shows the icon) says which. Collapsing the TV card pauses and
 unloads the preview; expanding it loads the preview again at the live edge
 (the old preview sat on a position the 30 s window had left behind).
 
+## Cast works: the growing MP4 plays on the TV (0.9.48, owner's log 2026-09-28 00:55)
+
+Verified on the owner's Family Room TV: the receiver reported PLAYING with
+its clock running from 0 to 88 s and the owner saw live BatRay frames.
+Two things from that log: (1) the TV's media session appears only with
+its first status update, 19 s after the load was accepted - the TV's
+player buffered the growing MP4 that long before its first picture - so
+0.9.47's "no media session right after the load" hint ("the TV did not
+respond") was premature; `watchCastMedia` now polls for the session and
+says "nothing playing" only after a minute without one. (2) The initial
+burst is 8 segments instead of 3 (relay `STREAM_BURST`), so the player has
+more frames to start on. The owner's history: HLS casting worked, flakily,
+on 0.9.13-0.9.20 with 4 s segments and never since 0.9.21's 1 s segments -
+the one change in what the TV received - so the receiver's HLS player most
+likely needs longer segments; the MP4 path sidesteps that.
+
 ## Cast, fourth round: the TV plays a growing MP4, not HLS (0.9.47, owner's log 2026-09-28 00:03)
 
 The 2026-09-28 log settled the split. The 6 s test pattern (a plain MP4

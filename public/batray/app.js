@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.47';
+export const APP_VERSION = '0.9.48';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -1673,24 +1673,29 @@ function wireCastState() {
   pc.addEventListener(E.IS_MEDIA_LOADED_CHANGED, () => report('media loaded change'));
   pc.addEventListener(E.MEDIA_INFO_CHANGED, () => report('media info change'));
 }
-/** Every status the TV reports for the loaded media (owner's log 2026-09-26: the load was accepted, the player said
- *  IDLE twice within a millisecond and nothing more was logged before the upload 6 s later; the TV showed the cast
- *  icon for a while and went dark - the receiver's own word on WHY is in these updates: idleReason ERROR /
- *  FINISHED / CANCELLED / INTERRUPTED, and a media session that vanishes). Polled too, in case no update comes. */
+/** Every status the TV reports for the loaded media. The 2026-09-28 log: the TV's media session appears only
+ *  with its FIRST status update, 19 s after the load was accepted (its player buffered the growing MP4 that long
+ *  before PLAYING), so "no media session right after the load" is normal, not a failure - the poll waits for it,
+ *  and only CAST_NO_MEDIA_MS without one says the TV reported nothing playing. */
+const CAST_NO_MEDIA_MS = 60000;
 function watchCastMedia(sess) {
-  const ms = sess.getMediaSession && sess.getMediaSession();
-  if (!ms) { log('cast: no media session after the load'); return; }
-  const t0 = Date.now(); let last = '';
-  const line = (why, alive) => {
-    const m = sess.getMediaSession && sess.getMediaSession();
-    const cur = m || ms;
-    const txt = `player=${cur.playerState || '-'}${cur.idleReason ? ' idle=' + cur.idleReason : ''} t=${Math.round((cur.getEstimatedTime ? cur.getEstimatedTime() : cur.currentTime) || 0)}s${m ? '' : ' (media session gone)'}${alive === false ? ' alive=false' : ''}`;
+  const t0 = Date.now(); let last = ''; let attached = false;
+  const line = (why, alive, m) => {
+    const txt = `player=${m.playerState || '-'}${m.idleReason ? ' idle=' + m.idleReason : ''} t=${Math.round((m.getEstimatedTime ? m.getEstimatedTime() : m.currentTime) || 0)}s${alive === false ? ' alive=false' : ''}`;
     if (why === 'poll' && txt === last) return; last = txt;
     log(`cast: tv ${why} +${Math.round((Date.now() - t0) / 1000)}s: ${txt}`);
   };
-  line('status', true);
-  try { ms.addUpdateListener((alive) => line('update', alive)); } catch (e) { log(`cast: no update listener: ${e.message}`); }
-  const poll = setInterval(() => { if (Date.now() - t0 > 120000 || !sess.getMediaSession) { clearInterval(poll); return; } line('poll', true); }, 3000);
+  const tick = () => {
+    const m = sess.getMediaSession && sess.getMediaSession();
+    if (m && !attached) {
+      attached = true; log(`cast: tv media session ${Math.round((Date.now() - t0) / 1000)} s after the load`);
+      try { m.addUpdateListener((alive) => line('update', alive, m)); } catch (e) { log(`cast: no update listener: ${e.message}`); }
+      line('status', true, m);
+    } else if (m) line('poll', true, m);
+    else if (Date.now() - t0 >= CAST_NO_MEDIA_MS) { log(`cast: no media session ${Math.round(CAST_NO_MEDIA_MS / 1000)} s after the load`); castHint(T.tvCastNoMedia); clearInterval(poll); return; }
+    if (Date.now() - t0 > 120000 || !sess.getMediaSession) clearInterval(poll);
+  };
+  const poll = setInterval(tick, 3000); tick();
 }
 const castDiscovery = (ms) => new Promise((ok) => { if (discoveryKnown(castS)) return ok(); const t = setTimeout(ok, ms); castWaiters.push(() => { clearTimeout(t); ok(); }); });
 // A 6 s H.264 test pattern (baseline profile, progressive MP4) served next to the app: if the TV plays this and not our
@@ -1762,11 +1767,9 @@ async function castToTv(opts = {}) {
     const dev = sess.getCastDevice ? sess.getCastDevice().friendlyName : '';
     log(`cast: loadMedia(${testVideo ? 'test video' : 'stream mp4'}) resolved with ${rc === undefined || rc === null ? 'no error' : JSON.stringify(rc)} on "${dev}"${testVideo ? '' : ` (${tv.state.segs} segments on the relay)`} - watching its player state`);
     if (rc) throw new Error(`load refused: ${JSON.stringify(rc)}`);
-    const ms = sess.getMediaSession && sess.getMediaSession();
     watchCastMedia(sess);
-    const hint = ms ? T.tvCastConnected(dev) : T.tvCastNoMedia;
-    endFlow('done', hint); castHint(hint);
-    toast(hint, 8000);
+    endFlow('done', T.tvCastConnected(dev)); castHint(T.tvCastConnected(dev));
+    toast(T.tvCastConnected(dev), 8000);
   } catch (e) {
     const msg = e && (e.message || e.code || String(e));
     const kind = castErrorDecision(msg);
