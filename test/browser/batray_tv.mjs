@@ -118,7 +118,7 @@ check('status line, status-bar note and link are set; the preview follows the br
 await evalJs(`
   window.__castLoads = []; window.__castReq = 0; window.__castScript = 0; window.__castNoSession = true; window.__castHang = false; window.__castMedia = null;
   const dev = { friendlyName: 'Living room TV' };
-  const sess = { getCastDevice: () => dev, getMediaSession: () => window.__castMedia, addMessageListener: (ns, f) => { window.__castMsgNs = ns; }, loadMedia: async (req) => { window.__castMedia = window.__castMedia || { idleReason: null, playerState: 'BUFFERING' }; window.__castLoads.push({ url: req.media.contentId, type: req.media.contentType, stream: req.media.streamType, seg: req.media.hlsSegmentFormat, vseg: req.media.hlsVideoSegmentFormat, autoplay: req.autoplay, title: req.media.metadata && req.media.metadata.title }); } };
+  const sess = { getCastDevice: () => dev, getMediaSession: () => window.__castMedia, addMessageListener: (ns, f) => { window.__castMsgNs = ns; }, loadMedia: async (req) => { window.__castLoads.push({ url: req.media.contentId, type: req.media.contentType, stream: req.media.streamType, seg: req.media.hlsSegmentFormat, vseg: req.media.hlsVideoSegmentFormat, autoplay: req.autoplay, title: req.media.metadata && req.media.metadata.title }); } };
   const listeners = {};
   const ctx = { opts: null, state: 'NOT_CONNECTED',
     setOptions(o) { this.opts = o; setTimeout(() => ctx.emit('NOT_CONNECTED'), 0); setTimeout(() => ctx.emit('NO_DEVICES_AVAILABLE'), 300); setTimeout(() => ctx.emit('NOT_CONNECTED'), 400); },
@@ -150,8 +150,21 @@ const mid = await evalJs(`(async () => {
 })()`);
 check('from the tap on, a progress sheet says it is looking for TVs with the seconds left and a Cancel, both Cast buttons are greyed with the wait icon, and taps meanwhile do nothing', mid.sheet && mid.title === 'Cast to TV' && /looking for TVs on this Wi-Fi… \(\d+ s left\)/.test(mid.lead) && mid.bar && mid.acts.join() === 'cancel' && mid.busy.every(Boolean) && mid.waitIcon === 'block' && mid.castIcon === 'none' && mid.req === 0 && mid.taps.length === 0 && mid.flow.busy && mid.flow.phase === 'looking' && /looking for TVs/.test(mid.hint), mid);
 await sleep(1400);
-const done = await evalJs(`({ sheet: !document.getElementById('sheet').hidden, busy: [document.getElementById('tvCast').disabled, document.getElementById('tvCast').classList.contains('busy')], flow: window.__batrayTest.castFlow() })`);
-check('once the TV took the stream the sheet is gone and the buttons are back', !done.sheet && !done.busy[0] && !done.busy[1] && !done.flow.busy && !done.flow.requestAt, done);
+// owner 2026-09-28: the sheet does not drop away when the TV accepts the load - it waits for the TV's player (a
+// minute at most), follows each state, and a result stays on the screen until the user closes it
+const sheetFields = `sheet: !document.getElementById('sheet').hidden, lead: document.getElementById('sheetLead').textContent, bar: !document.getElementById('sheetProg').hidden, acts: [...document.querySelectorAll('#sheet [data-act]')].map((x) => x.dataset.act), busy: [document.getElementById('tvCast').disabled, document.getElementById('tvCast').classList.contains('busy'), document.getElementById('tvCastOverlay').classList.contains('busy')], flow: window.__batrayTest.castFlow(), hint: document.getElementById('tvCastHint').textContent`;
+const sheetNow = `({ ${sheetFields} })`;
+const wait = await evalJs(sheetNow);
+check('once the TV took the stream the sheet stays: "sent to <TV> - waiting for its player" with the minute clock and a Cancel, the buttons still greyed', wait.sheet && /sent to Living room TV - waiting for its player… \((5\d|60) s left\)/.test(wait.lead) && wait.bar && wait.acts.join() === 'cancel' && wait.busy.every(Boolean) && wait.flow.busy && wait.flow.phase === 'waiting' && !wait.flow.requestAt && /Living room TV/.test(wait.hint), wait);
+await evalJs(`window.__castPlayer('BUFFERING'); 1`); await sleep(150);
+const buf = await evalJs(sheetNow);
+check('the TV reports BUFFERING: the sheet says so and keeps the clock', buf.sheet && /Living room TV is buffering… \(\d+ s left\)/.test(buf.lead) && buf.bar && buf.flow.busy && buf.flow.phase === 'buffering', buf);
+await evalJs(`window.__castPlayer('PLAYING'); 1`); await sleep(150);
+const pl = await evalJs(sheetNow);
+check('the TV reports PLAYING: the sheet shows "playing on <TV>" with a Close instead of a clock, the buttons are back while the sheet stays for the user to read', pl.sheet && /playing on Living room TV \(\d+ s\)/.test(pl.lead) && !pl.bar && pl.acts.join() === 'ok' && pl.busy.every((x) => !x) && !pl.flow.busy && pl.flow.phase === 'playing' && /TV player: playing/.test(pl.hint), pl);
+await evalJs(`[...document.querySelectorAll('#sheet [data-act]')].find((x) => x.dataset.act === 'ok').click(); 1`); await sleep(200);
+const done = await evalJs(sheetNow);
+check('Close puts the sheet away and the flow is idle', !done.sheet && !done.flow.busy && done.flow.phase === null && !done.flow.requestAt && !done.busy[0], done);
 const cst = await evalJs(`({ loads: window.__castLoads, req: window.__castReq, script: window.__castScript, hint: document.getElementById('tvCastHint').textContent.replace(/^Cast to TV - /, ''), opts: window.cast.framework.CastContext.getInstance().opts, scripts: [...document.scripts].filter((s) => /gstatic/.test(s.src)).length, log: window.__batrayTest.logLines().filter((l) => /cast:/.test(l)).slice(-8) })`);
 check('Cast loads the growing MP4 as a live video/mp4 on the default media receiver (not the HLS playlist) and names the TV', cst.loads.length === 1 && cst.loads[0].url === url.replace(/index\.m3u8$/, 'stream.mp4') && cst.loads[0].type === 'video/mp4' && cst.loads[0].stream === 'LIVE' && cst.loads[0].seg === undefined && cst.loads[0].autoplay === true && /BatRay/.test(cst.loads[0].title) && cst.opts.receiverApplicationId === 'CC1AD845' && /Living room TV/.test(cst.hint) && cst.scripts === 0 && cst.script === 1, cst);
 check('...the picker opened only after the availability flipped (NO_DEVICES seen first), one request', cst.req === 1 && cst.log.some((l) => /state NO_DEVICES_AVAILABLE/.test(l)) && cst.log.some((l) => /loadMedia\(stream mp4\) resolved with no error on "Living room TV"/.test(l)) && (await evalJs('window.__castMsgNs')) === 'urn:x-cast:com.google.cast.media', cst.log);
@@ -168,8 +181,27 @@ await evalJs(`[...document.querySelectorAll('#sheet [data-act]')].find((x) => x.
 await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(300);
 const b2 = await evalJs(`({ req: window.__castReq, hint: document.getElementById('tvCastHint').textContent.replace(/^Cast to TV - /, ''), log: window.__batrayTest.logLines().filter((l) => /cast:/.test(l)).slice(-3) })`);
 await evalJs(`window.__castRelease(); 1`); await sleep(400);                                            // the user finally picked: the flow completes on its own
-const rel = await evalJs(`({ loads: window.__castLoads.length, busy: document.getElementById('tvCast').disabled, flow: window.__batrayTest.castFlow() })`);
-check('a pending picker request blocks a second one and says what to do; when the list finally answers the stream is sent and the buttons come back', /pick your TV/.test(h1) && b2.req === 2 && /reload the page/.test(b2.hint) && b2.log.some((l) => /cancelled by the user \(picking\)/.test(l)) && rel.loads === 2 && !rel.busy && !rel.flow.busy && !rel.flow.requestAt, { h1, ...b2 });
+const rel = await evalJs(`({ loads: window.__castLoads.length, busy: document.getElementById('tvCast').disabled, flow: window.__batrayTest.castFlow(), sheet: !document.getElementById('sheet').hidden, hint: document.getElementById('tvCastHint').textContent, log: window.__batrayTest.logLines().filter((l) => /although the user had cancelled/.test(l)) })`);
+check('a pending picker request blocks a second one and says what to do; when the list finally answers the stream is still sent (the user had cancelled: hint only, no sheet, the buttons free)', /pick your TV/.test(h1) && b2.req === 2 && /reload the page/.test(b2.hint) && b2.log.some((l) => /cancelled by the user \(picking\)/.test(l)) && rel.loads === 2 && !rel.busy && !rel.flow.busy && rel.flow.phase === null && !rel.flow.requestAt && !rel.sheet && /sent to Living room TV/.test(rel.hint) && rel.log.length === 1, { h1, ...b2, rel });
+// the silent TV: nothing plays within the (shortened) minute - the sheet settles on the "nothing playing" text with a
+// Close, the buttons come back, the log says so; Close ends it
+await evalJs(`window.__castNoSession = true; window.__castHang = false; window.__batrayTest.castTimeouts(0, 1500); 1`);
+await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(700);
+const w1 = await evalJs(sheetNow);
+check('a fresh tap with the session gone: the flow reaches "waiting" again', w1.sheet && w1.flow.busy && w1.flow.phase === 'waiting', w1);
+await sleep(1700);
+const silent = await evalJs(`({ ${sheetFields}, log: window.__batrayTest.logLines().filter((l) => /cast: (the TV showed nothing|no media session|settled)/.test(l)).slice(-3) })`);
+check('a TV that shows nothing playing within the wait: the sheet says so with a Close, the buttons are free, the log names it', silent.sheet && /reported nothing playing for a minute/.test(silent.lead) && !silent.bar && silent.acts.join() === 'ok' && silent.busy.every((x) => !x) && !silent.flow.busy && silent.flow.phase === 'nomedia' && silent.log.some((l) => /settled -> nomedia/.test(l)), silent);
+await evalJs(`[...document.querySelectorAll('#sheet [data-act]')].find((x) => x.dataset.act === 'ok').click(); 1`); await sleep(200);
+const silentDone = await evalJs(sheetNow);
+check('...Close puts it away', !silentDone.sheet && silentDone.flow.phase === null, silentDone);
+// a clean cancel while waiting (owner 2026-09-28): the sheet goes, the buttons come back, the TV keeps whatever it plays
+await evalJs(`window.__castNoSession = true; window.__castHang = false; window.__batrayTest.castTimeouts(0, 60000); 1`);
+await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(700);
+const w2 = await evalJs(sheetNow);
+await evalJs(`[...document.querySelectorAll('#sheet [data-act]')].find((x) => x.dataset.act === 'cancel').click(); 1`); await sleep(200);
+const canc = await evalJs(`({ ${sheetFields}, log: window.__batrayTest.logLines().filter((l) => /cast: sheet closed by the user/.test(l)).slice(-1) })`);
+check('Cancel while waiting for the TV: the sheet goes, the buttons come back, the flow is idle, the log says the user closed it', w2.sheet && w2.flow.phase === 'waiting' && !canc.sheet && !canc.flow.busy && canc.flow.phase === null && canc.busy.every((x) => !x) && canc.log.length === 1, { w2, canc });
 // C: the TV's own player state reaches the hint and the log
 await evalJs(`window.__castNoSession = false; window.__castPlayer('PLAYING'); 1`); await sleep(100);
 const c1 = await evalJs(`document.getElementById('tvCastHint').textContent`);
@@ -182,13 +214,14 @@ const icons = await evalJs(`(async () => {
   const T = window.__batrayTest; const b = document.getElementById('tvCast'), o = document.getElementById('tvCastOverlay');
   const before = T.logLines().length;
   o.click(); await new Promise((r) => setTimeout(r, 300));
-  return { rowSvg: !!b.querySelector('svg.casticon'), rowText: b.textContent.trim(), rowLabel: b.getAttribute('aria-label'), overSvg: !!o.querySelector('svg.casticon'), overLabel: o.getAttribute('aria-label'), overOnVideo: o.parentElement === document.getElementById('tvVideo').parentElement, rawHint: document.getElementById('tvCastHint').textContent, size: [o.getBoundingClientRect().width, b.getBoundingClientRect().width], logs: T.logLines().slice(before).filter((l) => /^.{14}cast:/.test(l)) };
+  const waiting = T.castFlow().phase; const ok = [...document.querySelectorAll('#sheet [data-act]')].find((x) => x.dataset.act === 'cancel'); if (ok) ok.click(); await new Promise((r) => setTimeout(r, 200));   // the load put the sheet in "waiting"; close it
+  return { waiting, rowSvg: !!b.querySelector('svg.casticon'), rowText: b.textContent.trim(), rowLabel: b.getAttribute('aria-label'), overSvg: !!o.querySelector('svg.casticon'), overLabel: o.getAttribute('aria-label'), overOnVideo: o.parentElement === document.getElementById('tvVideo').parentElement, rawHint: document.getElementById('tvCastHint').textContent, size: [o.getBoundingClientRect().width, b.getBoundingClientRect().width], logs: T.logLines().slice(before).filter((l) => /^.{14}cast:/.test(l)) };
 })()`);
-check('both Cast buttons are the cast icon with the name "Cast to TV", the overlay sits on the preview, the hint line carries the words, and the overlay runs the same Cast flow', icons.rowSvg && icons.rowText === '' && icons.rowLabel === 'Cast to TV' && icons.overSvg && icons.overLabel === 'Cast to TV' && icons.overOnVideo && /^Cast to TV - /.test(icons.rawHint) && icons.size[0] >= 40 && icons.size[1] >= 40 && icons.logs.some((l) => /cast: tap -> load-media/.test(l)), icons);
+check('both Cast buttons are the cast icon with the name "Cast to TV", the overlay sits on the preview, the hint line carries the words, and the overlay runs the same Cast flow', icons.rowSvg && icons.rowText === '' && icons.rowLabel === 'Cast to TV' && icons.overSvg && icons.overLabel === 'Cast to TV' && icons.overOnVideo && /^Cast to TV - /.test(icons.rawHint) && icons.size[0] >= 40 && icons.size[1] >= 40 && icons.logs.some((l) => /cast: tap -> load-media/.test(l)) && icons.waiting === 'waiting', icons);
 
 // the test-pattern cast (owner 2026-09-27: the TV showed only the blue icon): a plain MP4 next to the app, so the
 // TV, the session and the host are proved apart from the live stream; the receiver's media messages are listened to
-const tst = await evalJs(`(async () => { const T = window.__batrayTest; const before = T.logLines().length; const n = window.__castLoads.length; document.getElementById('tvCastTest').click(); await new Promise((r) => setTimeout(r, 400)); const l = window.__castLoads[window.__castLoads.length - 1]; return { added: window.__castLoads.length - n, url: l && l.url, type: l && l.type, stream: l && l.stream, title: l && l.title, logs: T.logLines().slice(before).filter((x) => /cast:/.test(x)) }; })()`);
+const tst = await evalJs(`(async () => { const T = window.__batrayTest; const before = T.logLines().length; const n = window.__castLoads.length; document.getElementById('tvCastTest').click(); await new Promise((r) => setTimeout(r, 400)); const l = window.__castLoads[window.__castLoads.length - 1]; const c = [...document.querySelectorAll('#sheet [data-act]')].find((x) => x.dataset.act === 'cancel'); if (c) c.click(); await new Promise((r) => setTimeout(r, 200)); return { added: window.__castLoads.length - n, url: l && l.url, type: l && l.type, stream: l && l.stream, title: l && l.title, logs: T.logLines().slice(before).filter((x) => /cast:/.test(x)) }; })()`);
 check('the test-pattern link casts the 6 s MP4 served next to the app as a buffered video/mp4, and the load result is logged', tst.added === 1 && /\/batray\/test-tv(\.[0-9a-f]+)?\.mp4$/.test(tst.url || '') && tst.type === 'video/mp4' && tst.stream === 'BUFFERED' && /test pattern/.test(tst.title) && tst.logs.some((l) => /loadMedia\(test video\) resolved with no error/.test(l)), tst);
 const mp4 = await evalJs(`fetch(new URL('./test-tv.mp4', document.querySelector('script[src*="app."]') ? document.querySelector('script[src*="app."]').src : location.href).href).then((r) => ({ ok: r.ok, type: r.headers.get('content-type'), len: +r.headers.get('content-length') }))`).catch((e) => ({ err: e.message }));
 check('the test pattern is served as video/mp4 and is small', mp4.ok && /video\/mp4/.test(mp4.type || '') && mp4.len > 100000 && mp4.len < 600000, mp4);

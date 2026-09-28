@@ -120,11 +120,13 @@ export function sheetModel(kind, ctx, T) {
       break;
     }
     case 'casting': {                                    // the Cast tap flow (owner ask 2026-09-26): phase, seconds left, Cancel
-      const c = ctx.cast || {}; const phase = c.phase || 'loading';
-      const lead = { loading: T.castLoading, looking: T.castLooking, picking: T.castPicking, sending: T.castSending }[phase] || T.castLoading;
-      m.title = T.tvCast; m.lead = phase === 'picking' ? lead : `${lead} ${T.castLeft(c.leftS === undefined ? 0 : c.leftS)}`;
-      if (phase !== 'picking') m.progress = c.pct || 0;
-      m.actions = [{ id: 'cancel', label: T.cancel, primary: false }];
+      const c = ctx.cast || {}; const phase = c.phase || 'loading'; const dev = c.dev || '';
+      const lead = { loading: T.castLoading, looking: T.castLooking, picking: T.castPicking, sending: T.castSending, waiting: T.castWaiting(dev), buffering: T.castBuffering(dev), playing: T.castPlaying(dev, c.tvT || 0), nomedia: T.tvCastNoMedia, error: T.tvCastTvError(dev) }[phase] || T.castLoading;
+      const clock = phase === 'loading' || phase === 'looking' || phase === 'waiting' || phase === 'buffering';   // picking is in the user's hands, a result has no clock
+      m.title = T.tvCast; m.lead = clock ? `${lead} ${T.castLeft(c.leftS === undefined ? 0 : c.leftS)}` : lead;
+      if (clock) m.progress = c.pct || 0;
+      const settled = phase === 'playing' || phase === 'nomedia' || phase === 'error';
+      m.actions = settled ? [{ id: 'ok', label: T.close, primary: true }] : [{ id: 'cancel', label: T.cancel, primary: false }];
       break;
     }
     case 'browse': {                                     // one kind of storage, file by file, each with its own Delete (owner ask 2026-09-23)

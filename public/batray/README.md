@@ -89,6 +89,34 @@ after the TV shows the icon) says which. Collapsing the TV card pauses and
 unloads the preview; expanding it loads the preview again at the live edge
 (the old preview sat on a position the 30 s window had left behind).
 
+## The Cast sheet follows the TV (0.9.49, owner ask 2026-09-28)
+
+"Make sure the progress dialog updates its status at each state and waits
+the full minute, clean cancel, not drop away for the user to read the
+state under the mini view like before." Until 0.9.48 the sheet closed the
+moment the TV accepted the load and the TV's player state went only to
+the one-line hint under the icon. Now the accepted load is a phase, not
+the end: `castFlowPhase(cs, 'waiting', now)` restarts the clock,
+`castPhaseBudgetMs` gives each phase its budget (loading / looking 20 s,
+waiting / buffering `CAST_TV_WAIT_MS` = 60 s, picking and the results
+none), `castTvUpdate(cs, playerState, idleReason)` turns the receiver's
+states into decisions (BUFFERING -> 'buffering' keeps the clock, PLAYING
+-> 'playing', IDLE with idleReason ERROR -> 'error', anything else
+nothing), and `castSettle(cs, result)` ends the flow (buttons free at
+once) while the sheet keeps the result - "playing on <TV> (88 s)", the
+"nothing playing for a minute" text, or the TV error - with a Close
+button until the user closes it. Every player state, from the RemotePlayer
+events and the 3 s media-session poll alike, goes through `castTvSeen()`
+in app.js. Cancel while waiting closes the sheet and frees the buttons;
+the TV keeps whatever it plays and the hint keeps following it. A late
+answer from a cancelled picker still loads the stream but only writes
+the hint (no sheet re-opens). Log lines `cast: settled -> <result>`,
+`cast: the TV showed nothing playing within 60 s`, `cast: sheet closed by
+the user while waiting`. Replays in batray_cast.test.js (the 00:55 log:
+media 19 s after the load), the sheet leads in batray_ui.test.js, the
+whole run over the stub library in browser/batray_tv.mjs (waiting ->
+buffering -> playing -> Close, the silent TV, a clean cancel).
+
 ## Cast works: the growing MP4 plays on the TV (0.9.48, owner's log 2026-09-28 00:55)
 
 Verified on the owner's Family Room TV: the receiver reported PLAYING with

@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, CAST_DISCOVERY_WAIT_MS, CAST_FLOW_TIMEOUT_MS, castFlowStart, castFlowPhase, castFlowEnd, castProgress, castButtons, castStateUi, castTapAllowed, CAST_FLIP_WAIT_MS } from '../public/batray/cast-logic.js';
+import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, CAST_DISCOVERY_WAIT_MS, CAST_FLOW_TIMEOUT_MS, castFlowStart, castFlowPhase, castFlowEnd, castProgress, castButtons, castStateUi, castTapAllowed, CAST_FLIP_WAIT_MS, castSettle, castPhaseBudgetMs, castTvUpdate, CAST_TV_WAIT_MS } from '../public/batray/cast-logic.js';
 
 test('new phone: the loading tap waits for discovery; the flip 6 s in is past the tap, so it asks for another; the next tap requests once; a third tap while pending does not', () => {
   const cs = castState(); const t0 = 1000;
@@ -108,4 +108,38 @@ test('the tap flow (owner 2026-09-26): from the tap on, a second tap is "busy", 
   assert.deepEqual(castButtons(cs), { disabled: false, busy: false }); assert.equal(castStateUi(cs), 'hint'); assert.equal(castTapAllowed(cs), true);
   assert.equal(castProgress(cs, t(99)).pct, 0, 'no flow, no progress');
   assert.equal(CAST_FLOW_TIMEOUT_MS, 20000); assert.equal(CAST_DISCOVERY_WAIT_MS, 20000);
+});
+
+test('the TV wait (owner 2026-09-28, "waits the full minute, clean cancel, not drop away"): after the accepted load the flow stays busy in "waiting" on its own 60 s clock, BUFFERING is progress, PLAYING settles it with the sheet still up and the buttons free, 60 s without a player is "nomedia" - replay of the 00:55 log where the media session came 19 s after the load', () => {
+  const cs = castState(); const t = (s) => Math.round(s * 1000);
+  assert.equal(castPhaseBudgetMs('loading'), 20000); assert.equal(castPhaseBudgetMs('looking'), 20000);
+  assert.equal(castPhaseBudgetMs('picking'), 0); assert.equal(castPhaseBudgetMs('sending'), 0);
+  assert.equal(castPhaseBudgetMs('waiting'), CAST_TV_WAIT_MS); assert.equal(castPhaseBudgetMs('buffering'), CAST_TV_WAIT_MS); assert.equal(CAST_TV_WAIT_MS, 60000);
+  assert.equal(castPhaseBudgetMs('playing'), 0); assert.equal(castPhaseBudgetMs('nomedia'), 0);
+  castFlowStart(cs, t(0), 'loading'); castFlowPhase(cs, 'picking'); const tok = castRequestStarted(cs, t(3));
+  castFlowPhase(cs, 'sending'); castRequestEnded(cs, tok);
+  assert.deepEqual(castProgress(cs, t(30)), { pct: 0, leftS: 0, timedOut: false }, 'sending has no clock');
+  castFlowPhase(cs, 'waiting', t(30));                                            // loadMedia accepted at +30 s: the clock restarts
+  assert.equal(cs.since, t(30));
+  assert.deepEqual(castButtons(cs), { disabled: true, busy: true }, 'still busy while the TV is silent');
+  assert.equal(castStateUi(cs), 'sheet');
+  assert.deepEqual(castProgress(cs, t(45)), { pct: 25, leftS: 45, timedOut: false });
+  assert.equal(castTvUpdate(cs, 'IDLE', undefined), 'none', 'IDLE without a reason (the receiver before the media) changes nothing');
+  assert.equal(castTvUpdate(cs, 'BUFFERING', undefined), 'buffering');
+  castFlowPhase(cs, 'buffering');
+  assert.equal(castProgress(cs, t(49)).pct, 32, 'buffering keeps the waiting clock');
+  assert.equal(castTvUpdate(cs, 'PLAYING', undefined), 'playing');                 // +19 s in the log
+  castSettle(cs, 'playing');
+  assert.deepEqual(castButtons(cs), { disabled: false, busy: false }, 'the buttons come back at once');
+  assert.equal(castTapAllowed(cs), true);
+  assert.equal(cs.phase, 'playing', 'the sheet keeps the result until the user closes it');
+  assert.deepEqual(castProgress(cs, t(99)), { pct: 0, leftS: 0, timedOut: false });
+  assert.equal(castTvUpdate(cs, 'BUFFERING', undefined), 'none', 'a settled flow ignores later states');
+  castFlowEnd(cs); assert.equal(cs.phase, null);
+  // the silent TV
+  castFlowStart(cs, t(100), 'waiting');
+  assert.deepEqual(castProgress(cs, t(159)), { pct: 98, leftS: 1, timedOut: false });
+  assert.deepEqual(castProgress(cs, t(160)), { pct: 100, leftS: 0, timedOut: true }, 'a minute without a player');
+  assert.equal(castTvUpdate(cs, 'IDLE', 'ERROR'), 'error');
+  castSettle(cs, 'nomedia'); assert.equal(castStateUi(cs), 'hint'); assert.equal(cs.phase, 'nomedia');
 });

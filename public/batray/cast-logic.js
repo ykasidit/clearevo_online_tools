@@ -33,7 +33,7 @@ export const CAST_DISCOVERY_WAIT_MS = CAST_FLOW_TIMEOUT_MS;
 // A 20 s wait for it (0.9.45) was 20 s of "looking for TVs" for nothing.
 export const CAST_FLIP_WAIT_MS = 4000;
 
-export function castState() { return { events: 0, flipped: false, castState: null, requestAt: 0, busy: false, phase: null, since: 0 }; }
+export function castState() { return { events: 0, flipped: false, castState: null, requestAt: 0, busy: false, phase: null, since: 0, dev: '', tvT: 0 }; }
 
 // ---- the tap flow as the user sees it (owner 2026-09-26: "after the first tap there is no way to know that it is
 // searching or waiting, so the user presses again"): one progress sheet from the tap to the TV's answer, phases
@@ -42,14 +42,37 @@ export function castState() { return { events: 0, flipped: false, castState: nul
 /** May a tap start the flow? Not while one runs (the buttons are greyed then; a programmatic tap is ignored). */
 export function castTapAllowed(cs) { return !cs.busy; }
 export function castFlowStart(cs, now, phase = 'loading') { cs.busy = true; cs.phase = phase; cs.since = now; }
-export function castFlowPhase(cs, phase) { cs.phase = phase; }
-export function castFlowEnd(cs) { cs.busy = false; cs.phase = null; cs.since = 0; }
+/** Next phase; with `now` the clock restarts (the TV wait has its own budget, counted from the accepted load). */
+export function castFlowPhase(cs, phase, now) { cs.phase = phase; if (now !== undefined) cs.since = now; }
+export function castFlowEnd(cs) { cs.busy = false; cs.phase = null; cs.since = 0; cs.tvT = 0; }
+/** The flow is over but the sheet stays with the result ('playing' | 'nomedia' | 'error') until the user closes it
+ *  (owner 2026-09-28: "not drop away, let the user read the state"); the buttons come back at once. */
+export function castSettle(cs, result) { cs.busy = false; cs.phase = result; cs.since = 0; }
+// How long each phase may take before the sheet gives up: the library and the TV list 20 s, the TV's player 60 s
+// (the owner's TV buffered 19 s before its first picture, log 2026-09-28); picking is in the user's hands.
+export const CAST_TV_WAIT_MS = 60000;
+export function castPhaseBudgetMs(phase) {
+  if (phase === 'loading' || phase === 'looking') return CAST_FLOW_TIMEOUT_MS;
+  if (phase === 'waiting' || phase === 'buffering') return CAST_TV_WAIT_MS;
+  return 0;
+}
+/** What the TV's player state means for a flow waiting on it: 'playing' settles it, 'buffering' is progress,
+ *  'error' (IDLE with idleReason ERROR) settles it as a failure, anything else changes nothing. */
+export function castTvUpdate(cs, playerState, idleReason) {
+  if (!cs.busy || (cs.phase !== 'waiting' && cs.phase !== 'buffering')) return 'none';
+  if (playerState === 'PLAYING') return 'playing';
+  if (playerState === 'BUFFERING') return 'buffering';
+  if (playerState === 'IDLE' && idleReason === 'ERROR') return 'error';
+  return 'none';
+}
 /** Progress of the running flow: percent of the budget used, seconds left, and whether the budget is spent. The
  *  picking phase never times out (the user is in Google's list). */
-export function castProgress(cs, now, timeoutMs = CAST_FLOW_TIMEOUT_MS) {
-  const el = cs.busy ? Math.max(0, now - cs.since) : 0;
-  const timesOut = cs.phase === 'loading' || cs.phase === 'looking';
-  return { pct: Math.min(100, Math.round(el * 100 / timeoutMs)), leftS: Math.max(0, Math.ceil((timeoutMs - el) / 1000)), timedOut: timesOut && el >= timeoutMs };
+export function castProgress(cs, now, timeoutMs) {
+  const budget = timeoutMs === undefined ? castPhaseBudgetMs(cs.phase) : timeoutMs;
+  const el = cs.busy && budget ? Math.max(0, now - cs.since) : 0;
+  const timesOut = castPhaseBudgetMs(cs.phase) > 0;
+  if (!budget) return { pct: 0, leftS: 0, timedOut: false };
+  return { pct: Math.min(100, Math.round(el * 100 / budget)), leftS: Math.max(0, Math.ceil((budget - el) / 1000)), timedOut: timesOut && el >= budget };
 }
 /** Both Cast buttons: greyed with the wait icon while the flow runs or a picker request is still open. */
 export function castButtons(cs) { const busy = cs.busy || !!cs.requestAt; return { disabled: busy, busy }; }
