@@ -22,7 +22,7 @@
 // share link's URL fragment, whichever path carries it. The relay Worker at
 // /batray/api/ holds the SFU secret, routes signalling, and counts how many
 // sockets are on an SFU/TURN path against the free cap.
-import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, SIG_DEAD_MS, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect, readerPresent, FRESH_MS } from './live-logic.js';
+import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, SIG_DEAD_MS, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect, readerPresent, FRESH_MS, sfuFailureDecision } from './live-logic.js';
 
 const API = '/batray/api';
 const P2P_WAIT_MS = 7000;      // viewer waits this long for a direct offer/connection before using the SFU
@@ -426,9 +426,10 @@ export class Viewer {
     const pubSession = this.pubSession;
     this.sfuTask = (async () => {
       this.teardownSfu();
+      let s = null;                                                          // this attempt; the catch asks whether it is still the current one
       try {
         const pc = new RTCPeerConnection(await iceServers(this.relayOnly));
-        const s = { pc, dc: null, ac: null, session: null };
+        s = { pc, dc: null, ac: null, session: null };
         this.sfu = s;
         const { sessionId } = await j('sfu/session', { method: 'POST' });
         s.session = sessionId;
@@ -453,12 +454,13 @@ export class Viewer {
           }
         });
       } catch (err) {
-        if (this.stopped) return;
-        const full = err.status === 429;
-        if (!full && !this.relayOnly && /not connected|connection failed/.test(err.message)) { this.relayOnly = true; this.log('live: UDP path failed, next attempt via TURN relay'); }
-        this.state.error = full ? `server full (${err.body.conns}/${err.body.limit})` : err.message;
+        const d = sfuFailureDecision({ stopped: this.stopped, mine: !!s && this.sfu === s, p2pOpen: !!(this.p2p && this.p2p.open), status: err.status, message: err.message, relayOnly: this.relayOnly });
+        if (d.action === 'stop') return;
+        if (d.action === 'ignore') { this.log(`live: SFU attempt dropped, ${d.why}: ${err.message}`); return; }   // the state belongs to the link that won
+        if (d.toRelay) { this.relayOnly = true; this.log('live: UDP path failed, next attempt via TURN relay'); }
+        this.state.error = d.full ? `server full (${err.body.conns}/${err.body.limit})` : err.message;
         this.log('live: ' + this.state.error);
-        this.scheduleRetry(full ? FULL_RETRY_S : RETRY_S);
+        this.scheduleRetry(d.full ? FULL_RETRY_S : RETRY_S);
       }
     })();
     try { await this.sfuTask; } finally { this.sfuTask = null; }
@@ -477,7 +479,7 @@ export class Viewer {
     } catch { if (!this.state.error) this.log('live: a message could not be decrypted (wrong or missing key)'); this.state.error = 'cannot decrypt: wrong or missing key'; this.emit(); }
   }
   scheduleRetry(seconds) {
-    if (this.stopped) return;
+    if (this.stopped || (this.p2p && this.p2p.open)) return;                 // nothing to retry while the direct link carries the stream
     this.state.live = false; this.sig.reportPath('none'); this.teardownSfu();
     this.clearRetry();
     this.cancelRetry = countdown(seconds, (left) => { this.state.retryIn = left; this.emit(); }, () => { this.cancelRetry = null; this.state.retryIn = null; this.subscribe(); });

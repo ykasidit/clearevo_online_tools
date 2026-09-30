@@ -61,7 +61,7 @@ export function loadSettings(stored) {
   return s;
 }
 
-/** Is the condition of `rule` true for this pack sample? sample: { soc, current, cellDelta, ageS, connected, alarm }, at: Date */
+/** Is the condition of `rule` true for this pack sample? sample: { soc, current, cellDelta, ageS, connected, alarm, ownLinkDown }, at: Date */
 export function conditionHolds(rule, cfg, sample, at) {
   switch (rule.kind) {
     case 'below': return sample.soc !== null && sample.soc !== undefined && sample.soc < cfg.value;
@@ -84,8 +84,14 @@ export function conditionHolds(rule, cfg, sample, at) {
  * due at this tick. Call `tick(packId, sample, now)` every few seconds.
  * Each event: { rule, packId, packName, event: 'fire'|'repeat'|'recover', priority, value, sample }
  */
+// A gap between ticks longer than this means the page itself was frozen or asleep (Android freezes a hidden tab
+// for hours): the silence was ours, not the BMS's. The viewer log of 2026-09-30 fired "no data for over 5 min" and
+// "recovered" 4 s apart on every resume. Silence counts only while this page has been awake and its link up.
+export const TICK_GAP_S = 30;
 export class Evaluator {
-  constructor(settings) { this.settings = settings; this.state = new Map(); }
+  constructor(settings) { this.settings = settings; this.state = new Map(); this.lastAbleAt = null; this.awakeSince = null; }
+  /** Seconds this page has been able to receive: ticking without a gap, and (a viewer) with its link up. */
+  watchedS(now) { return this.awakeSince === null ? 0 : (now - this.awakeSince) / 1000; }
   setSettings(s) { this.settings = s; }
   key(packId, ruleId) { return `${packId}|${ruleId}`; }
   forget(packId) { for (const k of [...this.state.keys()]) if (k.startsWith(packId + '|')) this.state.delete(k); }
@@ -93,11 +99,14 @@ export class Evaluator {
   tick(packId, packName, sample, now = Date.now()) {
     const out = [];
     const at = new Date(now);
+    const able = !sample.ownLinkDown;
+    if (able) { if (this.lastAbleAt === null || now - this.lastAbleAt > TICK_GAP_S * 1000) this.awakeSince = now; this.lastAbleAt = now; }
     for (const rule of RULES) {
       const cfg = this.settings.rules[rule.id];
       const k = this.key(packId, rule.id);
       const st = this.state.get(k) || { since: null, firedAt: null, lastAt: null };
-      const holds = !!cfg.on && conditionHolds(rule, cfg, sample, at);
+      if (rule.kind === 'silent' && !able) continue;                        // our own link is down: the BMS's silence cannot be judged, keep the state as is
+      const holds = !!cfg.on && conditionHolds(rule, cfg, sample, at) && (rule.kind !== 'silent' || this.watchedS(now) > cfg.value);
       if (holds) {
         if (st.since === null) st.since = now;
         const heldS = (now - st.since) / 1000;

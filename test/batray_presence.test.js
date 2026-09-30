@@ -19,7 +19,7 @@
 // the publisher re-registers its session on every socket reopen.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readerPresent, dataFlowing, FRESH_MS, makeKeyB64, importKey, encrypt, envelope, sigDecision, SIG_PING_MS, SIG_DEAD_MS } from '../public/batray/live-logic.js';
+import { readerPresent, dataFlowing, FRESH_MS, makeKeyB64, importKey, encrypt, envelope, sigDecision, SIG_PING_MS, SIG_DEAD_MS, sfuFailureDecision } from '../public/batray/live-logic.js';
 
 // ---- fakes for the browser globals live.js touches ----
 const sockets = [];
@@ -178,4 +178,44 @@ test('2026-09-22 reader log: the signalling socket pings the relay every 10 s an
   assert.ok(logs.some((m) => /the socket is dead, reopening/.test(m)), logs.slice(-3));
   assert.ok(logs.some((m) => /reopening in 4 s/.test(m)), 'and the normal reopen follows');
   v.stop();
+});
+
+test('2026-09-30 12:55 viewer log: an SFU attempt that lost to the direct link (or was replaced) fails silently; a real failure still retries, 429 = server full, "not connected" moves to TURN', () => {
+  // the log: retry started an attempt (mine), the direct channel opened 0.6 s later and tore it down (mine=false), then
+  // "Failed to execute 'addTransceiver' ... signalingState is 'closed'"
+  const closed = "Failed to execute 'addTransceiver' on 'RTCPeerConnection': The RTCPeerConnection's signalingState is 'closed'.";
+  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: false, p2pOpen: true, message: closed }), { action: 'ignore', why: 'the direct link is up' });
+  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: false, p2pOpen: false, message: closed }), { action: 'ignore', why: 'a newer attempt replaced it' });
+  assert.deepEqual(sfuFailureDecision({ stopped: true, mine: true, p2pOpen: false, message: closed }), { action: 'stop' });
+  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: true, p2pOpen: false, status: 429, message: 'sfu/session: 429' }), { action: 'retry', full: true, toRelay: false });
+  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: true, p2pOpen: false, message: 'not connected in 20 s (failed)', relayOnly: false }), { action: 'retry', full: false, toRelay: true });
+  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: true, p2pOpen: false, message: 'not connected in 20 s (failed)', relayOnly: true }), { action: 'retry', full: false, toRelay: false });
+  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: true, p2pOpen: false, message: 'channel closed' }), { action: 'retry', full: false, toRelay: false });
+});
+
+test('2026-09-30 12:55 viewer log replayed on the Viewer: the direct link opens while an SFU attempt is in flight - the attempt\'s failure leaves live=true, no error, no retry countdown', async () => {
+  const keyB64 = makeKeyB64();
+  const logs = [];
+  const v = new Viewer({ room: 'r2', keyB64, log: (m) => logs.push(m), onState: () => {}, onEnvelope: () => {} });
+  await v.start();
+  v.pubSession = 'S2';
+  // browser globals the SFU attempt touches: the session POST is where the direct link wins the race
+  globalThis.AudioContext = class { createMediaStreamDestination() { return { stream: { getAudioTracks: () => [{}] } }; } close() {} };
+  globalThis.RTCPeerConnection = class { constructor() { this.signalingState = 'stable'; } close() { this.signalingState = 'closed'; } addTransceiver() { if (this.signalingState === 'closed') throw new Error("Failed to execute 'addTransceiver' on 'RTCPeerConnection': The RTCPeerConnection's signalingState is 'closed'."); } };
+  globalThis.fetch = async (url, init = {}) => {
+    if (/sfu\/session$/.test(String(url))) {
+      v.p2p = { open: true, pc: { close() {} }, dc: { close() {} } };            // the reader's direct channel just opened...
+      v.state.live = true; v.state.error = null; v.state.path = { tier: 'p2p', sub: null, label: 'direct' };
+      v.clearRetry(); v.teardownSfu();                                          // ...and its onopen tore the SFU attempt down
+      return { ok: true, status: 200, json: async () => ({ sessionId: 'sfu1' }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  await v.subscribe();
+  assert.equal(v.state.live, true, 'the direct link keeps the stream live');
+  assert.equal(v.state.error, null); assert.equal(v.state.retryIn, null); assert.equal(v.cancelRetry, null, 'no retry countdown');
+  assert.ok(logs.some((l) => /SFU attempt dropped, the direct link is up: Failed to execute 'addTransceiver'/.test(l)), logs.join('\n'));
+  assert.ok(!logs.some((l) => /^live: Failed to execute/.test(l)), 'the old error line must not appear');
+  v.stop();
+  delete globalThis.AudioContext; delete globalThis.RTCPeerConnection;
 });

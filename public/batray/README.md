@@ -64,6 +64,43 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.51: a resumed viewer said "failed" over a stream that flowed (owner's log 2026-09-30 12:55)
+
+"Connect / disconnect loop and a live-failed dialog, although streaming
+fine after about half a minute." The log, at the moment the tab came
+back after 6.7 h hidden:
+
+1. The SFU transport reported `disconnected` and a retry countdown
+   started; the tab's resume cancelled the wait and began an SFU attempt.
+2. The reader's direct offer arrived and its data channel opened 0.6 s
+   later. Its onopen tore the in-flight SFU attempt down, correctly.
+3. That attempt then failed with "signalingState is 'closed'" and, not
+   knowing it had lost, wrote the error into the state, painted
+   "reconnecting", and scheduled a retry - which later found the direct
+   link up and did nothing, so `live=false` and the error text stayed
+   for good while readings flowed (`view(live=false reader=true)` in
+   the heartbeat).
+
+Fix: `sfuFailureDecision({stopped, mine, p2pOpen, status, message,
+relayOnly})` in live-logic.js - an attempt that is no longer the current
+one, or that lost to the direct link, is dropped with one log line and
+no change of state; a real failure retries as before (429 = server full,
+"not connected" moves the next attempt to TURN). `scheduleRetry` is a
+no-op while the direct link carries the stream. The Viewer-level replay
+in batray_presence.test.js opens the direct link inside the attempt's
+session POST and checks that the failure leaves `live=true`, no error,
+no countdown.
+
+The "loop" in the same log: on every resume the alerts fired "no data
+from the BMS for over 5 min" and "recovered" a few seconds apart - the
+five minutes were the tab's own frozen time. `Evaluator` now counts
+silence only while this page has been awake (a tick gap over
+`TICK_GAP_S` = 30 s restarts the watch) and, on a viewer, while its own
+link is up (`sample.ownLinkDown` freezes the silent rule's state, so a
+link drop is neither a repeat nor a false "recovered"). Replay in
+batray_alerts.test.js. Pack chip taps are now logged (`ui: pack chip`),
+because the status line following them looked like flapping in the log.
+
 ## 0.9.50: the history worker was refused on every phone; the TV preview never goes blank; a Wi-Fi gap no longer kills the stream (owner's three logs 2026-09-29/30)
 
 Three findings from one night of logs, all fixed here.

@@ -14,7 +14,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RULES, REPEAT_S, defaultSettings, loadSettings, conditionHolds, Evaluator, formatEvent, ntfyOk } from '../public/batray/alerts-logic.js';
+import { RULES, REPEAT_S, defaultSettings, loadSettings, conditionHolds, Evaluator, formatEvent, ntfyOk, TICK_GAP_S } from '../public/batray/alerts-logic.js';
 
 const A = { title: (p) => `BatRay: ${p}`, recoveredTitle: (p) => `BatRay: ${p} recovered`, recovered: (t) => `recovered - ${t}`,
   socLow: (e) => `SOC ${e.soc} below ${e.value}%`, socCritical: (e) => `SOC ${e.soc} critical`, noCharge: (e) => `no charge in daylight (${e.cur})`, cellDelta: (e) => `cell delta ${e.dv}`, silent: (e) => `no data for ${e.value} s` };
@@ -81,8 +81,31 @@ test('no charge in daylight only counts between 09:00 and 15:00 local', () => {
   assert.equal(conditionHolds(rule, cfg, { ...ok, current: -8 }, new Date(noon)), true, 'discharging at noon is suspicious');
 });
 
+test('2026-09-30 viewer log replay: a frozen tab resuming after 6.7 h must not fire "no data for over 5 min" and "recovered" 4 s apart - silence counts only while the page was awake and its link up', () => {
+  const ev = new Evaluator(defaultSettings());
+  let t = noon;
+  for (let i = 0; i < 10; i++) { assert.deepEqual(ev.tick('s-01', 'n', { ...ok, ageS: 1 }, t), []); t += 5000; }   // ticking every 5 s, frames fresh
+  t += 24190 * 1000;                                                                                                 // the tab was frozen (hidden) for 6.7 h
+  assert.deepEqual(ev.tick('s-01', 'n', { ...ok, ageS: 24190, connected: true }, t), [], 'the first tick after the freeze: the gap was ours');
+  t += 4000;
+  assert.deepEqual(ev.tick('s-01', 'n', { ...ok, ageS: 1 }, t), [], 'fresh data: nothing fired, so nothing recovers');
+  // a real silence: the page keeps ticking, frames stop
+  let age = 1;
+  for (; age <= 299; age += 5) { assert.deepEqual(ev.tick('s-01', 'n', { ...ok, ageS: age, connected: false }, t += 5000), []); }
+  const out = ev.tick('s-01', 'n', { ...ok, ageS: 304, connected: false }, t += 5000);
+  assert.deepEqual(out.map((e) => e.event), ['fire'], 'five awake minutes without a frame is the real thing');
+  // the viewer's own link drops while the alert stands: neither a repeat nor a false "recovered"
+  assert.deepEqual(ev.tick('s-01', 'n', { ...ok, ageS: 400, connected: false, ownLinkDown: true }, t += 5000), []);
+  assert.deepEqual(ev.tick('s-01', 'n', { ...ok, ageS: 1, connected: true }, t += 5000).map((e) => e.event), ['recover'], 'the link is back and a frame came: recovered');
+  // the link down for a long stretch, then back with an old frame: the silence is counted from the link's return
+  t += 3600 * 1000; assert.deepEqual(ev.tick('s-01', 'n', { ...ok, ageS: 3600, ownLinkDown: true }, t), []);
+  assert.deepEqual(ev.tick('s-01', 'n', { ...ok, ageS: 3605, connected: false }, t += 5000), [], 'link just returned: not yet');
+  assert.equal(TICK_GAP_S, 30);
+});
+
 test('silent: stale frames, whether or not Bluetooth says connected', () => {
   const ev = new Evaluator(defaultSettings());
+  let w = noon - 400000; for (let i = 0; i < 20; i++) { ev.tick('w', 'n', ok, w); w += 20000; }                     // the evaluator has been awake for a while
   assert.deepEqual(ev.tick('p', 'n', { ...ok, connected: false, ageS: 20 }, noon), [], 'a fresh drop is not silence yet');
   const out = ev.tick('p', 'n', { ...ok, connected: false, ageS: 301 }, noon + 1000);
   assert.deepEqual(out.map((e) => e.rule), ['silent'], 'hold is 0: fires as soon as the last frame is older than the threshold');

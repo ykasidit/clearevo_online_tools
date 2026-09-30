@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.50';
+export const APP_VERSION = '0.9.51';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -314,7 +314,7 @@ function renderPackBar() {
   });
   const add = viewMode ? '' : `<button class="pchip add" id="addPack" title="${T.addPackTitle}">${T.addPack}</button>`;
   bar.innerHTML = chips.join('') + add;
-  bar.querySelectorAll('.pchip[data-pack]').forEach((b) => b.addEventListener('click', () => { const p = packs.get(b.dataset.pack); if (p) setActive(p); }));
+  bar.querySelectorAll('.pchip[data-pack]').forEach((b) => b.addEventListener('click', () => { const p = packs.get(b.dataset.pack); if (p) { log(`ui: pack chip ${p.label}`); setActive(p); } }));
   const a = $('addPack'); if (a) a.addEventListener('click', () => startConnect(null));
 }
 

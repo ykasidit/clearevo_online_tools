@@ -82,6 +82,7 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus }) {
       soc: d ? d.soc : null, current: d ? d.current : null, cellDelta: d ? d.cellDelta : null,
       alarm: d && d.errors ? errorLabels(d.errors).join(', ') : '',
       ageS: p.lastFrameAt ? (Date.now() - p.lastFrameAt) / 1000 : null, connected: !!p.connected,
+      ownLinkDown: !!(p.remote && !p.remoteLive),                // a viewer whose own link is down cannot judge the BMS's silence
     };
   }
   function tick() {
