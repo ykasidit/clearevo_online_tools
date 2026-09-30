@@ -24,6 +24,10 @@
 // the page's history logic module does, this only does I/O, and every SQL
 // statement is in the SQL module so node tests run the same code.
 
+// 0.9.50: this script's response must carry the page's Cross-Origin-Embedder-Policy or Chrome refuses the worker
+// on the isolated page (it did, silently, from 0.9.40 to 0.9.49 - "worker error [object Event]"). The header is a
+// site deploy rule; this note also gives the file a new hash so browsers fetch it again instead of reusing the
+// year-long cached copy that had no header.
 import sqlite3InitModule from './sqlite3.js';
 import { isCorruptError } from './history-logic.js';
 import { ensureSchema, insertRows, rowsAfter, lastRows, buckets, energyWh, span, dayInfo, dbBytes, mergeFrom, looksLikeDayDb } from './history-sql.js';
