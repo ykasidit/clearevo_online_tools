@@ -64,6 +64,56 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.50: the history worker was refused on every phone; the TV preview never goes blank; a Wi-Fi gap no longer kills the stream (owner's three logs 2026-09-29/30)
+
+Three findings from one night of logs, all fixed here.
+
+1. **No phone had a SQLite store from 0.9.40 to 0.9.49.** Both viewer logs
+   opened with `history: worker error [object Event]` and the reader's
+   heartbeat said `hist=memory`. Since 0.9.35 the page is cross-origin
+   isolated (COOP + COEP for the live memory figure), and Chrome then
+   refuses a dedicated worker whose script response does not carry the
+   same embedder policy; the site's `_headers` gave it to the page only.
+   The browser tests never saw it because their static server sent no
+   headers at all. Now deploy.sh adds `Cross-Origin-Embedder-Policy:
+   credentialless` to every `*-worker.*.js` under /batray/, site_checks
+   fails without it, and `test/browser/serve.py` serves the tests with the
+   live site's headers, so the history suite proves the worker opens on
+   an isolated page. Reproduced in the sandbox before the fix: the same
+   page with the header on the document only -> memory; on the worker
+   too -> `SQLite 3.53.4 over opfs-sahpool`.
+2. **The phone's own TV preview went dark for hours.** At 14:22 the
+   reader's Wi-Fi dropped; the relay's Tv object got no upload for 2 min
+   and deleted the stream; the app then PUT every segment into a deleted
+   stream until the owner stopped it (9,974 `404` lines, two a second).
+   Relay (`alarm()`): expiry now drops the picture but keeps the token;
+   a segment PUT without an init segment answers `409 need init`; only
+   DELETE forgets a stream. App (`TvStream.revive`): a 404/409 on a
+   segment sends `init.mp4` again on the same id (`state.episodes`, the
+   link stays valid; segments queued meanwhile are skipped), upload
+   errors are logged when they change plus one repeat-count line when
+   they stop (`uploadFailed` / `uploadOk`). The preview: `previewState`
+   / `previewEvent` / `previewSource` in tv-logic.js - the stream player
+   `<video>` shows only while it really plays (a stall is tolerated for
+   `PREVIEW_GRACE_MS` 3 s), otherwise `#tvLocal`, a canvas painted from
+   the encoder's own frame (`onFrame`), shows: before the player starts,
+   after an error, and on desktop, which cannot play HLS at all and had
+   no preview before. A revival unloads and reloads the player.
+3. **A network blink made the reader change rooms.** `Publisher.start`
+   made a new room whenever the GET of the earlier room threw, so a
+   viewer on the old link waited forever on a room the reader had left
+   (the relay stores the room's token: the old room still answered 200
+   the next morning). Now a fetch error keeps the earlier credentials;
+   only a real 404 makes a new room.
+
+Tests: batray_tv.test.js (preview decisions, `TvStream` revival over a
+fake fetch: 404 -> init again, queued segments skipped, error dedupe),
+batray_presence.test.js (fetch throws -> room kept), browser
+batray_tv.mjs (the local canvas is lit and shown in place of the player,
+a stub 409 -> second init.mp4 and segments go on, one log line),
+relay.test.mjs (409 before init; a real 2 min expiry, init revives the
+same id, DELETE forgets it).
+
 ## Cast: one request at a time, and the TV's own word (0.9.43, owner's log 2026-09-26)
 
 The owner's log: the first Cast tap loaded the library and waited for

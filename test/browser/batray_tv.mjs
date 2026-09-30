@@ -64,6 +64,7 @@ const FAKE = `
     window.__tvCalls.push(method + ' ' + u.replace(/^https?:\\/\\/[^/]+/, ''));
     const ok = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
     if (method === 'POST') return ok({ tv: 'fakeTvId0000000000000', token: 'tok' });
+    if (method === 'PUT' && /\\/seg\\//.test(u) && window.__tvExpire) { window.__tvExpire = false; return new Response('{"error":"need init"}', { status: 409 }); }   // the relay expired the stream (0.9.50)
     if (method === 'PUT') { const bytes = init.body instanceof Uint8Array ? init.body : new Uint8Array(await new Response(init.body).arrayBuffer()); const m = u.match(/\\/tv\\/[^/]+\\/(.+?)\\?/); window.__tvUploads.push({ path: m ? m[1] : u, dur: (u.match(/dur=([\\d.]+)/) || [])[1], b64: b64(bytes), len: bytes.length }); return ok({ ok: true, head: window.__tvUploads.length }); }
     if (method === 'DELETE') return ok({ ok: true });
     if (u.includes('/status')) return ok({ head: window.__tvUploads.length - 1, segs: Math.max(0, window.__tvUploads.length - 1), hits: 3, pullAgeS: 2 });
@@ -111,6 +112,16 @@ const tog = await evalJs(`(async () => {
 check('collapsing the TV card unloads the preview, expanding it loads the preview again at the live edge', /index\.m3u8$/.test(tog.src0 || '') && tog.closed === null && /index\.m3u8$/.test(tog.reopened || '') && tog.logs.some((l) => /card collapsed -> unload/.test(l)) && tog.logs.some((l) => /card expanded -> load/.test(l)), tog);
 const ui = await evalJs(`({ stat: document.getElementById('tvStat').textContent, note: !document.getElementById('tvNote').hidden, link: document.getElementById('tvLink').textContent, videoSrc: document.getElementById('tvVideo').getAttribute('src'), canHls: !!document.getElementById('tvVideo').canPlayType('application/vnd.apple.mpegurl'), noPreview: !document.getElementById('tvNoPreview').hidden, castRow: !document.getElementById('tvCastRow').hidden, castHint: document.getElementById('tvCastHint').textContent.replace(/^Cast to TV - /, '') })`);
 check('status line, status-bar note and link are set; the preview follows the browser\'s own HLS support; Cast is always offered', /segments/.test(ui.stat) && ui.note && ui.link === url && ui.castRow && /Google/.test(ui.castHint) && (ui.canHls ? ui.videoSrc === url && !ui.noPreview : ui.videoSrc === null && ui.noPreview), ui);
+// the local preview (owner 2026-09-30): the frame drawn on this device shows whenever the stream player is not
+// playing - here (no HLS in headless Chromium) always; it is a real picture, not a black box
+const loc = await evalJs(`(() => { const c = document.getElementById('tvLocal'), v = document.getElementById('tvVideo'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let lit = 0; for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 60) lit++; return { localShown: !c.hidden && !document.getElementById('tvPreviewRow').hidden, videoHidden: v.hidden, litPct: Math.round(lit * 100 / (c.width * c.height)), w: c.width, h: c.height }; })()`);
+check('the local preview canvas is shown in place of the player and carries the drawn TV frame', loc.localShown && loc.videoHidden && loc.litPct > 3 && loc.w === 640 && loc.h === 360, loc);
+// the relay expired the stream (no upload for 2 min): the next segment is refused, the app sends init.mp4 again on
+// the same id and goes on; the error is one log line, not one per second
+const n0 = await evalJs(`window.__tvUploads.length`);
+await evalJs(`window.__tvExpire = true; 1`); await sleep(3500);
+const rev = await evalJs(`({ inits: window.__tvUploads.filter((u) => u.path === 'init.mp4').length, after: window.__tvUploads.slice(${n0}).map((u) => u.path), stat: document.getElementById('tvStat').textContent, logs: window.__batrayTest.logLines().filter((l) => /relay dropped the stream|sending the init segment again/.test(l)) })`);
+check('after the relay dropped the stream, init.mp4 goes again on the same id and segments continue; one log line', rev.inits === 2 && rev.after[0] === 'init.mp4' && rev.after.slice(1).every((p) => /^seg\//.test(p)) && rev.after.length >= 2 && rev.logs.length === 1 && !/upload problem/.test(rev.stat), rev);
 
 // Cast: a fake of Google's cast library that behaves like the Android sender
 // read on 2026-09-20 - availability goes NOT_CONNECTED -> NO_DEVICES -> NOT_CONNECTED

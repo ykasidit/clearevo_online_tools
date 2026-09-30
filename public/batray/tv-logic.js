@@ -125,3 +125,20 @@ export function tvPreviewToggle(open, live, hasSrc) {
   if (!open) return hasSrc ? 'unload' : 'none';
   return hasSrc ? 'none' : 'load';
 }
+
+// ---- the phone's own preview (owner 2026-09-30: "the local view must not just go blank") ----
+// The relay had expired the stream after a Wi-Fi gap and the preview <video> went dark for hours. The locally
+// drawn frame is shown whenever the stream player is not actually playing: before it starts, while it
+// rebuffers past a short grace, after an error, and in browsers that cannot play HLS at all (desktop).
+export const PREVIEW_GRACE_MS = 3000;
+export function previewState() { return { playing: false, stalledAt: 0 }; }
+export function previewEvent(ps, ev, now = 0) {
+  if (ev === 'playing') { ps.playing = true; ps.stalledAt = 0; }
+  else if (ev === 'waiting' || ev === 'stalled') { if (ps.playing && !ps.stalledAt) ps.stalledAt = now; }
+  else if (ev === 'error' || ev === 'unload' || ev === 'ended' || ev === 'emptied') { ps.playing = false; ps.stalledAt = 0; }
+}
+export function previewSource(ps, canHls, now = 0, graceMs = PREVIEW_GRACE_MS) {
+  if (!canHls || !ps.playing) return 'local';
+  if (ps.stalledAt && now - ps.stalledAt >= graceMs) return 'local';
+  return 'video';
+}

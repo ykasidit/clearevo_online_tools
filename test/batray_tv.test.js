@@ -13,7 +13,8 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, BoxSplitter, takeSegments, tvLink, isSegmentStart , tvPreviewToggle , tvMp4Link } from '../public/batray/tv-logic.js';
+import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, BoxSplitter, takeSegments, tvLink, isSegmentStart , tvPreviewToggle , tvMp4Link, previewState, previewEvent, previewSource, PREVIEW_GRACE_MS } from '../public/batray/tv-logic.js';
+import { TvStream } from '../public/batray/tv.js';
 import { Muxer, StreamTarget } from '../public/batray/mp4-muxer.js';
 
 const box = (type, payload = []) => { const n = 8 + payload.length; const u = new Uint8Array(n); new DataView(u.buffer).setUint32(0, n); u.set([...type].map((c) => c.charCodeAt(0)), 4); u.set(payload, 8); return u; };
@@ -106,4 +107,43 @@ test('tvPreviewToggle: collapsing the TV card unloads a running preview, expandi
   assert.equal(tvPreviewToggle(true, true, false), 'load');
   assert.equal(tvPreviewToggle(true, true, true), 'none', 'already showing');
   assert.equal(tvPreviewToggle(true, false, false), 'none', 'no stream to preview');
+});
+
+test('the local preview never goes blank (owner 2026-09-30): the stream player shows only while it really plays, a short stall is tolerated, an error or an unload falls back to the frame drawn on the phone; no HLS support = always local', () => {
+  const ps = previewState();
+  assert.equal(previewSource(ps, true, 0), 'local', 'before the player starts');
+  assert.equal(previewSource(ps, false, 0), 'local', 'desktop: no HLS');
+  previewEvent(ps, 'playing', 1000); assert.equal(previewSource(ps, true, 1000), 'video');
+  assert.equal(previewSource(ps, false, 1000), 'local', 'a browser without HLS never shows the video');
+  previewEvent(ps, 'waiting', 5000); assert.equal(previewSource(ps, true, 6000), 'video', 'a rebuffer inside the grace keeps the video');
+  assert.equal(previewSource(ps, true, 5000 + PREVIEW_GRACE_MS), 'local', 'a stall past the grace shows the local frame');
+  previewEvent(ps, 'playing', 9000); assert.equal(previewSource(ps, true, 30000), 'video');
+  previewEvent(ps, 'error', 31000); assert.equal(previewSource(ps, true, 31000), 'local');
+  previewEvent(ps, 'playing', 32000); previewEvent(ps, 'unload', 33000); assert.equal(previewSource(ps, true, 33000), 'local');
+  assert.equal(PREVIEW_GRACE_MS, 3000);
+});
+
+test('TvStream revives a stream the relay dropped (0.9.50, replay of the 2026-09-29 log: 10k 404s after a Wi-Fi gap): a 404/409 on a segment sends init.mp4 again on the same id, segments queued meanwhile are skipped, the error is logged once with a repeat count', async () => {
+  const lines = []; const calls = [];
+  const t = new TvStream({ log: (l) => lines.push(l) });
+  t.id = 'tvid'; t.token = 'tok'; t.initBytes = new Uint8Array([1, 2, 3, 4]); t.initSent = true;
+  const settle = async () => { let c; do { c = t.chain; await c; } while (c !== t.chain); };   // the revival appends to the chain while a step runs
+  let status = 404;
+  globalThis.fetch = async (url, init) => { const p = String(url).replace(/^.*\/tv\/tvid\//, '').replace(/\?.*$/, ''); calls.push(p); if (p === 'init.mp4') return { ok: true, status: 200 }; return { ok: status === 200, status }; };
+  t.upload('seg/7', new Uint8Array([7]), '&dur=1.000'); t.upload('seg/8', new Uint8Array([8]), '&dur=1.000');   // 8 was queued before the 404 came back
+  await settle();
+  assert.deepEqual(calls, ['seg/7', 'init.mp4'], 'the 404 triggers init again; the queued segment 8 is skipped, not sent into the dead stream');
+  assert.equal(t.state.episodes, 1); assert.equal(t.state.segs, 0); assert.equal(t.reviving, false);
+  assert.ok(lines.some((l) => /relay dropped the stream \(seg\/7: 404\) - sending the init segment again, same link \(revival 1\)/.test(l)), lines.join('\n'));
+  status = 200; calls.length = 0;
+  t.upload('seg/9', new Uint8Array([9]), '&dur=1.000'); await settle();
+  assert.deepEqual(calls, ['seg/9']); assert.equal(t.state.segs, 1); assert.equal(t.state.error, null);
+  // errors are logged when they change, plus one repeat count when they stop
+  status = 500; lines.length = 0;
+  for (let i = 0; i < 4; i++) t.upload(`seg/${10 + i}`, new Uint8Array([1]), '&dur=1.000');
+  await settle();
+  assert.equal(lines.filter((l) => /upload failed/.test(l)).length, 4, 'four different paths = four lines');
+  t.uploadFailed('x'); t.uploadFailed('x'); t.uploadFailed('x'); lines.length = 0; t.uploadOk();
+  assert.deepEqual(lines, ['tv: (that upload error repeated 2 more times)', 'tv: uploads ok again']);
+  delete globalThis.fetch;
 });

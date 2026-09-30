@@ -111,6 +111,17 @@ test('channel name: saved, else the BMS name, else a cat; placeholders never win
   assert.equal(ok && ok.room, 'r');
 });
 
+test('publisher keeps the earlier room when the check itself fails (0.9.50: a Wi-Fi blink is not a lost room - the relay stores the token; the viewer then waited on a room the reader had left, 2026-09-30)', async () => {
+  const oldKey = makeKeyB64(); const posts = [];
+  globalThis.fetch = async (url, init = {}) => { if (/\/room$/.test(String(url)) && (init.method || 'GET') === 'POST') posts.push(url); throw new TypeError('Failed to fetch'); };
+  const lines = []; const p = new Publisher({ log: (l) => lines.push(l), onState: () => {} });
+  p.connectSfu = async () => {};
+  const link = await p.start({ room: 'oldroom', pub: 'oldpub', key: oldKey, at: 1 });
+  assert.equal(p.reused, true); assert.equal(p.room, 'oldroom'); assert.equal(p.pubToken, 'oldpub'); assert.equal(p.keyB64, oldKey); assert.match(link, /view=oldroom#k=/);
+  assert.equal(posts.length, 0, 'no new room asked for'); assert.ok(lines.some((l) => /could not check the earlier room \(Failed to fetch\) - keeping it/.test(l)), lines.join('\n'));
+  p.stop();
+});
+
 test('publisher reuses an earlier room when the relay still has it, else makes a new one', async () => {
   const oldKey = makeKeyB64();
   const stubFetch = (roomAlive) => async (url, init = {}) => {

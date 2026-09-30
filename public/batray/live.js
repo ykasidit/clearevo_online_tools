@@ -162,7 +162,7 @@ export class Publisher {
         const r = await fetch(`${API}/room/${existing.room}`);
         if (r.ok) { room = existing.room; pub = existing.pub; this.keyB64 = existing.key; this.reused = true; }
         else this.log(`live: earlier room ${existing.room} is gone (${r.status}) - making a new one`);
-      } catch (e) { this.log(`live: could not check the earlier room: ${e.message} - making a new one`); }
+      } catch (e) { room = existing.room; pub = existing.pub; this.keyB64 = existing.key; this.reused = true; this.log(`live: could not check the earlier room (${e.message}) - keeping it: the relay remembers rooms, only a 404 means gone`); }
     }
     if (!room) { ({ room, pub } = await j('room', { method: 'POST' })); this.keyB64 = makeKeyB64(); }
     this.room = room; this.pubToken = pub;

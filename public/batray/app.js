@@ -19,7 +19,7 @@ import { trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntim
 import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
-import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, tvPreviewToggle } from './tv-logic.js';
+import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, tvPreviewToggle, previewState, previewEvent, previewSource } from './tv-logic.js';
 import { startDemo } from './demo.js';
 import { I18N, detectLang } from './i18n.js';
 import { Publisher, Viewer } from './live.js';
@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.49';
+export const APP_VERSION = '0.9.50';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -1577,15 +1577,25 @@ function tvModel() {
   const p = active;
   return buildTvModel({ label: p ? p.label : '', demo: !!(p && p.demo), data: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, lastFrameAt: p ? p.lastFrameAt : null, now: Date.now(), cutoffPct, T });
 }
+const previewS = previewState(); let previewEpisode = 0;
+const canPlayHls = () => !!$('tvVideo').canPlayType('application/vnd.apple.mpegurl');
+/** Which picture the tvbox shows: the stream player only while it really plays, else the frame drawn here. */
+function renderPreview() {
+  const src = previewSource(previewS, canPlayHls(), Date.now());
+  $('tvVideo').hidden = src !== 'video'; $('tvLocal').hidden = src !== 'local';
+}
+function unloadPreview(v) { try { v.pause(); } catch { /* not playing */ } v.removeAttribute('src'); v.load(); previewEvent(previewS, 'unload'); renderPreview(); }
 function renderTv(s) {
   if (!tv || !s.live) return;
   $('tvLink').textContent = s.url;
   const v = $('tvVideo');
-  // Chrome on Android plays HLS itself; desktop Chrome does not, so the preview
-  // shows only where it can. Cast is offered everywhere the cast library runs.
-  const canHls = !!v.canPlayType('application/vnd.apple.mpegurl');
-  $('tvPreviewRow').hidden = !canHls; $('tvNoPreview').hidden = canHls;
+  // Chrome on Android plays HLS itself; desktop Chrome does not: there the box shows the locally drawn frame
+  // only (0.9.50). Cast is offered everywhere the cast library runs.
+  const canHls = canPlayHls();
+  $('tvNoPreview').hidden = canHls;
+  if (s.episodes !== previewEpisode) { previewEpisode = s.episodes; if (v.getAttribute('src')) { log('tv preview: stream revived - reloading the player'); unloadPreview(v); } }
   if (tvPreviewWanted(s, canHls, !!v.getAttribute('src'))) startPreview(v, s.url);
+  renderPreview();
   const pull = s.pullAgeS === null || s.pullAgeS === undefined ? T.tvNotPulled : T.tvPulled(s.pullAgeS);
   $('tvStat').textContent = (s.error ? T.tvErr(s.error) + ' · ' : '') + T.tvStat(s.segs, Math.round(s.bytes / 1024), pull) + (s.segs < 3 ? ' · ' + T.tvStarting : '');
 }
@@ -1595,14 +1605,17 @@ function startPreview(v, url) {
   const kick = () => v.play().catch((e) => log(`tv preview: play refused: ${e.message}`));
   v.addEventListener('loadedmetadata', () => { log('tv preview: metadata loaded'); kick(); });
   let frames = 0;                                                            // the phone's own HLS player is the nearest witness to what a TV will do with the stream
-  v.addEventListener('playing', () => log(`tv preview: playing (${v.videoWidth}x${v.videoHeight})`));
-  v.addEventListener('waiting', () => log('tv preview: waiting for data'));
-  v.addEventListener('stalled', () => log('tv preview: stalled'));
+  const seen = (ev) => { previewEvent(previewS, ev, Date.now()); renderPreview(); };
+  v.addEventListener('playing', () => { log(`tv preview: playing (${v.videoWidth}x${v.videoHeight})`); seen('playing'); });
+  v.addEventListener('waiting', () => { log('tv preview: waiting for data'); seen('waiting'); });
+  v.addEventListener('stalled', () => { log('tv preview: stalled'); seen('stalled'); });
+  v.addEventListener('ended', () => seen('ended'));
+  v.addEventListener('emptied', () => seen('emptied'));
   v.addEventListener('timeupdate', () => { if (++frames === 1 || frames === 10 || frames % 60 === 0) log(`tv preview: t=${v.currentTime.toFixed(1)}s (update ${frames})`); });
   v.addEventListener('canplay', kick, { once: true });
   v.addEventListener('error', () => {
     const err = v.error ? `${v.error.code} ${v.error.message || ''}` : '?';
-    log(`tv preview: player error ${err} (try ${tries + 1})`);
+    log(`tv preview: player error ${err} (try ${tries + 1})`); seen('error');
     if (tv && tries++ < 5) setTimeout(() => { if (tv && $('tvVideo') === v) { v.src = url; v.load(); kick(); } }, 4000);   // the live window has grown meanwhile
   });
   kick();
@@ -1808,6 +1821,7 @@ async function castToTv(opts = {}) {
   } finally { if (!waitingOnTv()) { clearInterval(tick); if (castS.busy) endFlow('done', T.tvCastReady); } renderCastButtons(); }
 }
 // every button and note of the TV card and the toolbar follow tvS (tv-logic.js)
+setInterval(() => { if (tv && tv.state.live) renderPreview(); }, 1000);   // the stall grace expires without a player event
 function renderTvButtons() {
   const b = tvButtons(tvS);
   $('tv').classList.toggle('on', b.on); $('tv').classList.toggle('busy', b.busy); $('tv').setAttribute('aria-pressed', b.on); $('tv').title = b.on ? T.tvOnTitle : b.busy ? T.tvBusyTitle : ($('tv').dataset.title || '');
@@ -1822,7 +1836,8 @@ async function startTv(opts = {}) {
   if (d.action !== 'start') return null;
   renderTvButtons();
   const [w, h] = (opts.res || $('tvRes').dataset.value).split('x').map(Number);
-  const t = new TvStream({ width: w, height: h, model: tvModel, log, onState: renderTv, ...opts });
+  const local = $('tvLocal'), lctx = local.getContext('2d', { alpha: false });
+  const t = new TvStream({ width: w, height: h, model: tvModel, log, onState: renderTv, onFrame: (c) => { if (!local.hidden) lctx.drawImage(c, 0, 0, local.width, local.height); }, ...opts });
   tv = t;
   try {
     const url = await t.start();
@@ -1849,7 +1864,7 @@ async function stopTv(why = 'card') {
   const t = tv; tv = null; tvStopped(tvS); renderTvButtons();
   log(`tv: stop (${why})`);
   await t.stop();
-  const v = $('tvVideo'); v.removeAttribute('src'); v.load(); $('tvQr').hidden = true;
+  unloadPreview($('tvVideo')); $('tvQr').hidden = true;
   syncWake(); toast(T.tvStopped, 5000);
 }
 (function () {
@@ -1871,7 +1886,7 @@ async function stopTv(why = 'card') {
     const v = $('tvVideo'), open = $('tvPanel').open;
     const d = tvPreviewToggle(open, !!(tv && tv.state.live), !!v.getAttribute('src'));
     log(`tv: card ${open ? 'expanded' : 'collapsed'} -> ${d}`);
-    if (d === 'unload') { try { v.pause(); } catch { /* not playing */ } v.removeAttribute('src'); v.load(); }
+    if (d === 'unload') unloadPreview(v);
     else if (d === 'load') renderTv(tv.state);
   });
   $('tvClose').addEventListener('click', (e) => {

@@ -31,7 +31,7 @@ PROFILE=$(mktemp -d)
 CHROME_PID=$!
 SRV_PID=""
 if [ -z "$BASE" ]; then
-  python3 -m http.server 8077 --directory "../../${SERVE_DIR:-public}" >/dev/null 2>&1 &
+  python3 serve.py 8077 "../../${SERVE_DIR:-public}" >/dev/null 2>&1 &   # the live site's COOP/COEP headers (serve.py)
   SRV_PID=$!
 fi
 cleanup() { kill $CHROME_PID $SRV_PID 2>/dev/null; wait $CHROME_PID 2>/dev/null; rm -rf "$PROFILE"; }
