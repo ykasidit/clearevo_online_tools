@@ -22,7 +22,7 @@ const evalJs = async (expr, awaitP = false) => {
   if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails));
   return r.result.value;
 };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
 const text = (sel) => evalJs(`document.getElementById(${JSON.stringify(sel)}).textContent`);
 const clickBtn = (sel) => evalJs(`document.getElementById(${JSON.stringify(sel)}).click()`);
 const results = [];

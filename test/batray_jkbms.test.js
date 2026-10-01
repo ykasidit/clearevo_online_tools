@@ -489,7 +489,7 @@ test('handshake: 0x97 first, 0x96 only after the device-info answer (JK app orde
   const seen = []; b.addEventListener('log', (e) => seen.push(e.detail));
   await b.connect(device);
   assert.deepEqual(writes.map((w) => w.cmd), [0x97], 'connect() resolves with only the device-info command sent');
-  await new Promise((r) => setTimeout(r, 120));
+  await new Promise((r) => { setTimeout(r, 120); });
   assert.deepEqual(writes.map((w) => w.cmd), [0x97, 0x96], 'cell-info follows once the device-info frame arrived');
   assert.ok(writes[1].at - writes[0].at >= 25, 'not back to back');
   assert.ok(seen.some((l) => /handshake: device info in \d+ ms/.test(l)), seen.join('\n'));
@@ -503,7 +503,7 @@ test('handshake: no device-info answer -> cell-info asked anyway after HANDSHAKE
   const device = { name: 'mute', gatt: { connected: true, connect: async () => ({ getPrimaryService: async () => ({ getCharacteristic: async () => char }) }), disconnect() { this.connected = false; } }, addEventListener() {} };
   await b.connect(device);
   assert.deepEqual(writes, [0x97]);
-  await new Promise((r) => setTimeout(r, HANDSHAKE_WAIT_MS + 150));
+  await new Promise((r) => { setTimeout(r, HANDSHAKE_WAIT_MS + 150); });
   assert.deepEqual(writes, [0x97, 0x96], 'asked after the wait');
   b.drop('test end');
 });

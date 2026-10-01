@@ -26,7 +26,7 @@ const evalJs = async (expr, awaitP = false) => {
   if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails));
   return r.result.value;
 };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
 const text = (sel) => evalJs(`document.getElementById(${JSON.stringify(sel)}).textContent`).catch(() => '?');
 const wheel = (x, y, dy) => send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY: dy, pointerType: 'mouse' });
 

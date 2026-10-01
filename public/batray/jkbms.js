@@ -570,7 +570,7 @@ export class JkBms extends EventTarget {
     }
     this._startNudge();
     this._emit('connected', device);
-    this._handshake(token);
+    void this._handshake(token);
   }
 
   /** After the device-info answer (or HANDSHAKE_WAIT_MS without it) ask for

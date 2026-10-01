@@ -217,7 +217,7 @@ test('geo: kmz extraction, stored and deflated', async () => {
 import { zipEntries, zipData, tarEntries, JUNK_RE as DJUNK, looksDicom, groupSeries, firstNum, makeLut, makeLatestGate } from '../public/dicom/logic.js';
 
 test('dicom: latest-gate discards a stale async decode (rapid slider drag)', async () => {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
   const gate = makeLatestGate();
   const painted = [];
   // show A starts first but decodes slower; show B starts right after but faster.
@@ -362,15 +362,15 @@ test('dicom: zip index + slice read over real HTTP Range (streaming)', async () 
       const start = +m[1], end = m[2] ? +m[2] : st.size - 1;
       served206++; servedBytes += end - start + 1;
       res.writeHead(206, { 'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Content-Length': end - start + 1, 'Accept-Ranges': 'bytes' });
-      if (req.method === 'HEAD') return res.end();
+      if (req.method === 'HEAD') { res.end(); return; }
       createReadStream(tmp, { start, end }).pipe(res);
     } else {
       res.writeHead(200, { 'Content-Length': st.size, 'Accept-Ranges': 'bytes' });
-      if (req.method === 'HEAD') return res.end();
+      if (req.method === 'HEAD') { res.end(); return; }
       createReadStream(tmp).pipe(res);
     }
   });
-  await new Promise((r) => server.listen(0, r));
+  await new Promise((r) => { server.listen(0, r); });
   const url = `http://127.0.0.1:${server.address().port}/cd.zip`;
   try {
     const head = await fetch(url, { method: 'HEAD' });
@@ -395,7 +395,7 @@ test('dicom: zip index + slice read over real HTTP Range (streaming)', async () 
     assert.ok(afterIndex < size / 2, `index read ${afterIndex}B stayed small vs ${size}B`);
     assert.ok(servedBytes < size, `streamed ${servedBytes}B < full ${size}B (never downloaded whole)`);
   } finally {
-    await new Promise((r) => server.close(r));
+    await new Promise((r) => { server.close(r); });
     unlinkSync(tmp);
   }
 });

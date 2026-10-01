@@ -129,7 +129,7 @@ test('TvStream revives a stream the relay dropped (0.9.50, replay of the 2026-09
   t.id = 'tvid'; t.token = 'tok'; t.initBytes = new Uint8Array([1, 2, 3, 4]); t.initSent = true;
   const settle = async () => { let c; do { c = t.chain; await c; } while (c !== t.chain); };   // the revival appends to the chain while a step runs
   let status = 404;
-  globalThis.fetch = async (url, init) => { const p = String(url).replace(/^.*\/tv\/tvid\//, '').replace(/\?.*$/, ''); calls.push(p); if (p === 'init.mp4') return { ok: true, status: 200 }; return { ok: status === 200, status }; };
+  globalThis.fetch = async (/** @type {string} */ url, init) => { const p = String(url).replace(/^.*\/tv\/tvid\//, '').replace(/\?.*$/, ''); calls.push(p); if (p === 'init.mp4') return { ok: true, status: 200 }; return { ok: status === 200, status }; };
   t.upload('seg/7', new Uint8Array([7]), '&dur=1.000'); t.upload('seg/8', new Uint8Array([8]), '&dur=1.000');   // 8 was queued before the 404 came back
   await settle();
   assert.deepEqual(calls, ['seg/7', 'init.mp4'], 'the 404 triggers init again; the queued segment 8 is skipped, not sent into the dead stream');

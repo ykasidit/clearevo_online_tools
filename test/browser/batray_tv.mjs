@@ -40,7 +40,7 @@ ws.onmessage = (m) => {
 const send = (method, params = {}) => new Promise((ok, err) => { const i = ++id; pending.set(i, { ok, err }); ws.send(JSON.stringify({ id: i, method, params })); });
 await new Promise((ok) => { ws.onopen = ok; });
 await send('Runtime.enable'); await send('Page.enable'); await send('Log.enable');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
 const evalGesture = async (expr) => {
   const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true, userGesture: true });
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
@@ -103,9 +103,9 @@ const tog = await evalJs(`(async () => {
   HTMLMediaElement.prototype.canPlayType = function (t) { return /mpegurl/i.test(t) ? 'maybe' : ''; };
   T.renderTv(); const before = T.logLines().length;
   const src0 = v.getAttribute('src');
-  p.open = false; await new Promise((r) => setTimeout(r, 200));
+  p.open = false; await new Promise((r) => { setTimeout(r, 200); });
   const closed = v.getAttribute('src');
-  p.open = true; await new Promise((r) => setTimeout(r, 200));
+  p.open = true; await new Promise((r) => { setTimeout(r, 200); });
   const reopened = v.getAttribute('src');
   return { src0, closed, reopened, logs: T.logLines().slice(before).filter((l) => /tv: card/.test(l)) };
 })()`);
@@ -156,7 +156,7 @@ await evalGesture(`document.getElementById('tvCast').click(); 1`); await sleep(1
 const mid = await evalJs(`(async () => {
   const T = window.__batrayTest; const before = T.logLines().length; const req0 = window.__castReq;
   const b = document.getElementById('tvCast'), o = document.getElementById('tvCastOverlay');
-  b.click(); o.click(); await new Promise((r) => setTimeout(r, 50));                                    // a second (and third) tap while it works
+  b.click(); o.click(); await new Promise((r) => { setTimeout(r, 50); });                                    // a second (and third) tap while it works
   return { sheet: !document.getElementById('sheet').hidden, title: document.getElementById('sheetTitle').textContent, lead: document.getElementById('sheetLead').textContent, bar: !document.getElementById('sheetProg').hidden, acts: [...document.querySelectorAll('#sheet [data-act]')].map((x) => x.dataset.act), busy: [b.disabled, b.classList.contains('busy'), o.disabled, o.classList.contains('busy')], waitIcon: getComputedStyle(b.querySelector('.waiticon')).display, castIcon: getComputedStyle(b.querySelector('.casticon')).display, req: window.__castReq - req0, hint: document.getElementById('tvCastHint').textContent, flow: T.castFlow(), taps: T.logLines().slice(before).filter((l) => /cast: tap/.test(l)) };
 })()`);
 check('from the tap on, a progress sheet says it is looking for TVs with the seconds left and a Cancel, both Cast buttons are greyed with the wait icon, and taps meanwhile do nothing', mid.sheet && mid.title === 'Cast to TV' && /looking for TVs on this Wi-Fi… \(\d+ s left\)/.test(mid.lead) && mid.bar && mid.acts.join() === 'cancel' && mid.busy.every(Boolean) && mid.waitIcon === 'block' && mid.castIcon === 'none' && mid.req === 0 && mid.taps.length === 0 && mid.flow.busy && mid.flow.phase === 'looking' && /looking for TVs/.test(mid.hint), mid);
@@ -224,15 +224,15 @@ check("the receiver's player state shows under the button and an IDLE/ERROR is c
 const icons = await evalJs(`(async () => {
   const T = window.__batrayTest; const b = document.getElementById('tvCast'), o = document.getElementById('tvCastOverlay');
   const before = T.logLines().length;
-  o.click(); await new Promise((r) => setTimeout(r, 300));
-  const waiting = T.castFlow().phase; const ok = [...document.querySelectorAll('#sheet [data-act]')].find((x) => x.dataset.act === 'cancel'); if (ok) ok.click(); await new Promise((r) => setTimeout(r, 200));   // the load put the sheet in "waiting"; close it
+  o.click(); await new Promise((r) => { setTimeout(r, 300); });
+  const waiting = T.castFlow().phase; const ok = [...document.querySelectorAll('#sheet [data-act]')].find((x) => x.dataset.act === 'cancel'); if (ok) ok.click(); await new Promise((r) => { setTimeout(r, 200); });   // the load put the sheet in "waiting"; close it
   return { waiting, rowSvg: !!b.querySelector('svg.casticon'), rowText: b.textContent.trim(), rowLabel: b.getAttribute('aria-label'), overSvg: !!o.querySelector('svg.casticon'), overLabel: o.getAttribute('aria-label'), overOnVideo: o.parentElement === document.getElementById('tvVideo').parentElement, rawHint: document.getElementById('tvCastHint').textContent, size: [o.getBoundingClientRect().width, b.getBoundingClientRect().width], logs: T.logLines().slice(before).filter((l) => /^.{14}cast:/.test(l)) };
 })()`);
 check('both Cast buttons are the cast icon with the name "Cast to TV", the overlay sits on the preview, the hint line carries the words, and the overlay runs the same Cast flow', icons.rowSvg && icons.rowText === '' && icons.rowLabel === 'Cast to TV' && icons.overSvg && icons.overLabel === 'Cast to TV' && icons.overOnVideo && /^Cast to TV - /.test(icons.rawHint) && icons.size[0] >= 40 && icons.size[1] >= 40 && icons.logs.some((l) => /cast: tap -> load-media/.test(l)) && icons.waiting === 'waiting', icons);
 
 // the test-pattern cast (owner 2026-09-27: the TV showed only the blue icon): a plain MP4 next to the app, so the
 // TV, the session and the host are proved apart from the live stream; the receiver's media messages are listened to
-const tst = await evalJs(`(async () => { const T = window.__batrayTest; const before = T.logLines().length; const n = window.__castLoads.length; document.getElementById('tvCastTest').click(); await new Promise((r) => setTimeout(r, 400)); const l = window.__castLoads[window.__castLoads.length - 1]; const c = [...document.querySelectorAll('#sheet [data-act]')].find((x) => x.dataset.act === 'cancel'); if (c) c.click(); await new Promise((r) => setTimeout(r, 200)); return { added: window.__castLoads.length - n, url: l && l.url, type: l && l.type, stream: l && l.stream, title: l && l.title, logs: T.logLines().slice(before).filter((x) => /cast:/.test(x)) }; })()`);
+const tst = await evalJs(`(async () => { const T = window.__batrayTest; const before = T.logLines().length; const n = window.__castLoads.length; document.getElementById('tvCastTest').click(); await new Promise((r) => { setTimeout(r, 400); }); const l = window.__castLoads[window.__castLoads.length - 1]; const c = [...document.querySelectorAll('#sheet [data-act]')].find((x) => x.dataset.act === 'cancel'); if (c) c.click(); await new Promise((r) => { setTimeout(r, 200); }); return { added: window.__castLoads.length - n, url: l && l.url, type: l && l.type, stream: l && l.stream, title: l && l.title, logs: T.logLines().slice(before).filter((x) => /cast:/.test(x)) }; })()`);
 check('the test-pattern link casts the 6 s MP4 served next to the app as a buffered video/mp4, and the load result is logged', tst.added === 1 && /\/batray\/test-tv(\.[0-9a-f]+)?\.mp4$/.test(tst.url || '') && tst.type === 'video/mp4' && tst.stream === 'BUFFERED' && /test pattern/.test(tst.title) && tst.logs.some((l) => /loadMedia\(test video\) resolved with no error/.test(l)), tst);
 const mp4 = await evalJs(`fetch(new URL('./test-tv.mp4', document.querySelector('script[src*="app."]') ? document.querySelector('script[src*="app."]').src : location.href).href).then((r) => ({ ok: r.ok, type: r.headers.get('content-type'), len: +r.headers.get('content-length') }))`).catch((e) => ({ err: e.message }));
 check('the test pattern is served as video/mp4 and is small', mp4.ok && /video\/mp4/.test(mp4.type || '') && mp4.len > 100000 && mp4.len < 600000, mp4);

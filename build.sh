@@ -12,6 +12,9 @@
 # after its hash is computed - a hashed name stays immutable across deploys.
 set -e
 cd "$(dirname "$0")"
+# -Werror (owner 2026-10-01, as dart analyze in his Flutter build.sh): every unit test and every static-analysis
+# finding (eslint incl. the type-aware rules, tsc --checkJs, the house-rules sweeps) fails the build before any hashing
+./test.sh
 rm -rf dist
 for f in public/*/*.js; do case "$f" in *.min.js) ;; *) node --check "$f";; esac; done
 python3 - <<'PY'

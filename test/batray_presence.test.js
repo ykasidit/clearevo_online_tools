@@ -40,7 +40,7 @@ globalThis.fetch = async (url, init = {}) => { fetches.push({ url, method: init.
 const { Viewer, Publisher } = await import('../public/batray/live.js');
 // a transport as the loop sees it, without WebRTC
 const fakeLink = (kind = 'sfu') => ({ kind, pc: { connectionState: 'connected', getStats: async () => [], close() {} }, dc: { readyState: 'open', close() {} }, ac: { close() {} }, session: 'S', path: { tier: 'udp', sub: null, label: 'direct UDP' }, closed: new Flag(false), open: true });
-const settle = (ms = 15) => new Promise((r) => setTimeout(r, ms));
+const settle = (ms = 15) => new Promise((r) => { setTimeout(r, ms); });
 const server = { conns: 1, limit: 1000 };
 
 test('readerPresent: fresh data overrides the server, otherwise the server decides', () => {
@@ -96,14 +96,14 @@ test('publisher re-registers its SFU session when its socket reopens and when th
   p.room = 'r1'; p.pubToken = 'tok'; p.sid = 'SESS'; p.state.live = true;
   fetches.length = 0;
   p.onSigConn(true);
-  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => { setTimeout(r, 0); });
   assert.equal(fetches.length, 1);
   assert.match(fetches[0].url, /room\/r1\/session\?token=tok$/); assert.equal(fetches[0].method, 'PUT'); assert.deepEqual(fetches[0].body, { session: 'SESS' });
   p.onSignal({ type: 'status', viewers: 0, live: false, server: { conns: 0, limit: 1000 } });
-  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => { setTimeout(r, 0); });
   assert.equal(fetches.length, 2);
   // not live (between retries): nothing to register
-  p.state.live = false; p.onSigConn(true); await new Promise((r) => setTimeout(r, 0));
+  p.state.live = false; p.onSigConn(true); await new Promise((r) => { setTimeout(r, 0); });
   assert.equal(fetches.length, 2);
 });
 
@@ -122,13 +122,13 @@ test('channel name: saved, else the BMS name, else a cat; placeholders never win
 
 test('publisher keeps the earlier room when the check itself fails (0.9.50: a Wi-Fi blink is not a lost room - the relay stores the token; the viewer then waited on a room the reader had left, 2026-09-30)', async () => {
   const oldKey = makeKeyB64(); const posts = [];
-  globalThis.fetch = async (url, init = {}) => { if (/\/room$/.test(String(url)) && (init.method || 'GET') === 'POST') posts.push(url); throw new TypeError('Failed to fetch'); };
+  globalThis.fetch = async (/** @type {string} */ url, init = {}) => { if (/\/room$/.test(String(url)) && (init.method || 'GET') === 'POST') posts.push(url); throw new TypeError('Failed to fetch'); };
   const lines = []; const p = new Publisher({ log: (l) => lines.push(l), onState: () => {} });
   p.connectSfu = async () => fakeLink();
   const link = await p.start({ room: 'oldroom', pub: 'oldpub', key: oldKey, at: 1 });
   assert.equal(p.reused, true); assert.equal(p.room, 'oldroom'); assert.equal(p.pubToken, 'oldpub'); assert.equal(p.keyB64, oldKey); assert.match(link, /view=oldroom#k=/);
   assert.equal(posts.length, 0, 'no new room asked for'); assert.ok(lines.some((l) => /could not check the earlier room \(Failed to fetch\) - keeping it/.test(l)), lines.join('\n'));
-  p.stop();
+  await p.stop();
 });
 
 test('publisher reuses an earlier room when the relay still has it, else makes a new one', async () => {
@@ -152,7 +152,7 @@ test('publisher reuses an earlier room when the relay still has it, else makes a
       assert.equal(p.reused, false); assert.equal(p.room, 'newroom'); assert.notEqual(p.keyB64, oldKey); assert.match(link, /view=newroom#k=/);
     }
     assert.deepEqual(Object.keys(p.credentials).sort(), ['at', 'key', 'pub', 'room']);
-    p.stop(); fetches.length = 0;
+    await p.stop(); fetches.length = 0;
   }
 });
 
@@ -171,8 +171,8 @@ test('2026-09-22 reader log: the signalling socket pings the relay every 10 s an
   const logs = [];
   const p = new Publisher({ log: (m) => logs.push(m), onState: () => {} });
   p.room = 'r9'; p.pubToken = 'tok'; p.sig = null;
-  const { Viewer } = await import('../public/batray/live.js');
-  const v = new Viewer({ room: 'r1', keyB64: makeKeyB64(), log: (m) => logs.push(m), onState: () => {}, onEnvelope: () => {} });
+  const { Viewer: ViewerCls } = await import('../public/batray/live.js');
+  const v = new ViewerCls({ room: 'r1', keyB64: makeKeyB64(), log: (m) => logs.push(m), onState: () => {}, onEnvelope: () => {} });
   let t = 7_000_000; v.now = () => t;
   await v.start();
   const sig = v.sig; sig.now = () => t; clearInterval(sig.tick);

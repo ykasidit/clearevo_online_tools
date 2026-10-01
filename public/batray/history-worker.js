@@ -62,7 +62,7 @@ async function init() {
           const busy = /Access Handle|NoModificationAllowed|InvalidState/i.test(String(e && e.message));
           if (!busy || i >= INSTALL_TRIES) { wlog(`pool not taken after ${i} tries: ${e && e.message}`); throw e; }
           if (i === 1 || i % 10 === 0) wlog(`pool busy (another worker still holds its files), try ${i} of ${INSTALL_TRIES}`);
-          await new Promise((r) => setTimeout(r, INSTALL_WAIT_MS));
+          await new Promise((r) => { setTimeout(r, INSTALL_WAIT_MS); });
         }
       }
     })().catch((e) => { initP = null; throw e; });
@@ -179,7 +179,7 @@ const ops = {
   /** Test hooks. `slow` = a worker that does not answer for a while (a timer: terminate() ends it cleanly and the
    *  pool is free at once); `spin` = a worker stuck in JavaScript (a busy loop: Chrome's terminate() then never
    *  releases its access handles - the pool stays locked until the page is reloaded, probed 2026-09-24). */
-  async slow({ ms }) { await new Promise((r) => setTimeout(r, Math.min(ms || 0, 120000))); return { slept: ms }; },
+  async slow({ ms }) { await new Promise((r) => { setTimeout(r, Math.min(ms || 0, 120000)); }); return { slept: ms }; },
   /** Test hook: damage a day's file in place (the header stays, every byte after it is 0xFF), as a bad flash
    *  block or a torn write would. The next read or write of that day raises SQLITE_CORRUPT. */
   async corrupt({ day }) { await init(); await resume(); close(day); const name = dbName(day); const bytes = pool.exportFile(name); bytes.fill(0xff, 100); pool.importDb(name, bytes); return { bytes: bytes.length }; },

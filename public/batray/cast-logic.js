@@ -82,9 +82,9 @@ export function castButtons(cs) { const busy = cs.busy || !!cs.requestAt; return
 export function castStateUi(cs) { return cs.busy || cs.requestAt ? 'sheet' : 'hint'; }
 
 /** A CAST_STATE_CHANGED event. Returns true once discovery has spoken (the third event). */
-export function onCastStateEvent(cs, castState) {
-  cs.events++; cs.castState = castState;
-  if (castState === 'NO_DEVICES_AVAILABLE') cs.flipped = true;
+export function onCastStateEvent(cs, state) {
+  cs.events++; cs.castState = state;
+  if (state === 'NO_DEVICES_AVAILABLE') cs.flipped = true;
   return discoveryKnown(cs);
 }
 export function discoveryKnown(cs) { return cs.events >= 3; }

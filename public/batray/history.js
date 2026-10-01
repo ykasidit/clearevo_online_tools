@@ -45,7 +45,7 @@ class MemoryBackend {
   async last({ day, p, n = 1 }) { return { rows: this.rowsOf(day).filter((r) => r.p === p).sort((a, b) => a.t - b.t).slice(-n) }; }
   async query({ p, from, to, stepMs, days }) {
     const parts = [], energy = { charged: 0, discharged: 0 }; let first = null, last = null;
-    for (const day of (days || [...this.store.keys()].sort())) {
+    for (const day of (days || [...this.store.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)))) {
       const rows = this.rowsOf(day).slice().sort((a, b) => a.t - b.t); if (!rows.length) continue;
       const b = bucketsFromRows(rows, { p, from, to, stepMs }); if (b.t.length) parts.push(b);
       const e = energyFromRows(rows, { p, from, to }); energy.charged += e.charged; energy.discharged += e.discharged;
@@ -61,7 +61,7 @@ class MemoryBackend {
   async oldFiles() { return { files: 0, bytes: 0 }; }
   async pause() { return { paused: false }; }
   async resume() { return { paused: false }; }
-  async slow({ ms }) { await new Promise((r) => setTimeout(r, ms)); return { slept: ms }; }
+  async slow({ ms }) { await new Promise((r) => { setTimeout(r, ms); }); return { slept: ms }; }
   async note() { return { bytes: 0 }; }
   async logAppend({ name, text }) { const f = this.files.get('L:' + name) || { raw: '' }; f.raw += text; this.files.set('L:' + name, f); return { bytes: f.raw.length }; }
   async logList() { return { files: [...this.files.entries()].filter(([k]) => k.startsWith('L:')).map(([k, f]) => ({ name: k.slice(2), bytes: f.raw.length })).sort((a, b) => (a.name < b.name ? -1 : 1)) }; }

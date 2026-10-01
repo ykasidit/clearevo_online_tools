@@ -72,7 +72,7 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
   // ---- presence events (viewer joined/left, reader online/offline) ----
   function notify(kind, title, body) {
     if (!settings.events[kind]) return;
-    deliver(title, body, 3, { viewers: 'eyes', reader: 'satellite', net: 'globe_with_meridians' }[kind] || 'bell');
+    void deliver(title, body, 3, { viewers: 'eyes', reader: 'satellite', net: 'globe_with_meridians' }[kind] || 'bell');
   }
 
   // ---- evaluation ----
@@ -93,10 +93,10 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
       if (p.userDisconnect && !p.connected) { ev.forget(p.id); continue; }   // the user pressed Disconnect: silence is intended
       for (const e of ev.tick(p.id, p.label, sampleOf(p))) {
         const { title, body } = formatEvent(e, A);
-        deliver(title, body, e.priority, e.tag);
+        void deliver(title, body, e.priority, e.tag);
       }
     }
-    heartbeat();
+    void heartbeat();
   }
   // The watchdog is about this phone dying, not about Bluetooth: it stays armed
   // while a real BMS is in use (connected or auto-reconnecting; a Bluetooth
@@ -107,7 +107,7 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
   async function heartbeat(force = false) {
     const st = status();
     if (!st.watchdog || viewMode) return;
-    if (!inUse()) { if (armed) { armed = false; stopWatch(); } if (!force) return; }
+    if (!inUse()) { if (armed) { armed = false; void stopWatch(); } if (!force) return; }
     if (!force && Date.now() - lastHeartbeat < HEARTBEAT_MS) return;
     lastHeartbeat = Date.now(); armed = true;
     try {
@@ -153,9 +153,9 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
           <div class="note">${A.watchNote}</div>${/^https:\/\/ntfy\.sh$/.test(n.server.replace(/\/+$/, '')) && !n.token ? `<div class="note warn">${A.watchTokenWarn}</div>` : ''}</div>
       </div>`;
     const on = (id, evn, fn) => { const el = $(id); if (el) el.addEventListener(evn, fn); };
-    on('alNtfy', 'change', (e) => { ch.ntfy = e.target.checked; if (!ch.ntfy && w.on) { w.on = false; stopWatch(); } save(); });
+    on('alNtfy', 'change', (e) => { ch.ntfy = e.target.checked; if (!ch.ntfy && w.on) { w.on = false; void stopWatch(); } save(); });
     on('alChrome', 'change', async (e) => { ch.chrome = e.target.checked; if (ch.chrome) await ensureChrome(); save(); });
-    for (const id of ['alServer', 'alTopic', 'alToken']) on(id, 'change', () => { n.server = $('alServer').value.trim(); n.topic = $('alTopic').value.trim(); n.token = $('alToken').value.trim(); save(); if (w.on) heartbeat(true); });
+    for (const id of ['alServer', 'alTopic', 'alToken']) on(id, 'change', () => { n.server = $('alServer').value.trim(); n.topic = $('alTopic').value.trim(); n.token = $('alToken').value.trim(); save(); if (w.on) void heartbeat(true); });
     on('alNtfyTest', 'click', async () => { try { await sendNtfy(A.testTitle, A.testBody, 3, 'test_tube'); log('ntfy test sent'); } catch (e) { log(`ntfy test failed: ${e.message}`); toast(`ntfy: ${e.message}`); } });   // a toast, never alert() (house rule)
     on('alChromeTest', 'click', async () => { try { await ensureChrome(); await sendChrome(A.testTitle, A.testBody, 'test'); } catch (e) { log(`chrome test failed: ${e.message}`); toast(e.message); } });
     $('alertsBody').querySelectorAll('[data-rule]').forEach((el) => el.addEventListener('change', () => { settings.rules[el.dataset.rule].on = el.checked; save(); }));
@@ -164,9 +164,9 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
     on('alEvViewers', 'change', (e) => { settings.events.viewers = e.target.checked; save(); });
     on('alEvNet', 'change', (e) => { settings.events.net = e.target.checked; save(); });
     on('alEvReader', 'change', (e) => { settings.events.reader = e.target.checked; save(); });
-    on('alWatch', 'change', (e) => { w.on = e.target.checked; save(); if (w.on) heartbeat(true); else stopWatch(); });
-    on('alWatchName', 'change', (e) => { w.name = e.target.value.trim().slice(0, 64); save(); heartbeat(true); });
-    on('alWatchMin', 'change', (e) => { const v = Math.round(+e.target.value * 60); if (Number.isFinite(v)) w.timeoutS = Math.max(120, Math.min(86400, v)); save(); heartbeat(true); });
+    on('alWatch', 'change', (e) => { w.on = e.target.checked; save(); if (w.on) void heartbeat(true); else void stopWatch(); });
+    on('alWatchName', 'change', (e) => { w.name = e.target.value.trim().slice(0, 64); save(); void heartbeat(true); });
+    on('alWatchMin', 'change', (e) => { const v = Math.round(+e.target.value * 60); if (Number.isFinite(v)) w.timeoutS = Math.max(120, Math.min(86400, v)); save(); void heartbeat(true); });
   }
   async function ensureChrome() {
     if (typeof Notification === 'undefined') throw new Error('this browser has no notifications');

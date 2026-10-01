@@ -62,7 +62,7 @@ function waitConnected(pc, ms, signal) {
 }
 function waitOpen(dc, ms, signal) {
   return new Promise((res, rej) => {
-    if (dc.readyState === 'open') return res();
+    if (dc.readyState === 'open') { res(); return; }
     const t = setTimeout(() => rej(new Error(`channel not open in ${Math.round(ms / 1000)} s (${dc.readyState})`)), ms);
     if (signal) signal.addEventListener('abort', () => { clearTimeout(t); rej(abortError()); }, { once: true });
     dc.addEventListener('open', () => { clearTimeout(t); res(); }, { once: true });
@@ -172,7 +172,7 @@ export class Publisher {
    *  working for viewers who bookmarked it. Falls back to a new room only when
    *  the relay says it no longer knows the old one. */
   async start(existing = null) {
-    if (this.task) return this.link;
+    if (this.task !== null) return this.link;
     let room = null, pub = null;
     this.reused = false;
     if (existing && existing.room && existing.pub && existing.key) {
@@ -267,7 +267,7 @@ export class Publisher {
     // The relay forgets the session when this socket closes - even a 4 s blink
     // - and viewers are told "no reader" while the stream is fine. Register it
     // again on every reopen (2026-09-17).
-    if (up && this.sid && this.state.live) this.registerSession('socket reopened');
+    if (up && this.sid && this.state.live) void this.registerSession('socket reopened');
   }
   async registerSession(why) {
     if (!this.sid || !this.room) return;
@@ -283,7 +283,7 @@ export class Publisher {
       if (key !== this.lastStatusKey) { this.lastStatusKey = key; this.log(`status: viewers=${m.viewers} live=${m.live} session=${(m.session || '-').slice(0, 8)} server=${m.server ? `${m.server.conns}/${m.server.limit}` : '?'}`); }
       this.state.viewers = m.viewers; this.state.server = m.server || this.state.server; this.emit();
       if (!m.live && this.sid && this.state.live && !this.registering) {   // the room lost our session while we are still publishing
-        this.registering = true; this.registerSession('room reported no session').finally(() => { this.registering = false; });
+        this.registering = true; void this.registerSession('room reported no session').finally(() => { this.registering = false; });
       }
       return;
     }
@@ -390,7 +390,7 @@ export class Viewer {
   get connected() { return !!((this.p2p && this.p2p.open) || (this.sfu && this.sfu.dc && this.sfu.dc.readyState === 'open')); }
 
   async start() {
-    if (this.task) return;
+    if (this.task !== null) return;
     this.key = await importKey(this.keyB64);
     this.sig = new Signal(this.room, 'view', null, this.log);
     this.sig.on((m) => this.onSignal(m));

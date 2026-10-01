@@ -27,7 +27,7 @@ ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.
 const send = (method, params = {}) => new Promise((ok, err) => { const i = ++id; pending.set(i, { ok, err }); ws.send(JSON.stringify({ id: i, method, params })); });
 await new Promise((ok) => { ws.onopen = ok; });
 await send('Runtime.enable'); await send('Page.enable');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
 const evalJs = async (expr) => { const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text); return r.result.value; };
 let fails = 0;
 const check = (name, cond, got) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : ` - got ${JSON.stringify(got).slice(0, 600)}`}`); if (!cond) fails++; };
@@ -37,7 +37,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   const rf = window.fetch.bind(window);
   window.fetch = async (u, i = {}) => {
     const url = String(u);
-    if (url.endsWith('/batray/api/room') && (i.method || 'GET').toUpperCase() === 'POST') { await new Promise((r) => setTimeout(r, 1500)); return new Response(JSON.stringify({ room: 'testroom0000000000000A', pub: 'testpub00000000000000A' }), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
+    if (url.endsWith('/batray/api/room') && (i.method || 'GET').toUpperCase() === 'POST') { await new Promise((r) => { setTimeout(r, 1500); }); return new Response(JSON.stringify({ room: 'testroom0000000000000A', pub: 'testpub00000000000000A' }), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
     return rf(u, i);
   };` });
 

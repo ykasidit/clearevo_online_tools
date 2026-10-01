@@ -48,7 +48,7 @@ test('select: the first arm wins, the losers are aborted through their signal, t
   });
   assert.deepEqual(r, { key: 'timer', value: TIMEOUT });
   await sleep(5);
-  assert.deepEqual(aborted.sort(), ['flag', 'item'], 'the losing arms were cancelled, no waiter leaks');
+  assert.deepEqual(aborted.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ['flag', 'item'], 'the losing arms were cancelled, no waiter leaks');
   assert.equal(f.w.length, 0); assert.equal(c.w.length, 0);
   const p = select(undefined, { flag: (s) => f.wait(true, { signal: s }), timer: (s) => sleep(1000, s) }); f.set(true);
   assert.deepEqual(await p, { key: 'flag', value: 'set' });

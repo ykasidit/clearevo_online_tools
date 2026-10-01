@@ -64,6 +64,74 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.55: -Werror, and what the Dart analyzer catches (owner ask 2026-10-01, later)
+
+"In C I use clang analyze and coccinelle with cc -Werror; in Dart any
+warning that was not sanely exempt made build.sh fail. Cover what the
+Dart analyzer catches: an async function not awaited - unawaited async
+is mostly a coding problem, nothing happens at runtime and people wonder
+why - and UI work when the view is not mounted." So:
+
+- **-Werror.** Every rule is an error, any message fails the lint test
+  (there is no warn level), and `build.sh` runs `test.sh` first: a build
+  cannot hash a file the analyzers reject. Rules switched off have their
+  reason in the `OFF` table of `test/batray_lint.test.js`; a line exempt
+  from a rule says why on the line (`// eslint-disable-next-line <rule>
+  -- <why>`), and a directive without a reason, or one that no longer
+  disables anything, fails the test too.
+- **Unawaited calls** (`unawaited_futures` / `discarded_futures`): a
+  rule needs the types to know a call returns a promise, so the lint
+  test now runs typescript-eslint's type-aware rules over the same
+  `tsconfig.json` the checker uses: `no-floating-promises` (a bare call
+  of an async function is a finding; `void f()` is the explicit
+  fire-and-forget, Dart's `unawaited()`; `await` where the next step
+  depends on it), `no-misused-promises` (a promise as a boolean - the
+  `if (this.task)` guard was one, now `!== null` - or an async callback
+  handed to a sync slot), `await-thenable`, `unbound-method` (a method
+  read without its object: the feature line's `navigator.bluetooth.
+  getDevices` is now a `typeof ... === 'function'`), `only-throw-error`,
+  `return-await` inside try/catch, sort() without a comparator (numbers
+  sort as strings). The test files go through the same rules with
+  `tsconfig.tests.json`. First run: 57 bare async calls in the app (44
+  in app.js: syncWake, flushHistory, flushLog, runAttempt, stopShare,
+  stopTv, ... from event handlers and timers), two `p.stop()` in a test
+  that the test never waited for.
+- **UI work on a view that is no longer there** (`use_build_context_
+  synchronously`): a page never unmounts, but the state a paint shows
+  can be stale by the time an await returns - another flow may own the
+  link, the sheet may be a different one. `test/lint/ui_after_await.mjs`
+  is our own ESLint rule: in an async function, after an await, a call
+  that paints (`render*`, `paint*`, `scheduleDraw`, `openSheet` /
+  `updateSheet` / `closeSheet`, `setStatus`, `castHint`, `applyLang`,
+  `showQr`, `unloadPreview`, a `$('x').y =` write) must come after a
+  re-check: an `if (...) return` (`publisher !== pub`, `tv !== t`), an
+  `if` whose block holds the paint, `signal.throwIfAborted()` or
+  `own()`. The awaited call itself is the wait, not a paint; a `toast`
+  reports the result and is not a state paint; a line that is right
+  without a re-check (a single-flight function painting the one state
+  object as it stands) says why on the line - sixteen in app.js. It
+  found two real ones: `stopShare` and `stopTv` cleared the QR and the
+  preview after `await stop()`, which would have wiped a share or stream
+  started meanwhile; both now re-check (`if (!publisher)`, `if (!tv)`).
+- **The rest of the Dart-analyzer class** in plain ESLint, all errors:
+  `consistent-return` (a function returning a value on some paths),
+  `no-promise-executor-return`, `no-constructor-return`, `no-shadow`
+  (a local hiding an outer name - one hid the imported `sheetOpen`, one
+  a test's `Viewer`), `no-use-before-define` (TDZ), `no-implicit-
+  globals`, `no-invalid-this`, `default-case`, `no-unneeded-ternary`,
+  `no-useless-return` / `-call` / `-concat`.
+- **The rules must bite.** `test/lint/fixtures/` holds two files whose
+  `// FLAG` lines are the only ones the rules may report; the test fails
+  if a rule stops working or over-reports.
+- Off, with the reason in the test: `require-atomic-updates` (documented
+  false positives on every `s.x = f(await ...)`; the one-writer rule is
+  the house-rules sweep), `require-await` (an async function without an
+  await is the explicit way to be promise-returning by contract; Dart
+  does not flag it either), `no-unmodified-loop-condition` (the transfer
+  loops await inside; `publisher === pub` changes between awaits),
+  `no-loop-func` (closures must read the live language table),
+  `no-empty-function` (boundary callback defaults).
+
 ## 0.9.54: static analysis as tests - the coccinelle and rustc of JavaScript (owner ask 2026-10-01)
 
 "Search for static code analysis like coccinelle in the kernel, cover the

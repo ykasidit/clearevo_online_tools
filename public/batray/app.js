@@ -35,7 +35,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.54';
+export const APP_VERSION = '0.9.55';
 
 /** @returns {any} */
 const $ = (id) => document.getElementById(id);
@@ -97,14 +97,14 @@ function logHeaderLines() {
     `screen: ${screen.width}x${screen.height} @${devicePixelRatio} · viewport ${innerWidth}x${innerHeight} · touch ${navigator.maxTouchPoints} · orientation ${safe(() => screen.orientation.type)} · visibility ${document.visibilityState}`,
     `net: online=${navigator.onLine} · type ${c.type || c.effectiveType || '?'} · downlink ${c.downlink ?? '?'} Mbps · rtt ${c.rtt ?? '?'} ms · saveData ${c.saveData ?? '?'}`,
     `lang: ui=${langCode} · browser ${navigator.language} · ${(navigator.languages || []).join(',')}`,
-    `features: secure=${yn(isSecureContext)} bluetooth=${yn(!!navigator.bluetooth)} adv=${yn(typeof BluetoothDevice !== 'undefined' && 'watchAdvertisements' in BluetoothDevice.prototype)} getDevices=${yn(navigator.bluetooth && navigator.bluetooth.getDevices)} availability=${yn(navigator.bluetooth && navigator.bluetooth.getAvailability)} wakeLock=${yn('wakeLock' in navigator)} notifications=${typeof Notification === 'undefined' ? 'none' : Notification.permission} sw=${navigator.serviceWorker && navigator.serviceWorker.controller ? 'controlled' : 'none'} webCodecs=${yn(typeof VideoEncoder !== 'undefined')} hls=${v.canPlayType('application/vnd.apple.mpegurl') || 'no'} remotePlayback=${yn('remote' in v)} storage=${yn(storageOk)} clipboard=${yn(navigator.clipboard && navigator.clipboard.writeText)}`,
+    `features: secure=${yn(isSecureContext)} bluetooth=${yn(!!navigator.bluetooth)} adv=${yn(typeof BluetoothDevice !== 'undefined' && 'watchAdvertisements' in BluetoothDevice.prototype)} getDevices=${yn(!!navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function')} availability=${yn(navigator.bluetooth && navigator.bluetooth.getAvailability)} wakeLock=${yn('wakeLock' in navigator)} notifications=${typeof Notification === 'undefined' ? 'none' : Notification.permission} sw=${navigator.serviceWorker && navigator.serviceWorker.controller ? 'controlled' : 'none'} webCodecs=${yn(typeof VideoEncoder !== 'undefined')} hls=${v.canPlayType('application/vnd.apple.mpegurl') || 'no'} remotePlayback=${yn('remote' in v)} storage=${yn(storageOk)} clipboard=${yn(!!navigator.clipboard && typeof navigator.clipboard.writeText === 'function')}`,
     `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutoffPct}% keepAwake=${wakeS.mode} lowPower=${uiS.lowPower} tvRes=${$('tvRes').dataset.value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
   ];
 }
 // what the header cannot know synchronously: battery, codec support, adapter state
 async function logEnvAsync() {
   // each probe on its own: one that never settles (getBattery in some builds) must not hold the others
-  (async () => { try { if (navigator.getBattery) { const b = await navigator.getBattery(); log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => log(`battery: ${Math.round(b.level * 100)}%`)); b.addEventListener('chargingchange', () => log(`battery: charging=${b.charging}`)); } } catch (e) { log(`battery: ${e.message}`); } })();
+  void (async () => { try { if (navigator.getBattery) { const b = await navigator.getBattery(); log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => log(`battery: ${Math.round(b.level * 100)}%`)); b.addEventListener('chargingchange', () => log(`battery: charging=${b.charging}`)); } } catch (e) { log(`battery: ${e.message}`); } })();
   if (typeof VideoEncoder !== 'undefined') {
     const out = [];
     for (const codec of ['avc1.42E01E', 'avc1.4D401F', 'vp09.00.10.08']) { try { const r = await VideoEncoder.isConfigSupported({ codec, width: 1280, height: 720, bitrate: 500000, framerate: 1, ...(codec.startsWith('avc') ? { avc: { format: 'avc' } } : {}) }); out.push(`${codec}=${yn(r.supported)}`); } catch (e) { out.push(`${codec}=err`); } }
@@ -174,7 +174,7 @@ class Pack {
       // Auto-reconnect no longer waits for an adapter-state probe (which this
       // Chrome lacks): the user is told once to keep Bluetooth on instead.
       if (!btWarned) { btWarned = true; toast(T.btKeepOn, 12000); }
-      refreshCard(); renderPackBar(); syncWake();
+      refreshCard(); renderPackBar(); void syncWake();
     });
     b.addEventListener('disconnected', () => {
       this.plog('gatt disconnected');
@@ -221,7 +221,7 @@ class Pack {
     schedulePackBar();
     if (publisher) publisher.publish(envelope('data', this, d, row ? { r: row } : null));
     if (connEvent(this.cs, 'data').action === 'back' && this.isActive) setStatus(() => T.connectedTo(this.label), 'good');   // back after a gap: say so instead of staying amber
-    if (first) syncWake();
+    if (first) void syncWake();
   }
   onInfo(i) { this.info = i; if (this.isActive) renderDevice(i); if (publisher) publisher.publish(envelope('info', this, i)); }
   onSettings(s) { this.settings = s; if (this.isActive) renderSettings(s); if (publisher) publisher.publish(envelope('settings', this, s)); }
@@ -357,7 +357,7 @@ function setKeepAwake(mode) {
   wakeS.mode = wakeMode(mode);
   $('keepAwake').dataset.value = wakeS.mode; $('keepAwake').textContent = T[{ auto: 'keepAwakeAuto', always: 'keepAwakeAlways', never: 'keepAwakeNever' }[wakeS.mode]];
   try { localStorage.setItem(KEEP_AWAKE_KEY, wakeS.mode); } catch {}
-  log(`keep-awake video: ${wakeS.mode}`); syncKeepAwake();
+  log(`keep-awake video: ${wakeS.mode}`); void syncKeepAwake();
 }
 $('keepAwake').dataset.value = wakeS.mode;
 $('keepAwake').addEventListener('click', async () => { const m = await openSheet('keepAwake'); if (m) setKeepAwake(m); });
@@ -381,11 +381,12 @@ async function syncKeepAwake() {
   } else if (!want && wakeS.videoOn) {
     wakeS.videoOn = false; keepVideo.pause(); log('keep-awake video stopped');
   }
+  // eslint-disable-next-line batray/ui-after-await -- wakeS is the one wake state; this paints it as it stands after the play() attempt
   $('wakeVideo').hidden = !wakeS.videoOn;
 }
 function scheduleWakeRetry() {
   if (wakeRetryTimer) return;
-  wakeRetryTimer = setTimeout(() => { wakeRetryTimer = null; if (wakeS.wanted && document.visibilityState === 'visible') syncWake(); }, wakeRetryDelayMs(wakeS));
+  wakeRetryTimer = setTimeout(() => { wakeRetryTimer = null; if (wakeS.wanted && document.visibilityState === 'visible') void syncWake(); }, wakeRetryDelayMs(wakeS));
 }
 async function syncWake() {
   wakeS.wanted = [...packs.values()].some((p) => wakeWantedByConn(p.cs, p.connected)) || shareS.phase === 'on' || shareS.phase === 'starting' || !!(viewer && viewer.state.live) || tvS.phase === 'on';
@@ -402,7 +403,7 @@ async function syncWake() {
           log(`screen wake lock dropped by the system while in front (${wakeS.drops}) - asking again`);
           scheduleWakeRetry();
         } else log('screen wake lock released');
-        syncKeepAwake();
+        void syncKeepAwake();
       });
       log('screen wake lock acquired');
     } catch (err) {
@@ -417,7 +418,7 @@ async function syncWake() {
   el.hidden = !wakeLock;
   await syncKeepAwake();
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && wakeS.wanted) syncWake(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && wakeS.wanted) void syncWake(); });
 
 // ---- flow picture layout: landscape on wide screens, portrait on phones and
 // in full screen when the viewport is taller than wide (owner ask 2026-09-17:
@@ -548,7 +549,7 @@ function recordRow(p, d, t, remoteRow = null) {
   if (!histS.day || day > histS.day) {                                   // a new UTC day: ids start again at 1 in its database
     const ro = rolloverDecision(histS, day);
     log(`history: ${ro.action} ${ro.day}`);
-    if (ro.action === 'rollover') flushHistory().then(maintainHistory);
+    if (ro.action === 'rollover') void flushHistory().then(maintainHistory);
   }
   if (p.remote) {
     const row = remoteRow;
@@ -557,7 +558,7 @@ function recordRow(p, d, t, remoteRow = null) {
     if (rd.action === 'gap') {
       if (!histS.gap) log(`history: live row ${row.id} arrived but this copy is complete only to ${rd.expected - 1}: stored, asking the reader for the rest`);
       histS.gap = 'gap';
-      if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') requestHistory();
+      if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') void requestHistory();
     }
     if (!rd.dup) { queueRow(row); histS.todayRows = Math.max(histS.todayRows, row.id); }
     return row;
@@ -621,7 +622,7 @@ async function unspill() {
   log(`history: ${n} of ${rows.length} rows queued when the last page was left are now stored`);
 }
 window.addEventListener('pagehide', () => { const n = spillPending(); hist.release(); if (n) log(`history: ${n} queued rows kept for the next start`); });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushHistory(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void flushHistory(); });
 /** Delete beyond the free-space headroom, refresh the listing and the summary line. */
 /** A corrupt day database (owner rule 2026-09-24, no repair at this stage): the worker closed it, named the day
  *  and raised; here the caller decides. `where` is 'live write' (the flush: today's file is deleted, a new one
@@ -643,6 +644,7 @@ async function corruptDb(e, where, rows) {
     } catch (e3) { log(`history: rows for the new ${day}.sqlite failed: ${e3.message}`); }
   }
   try { histS.days = await hist.days(); } catch { histS.days = histS.days.filter((x) => x.day !== day); }
+  // eslint-disable-next-line batray/ui-after-await -- paints histS as it stands; corruptDb is the only writer of today's counters while it runs
   renderStorage(); if (active) renderTrend(active);
 }
 async function maintainHistory() {
@@ -653,6 +655,7 @@ async function maintainHistory() {
     histS.days = await hist.days();
     if (d.delete.length) { const e2 = await hist.estimate(); histS.usage = e2.usage; histS.quota = e2.quota; }
   } catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); /* else the store logged it */ }
+  // eslint-disable-next-line batray/ui-after-await -- paints histS as it stands after maintenance (single writer)
   renderHistNote();
 }
 /** Start: today's counters come from its database, so ids continue exactly where the last session stopped. */
@@ -732,18 +735,20 @@ async function flushLog() {
   try {
     const r = await hist.logAppend(plan.file, text);
     flushDone(logS, plan.file, r.bytes, text.length);
+    // eslint-disable-next-line batray/ui-after-await -- paints the file list just read; flushLog is single-flight (logFlushing)
     if (plan.roll) { logS.files = await hist.logList(); for (const f of logRetention(logS.files, logS.filesMax)) { await hist.logRemove(f.name); } logS.files = await hist.logList(); renderLogNote(); }
   } catch (e) { logS.pending = []; logS.pendBytes = 0; if (!logS.failedOnce) { logS.failedOnce = true; console.warn('debug log write failed', e); } }
   finally { logFlushing = false; }
 }
 setInterval(flushLog, LOG_FLUSH_MS);
-window.addEventListener('pagehide', () => { flushLog(); });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushLog(); });
+window.addEventListener('pagehide', () => { void flushLog(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void flushLog(); });
 async function initLogStore() {
   logS.backend = await hist.ready;
   try { logS.files = await hist.logList(); } catch { logS.files = []; }
   const sum = logSummary(logS.files);
   log(`debug log: ${logS.on ? 'kept on this device' : 'not kept (opted out)'}, ${sum.files} files, ${Math.round(sum.bytes / 1024)} KB, session ${logS.sid}`);
+  // eslint-disable-next-line batray/ui-after-await -- start-up paint of the list just read
   renderLogNote(); renderDebugButtons();
 }
 function setLogKeep(on) {
@@ -774,6 +779,7 @@ async function downloadLogs() {
 async function clearLogs() {
   logS.pending = []; logS.pendBytes = 0; logS.file = null; logS.fileBytes = 0; logS.sessionBytes = 0;
   try { const r = await hist.logClear(); logS.files = []; log(`debug log: deleted (${r.removed} files)`); } catch (e) { log(`debug log: delete failed: ${e.message}`); }
+  // eslint-disable-next-line batray/ui-after-await -- paints the emptied list
   toast(T.logCleared, 5000); renderLogNote();
 }
 // ---- memory line + the last-run record (owner ask 2026-09-23): every 15 s the tab's heap use goes to the card, to
@@ -799,6 +805,7 @@ function renderMemory(m) {
 }
 async function memMeasure() {
   if (!memPrecise() || typeof performance.measureUserAgentSpecificMemory !== 'function') return;
+  // eslint-disable-next-line batray/ui-after-await -- paints the measurement just taken
   try { const r = await performance.measureUserAgentSpecificMemory(); memMeasured = { bytes: r.bytes, breakdown: r.breakdown, at: Date.now() }; renderMemory(memModel()); }
   catch (e) { log(`mem: measure failed: ${e.message}`); }
 }
@@ -830,7 +837,7 @@ function logLastRun() {
 }
 $('logKeep').addEventListener('change', () => setLogKeep($('logKeep').checked));
 $('logDownload').addEventListener('click', () => downloadLogs().catch((e) => log(`debug log: download failed: ${e.message}`)));
-$('logClear').addEventListener('click', async () => { const a = await openSheet('clearLogs'); if (a === 'ok') clearLogs(); });
+$('logClear').addEventListener('click', async () => { const a = await openSheet('clearLogs'); if (a === 'ok') await clearLogs(); });
 function fmtSize(b) { return b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`; }   // hoisted: used by the startup blocks above
 function histSum() { return historySummary(histS.days, histS.todayRows, { usage: histS.usage, quota: histS.quota, today: histS.day }); }
 function settingsEntries() { const out = []; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); out.push([k, localStorage.getItem(k)]); } } catch { /* no storage */ } return out; }
@@ -896,6 +903,7 @@ async function openBrowse(type) {
   browseS.type = type; await refreshBrowse();
   log(`browse: ${type} (${browseS.items.length} items)`);
   await openSheet('browse');
+  // eslint-disable-next-line batray/ui-after-await -- the sheet has closed; the Storage box shows what is stored now
   renderStorage();
 }
 async function browseDelete(id) {
@@ -904,6 +912,7 @@ async function browseDelete(id) {
   else if (t === 'set') { try { localStorage.removeItem(id); } catch { /* */ } }
   else { if (id === logS.file) { logS.pending = []; logS.pendBytes = 0; logS.file = null; logS.fileBytes = 0; } await hist.logRemove(id); }
   log(`browse: deleted ${t} ${id}`);
+  // eslint-disable-next-line batray/ui-after-await -- updateSheet() re-checks that the open sheet is still the browse sheet
   await refreshBrowse(); updateSheet('browse'); renderStorage();
   if (t === 'hist' && active) renderTrend(active);
 }
@@ -913,13 +922,13 @@ $('logBrowse').addEventListener('click', () => openBrowse('log'));
 $('setBackup').addEventListener('click', () => backupSettings());
 $('setRestore').addEventListener('click', () => $('setFile').click());
 $('setFile').addEventListener('change', async () => { const f = $('setFile').files[0]; $('setFile').value = ''; if (!f) return; if (f.size > 1048576) { toast(T.setBad, 6000); return; } restoreSettings(await f.text(), f.name).catch((e) => log(`settings: restore failed: ${e.message}`)); });
-$('setReset').addEventListener('click', async () => { const a = await openSheet('resetSettings'); log(`settings: reset -> ${a}`); if (a === 'ok') resetSettings(); });
+$('setReset').addEventListener('click', async () => { const a = await openSheet('resetSettings'); log(`settings: reset -> ${a}`); if (a === 'ok') await resetSettings(); });
 // past days for the 7 d / all ranges: read once, thinned to a row a minute, cached per day
 /** How much of the active pack is stored in the last 24 h (for the "collecting" bar): asked of the store every
  *  5 s while the card waits, plus what is still queued. */
 function refreshSpan(p) {
   const now = Date.now(); if (now - histMem.spanAt < 5000 || !p) return; histMem.spanAt = now;
-  hist.span(p.label, now - 86400e3, p.demo ? ['demo'] : undefined).then((r) => { histS.spanFirst = r.first; histS.spanLast = r.last; }).catch((e) => { if (isCorrupt(e)) corruptDb(e, 'history read'); });
+  void hist.span(p.label, now - 86400e3, p.demo ? ['demo'] : undefined).then((r) => { histS.spanFirst = r.first; histS.spanLast = r.last; }).catch((e) => { if (isCorrupt(e)) void corruptDb(e, 'history read'); });
 }
 function spanForWait(p) {
   let first = histS.spanFirst, last = histS.spanLast;
@@ -943,7 +952,7 @@ function renderTrend(p) {
   card.hidden = false;
   scheduleDraw(false);
 }
-function scheduleDraw(force) { if (!trendRaf) trendRaf = requestAnimationFrame(() => { trendRaf = 0; if (active) drawHistory(active, force); }); }
+function scheduleDraw(force) { if (!trendRaf) trendRaf = requestAnimationFrame(() => { trendRaf = 0; if (active) void drawHistory(active, force); }); }
 /** The trend is one bucket query for the window (never rows in memory): after each flush while live, at once on
  *  a range change; a reading in between does not touch the store. */
 async function drawHistory(p, force = false) {
@@ -958,6 +967,7 @@ async function drawHistory(p, force = false) {
     const q = await hist.query({ p: p.label, from, to, stepMs, days: daysFor(p, from, to) });
     histMem.series = { s: seriesFromBuckets(q.parts), energy: q.energy, from, to }; histMem.drawAt = Date.now();
     if (q.first !== null) { histS.spanFirst = q.first; histS.spanLast = q.last; }
+    // eslint-disable-next-line batray/ui-after-await -- drawHistory is single-flight (histMem.drawing); a range change meanwhile sets histMem.redraw and is drawn right after
     paintHistory();
   } catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); /* else the store logged it */ }
   finally { histMem.drawing = false; }
@@ -978,7 +988,7 @@ $('histRanges').addEventListener('click', (e) => {
   histS.range = b.dataset.range; try { localStorage.setItem('batray_hist_range', histS.range); } catch {}
   log(`history: range ${histS.range}`); if (active) scheduleDraw(true);
 });
-$('histClear').addEventListener('click', async () => { const a = await openSheet('clearHist'); log(`history: clear -> ${a}`); if (a === 'ok') clearHistory(); });
+$('histClear').addEventListener('click', async () => { const a = await openSheet('clearHist'); log(`history: clear -> ${a}`); if (a === 'ok') await clearHistory(); });
 window.addEventListener('resize', () => { if (active && active.data) paintHistory(); });
 
 function render(d, relabelOnly = false) {
@@ -1092,7 +1102,7 @@ function stopDemo() {
   removePack(p);
   log('demo stopped');
   setStatus(() => T.demoStopped);
-  syncWake();
+  void syncWake();
 }
 function runDemo() {
   if ([...packs.values()].some((x) => x.demo)) return;
@@ -1100,7 +1110,7 @@ function runDemo() {
   p.plog('demo started: simulated 16-cell pack, frames are generated, not received');
   p.demo = startDemo((chunk) => p.bms._onNotify(chunk));
   addPack(p); setActive(p);
-  syncWake();
+  void syncWake();
 }
 $('stopDemo').addEventListener('click', stopDemo);
 els.demoBtn.addEventListener('click', runDemo);
@@ -1118,9 +1128,9 @@ function connAct(p, ev, inp = {}) {
   const d = connEvent(p.cs, ev, { autoRe: $('autoRe').checked, now: Date.now(), ...inp });
   if (d.action !== 'count' && d.action !== 'noop') p.plog(`conn: ${ev} -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}${d.seconds ? ' ' + d.seconds + ' s' : ''}${d.attempt ? ' attempt ' + d.attempt : ''} [${p.cs.phase}]`);
   switch (d.action) {
-    case 'choose': clearConnTimers(p); p.countThunk = null; runChooser(p, !!inp.fresh); break;
-    case 'connect': clearConnTimers(p); runAttempt(p); break;
-    case 'retry': clearConnTimers(p); showAttempt(p); p.gapTimer = setTimeout(() => { p.gapTimer = null; runAttempt(p); }, d.gapMs); break;
+    case 'choose': clearConnTimers(p); p.countThunk = null; void runChooser(p, !!inp.fresh); break;
+    case 'connect': clearConnTimers(p); void runAttempt(p); break;
+    case 'retry': clearConnTimers(p); showAttempt(p); p.gapTimer = setTimeout(() => { p.gapTimer = null; void runAttempt(p); }, d.gapMs); break;
     case 'countdown': clearConnTimers(p); p.countThunk = () => T.reIn(p.label, p.cs.count); p.reTimer = setInterval(() => connAct(p, 'countdown-tick'), 1000); break;
     case 'count': if (p.cs.phase === 'connecting') showAttempt(p); break;    // the countdown thunk reads cs.count itself
     case 'idle': case 'connected': clearConnTimers(p); p.countThunk = null; break;
@@ -1130,7 +1140,7 @@ function connAct(p, ev, inp = {}) {
     default: break;
   }
   if (p.isActive) refreshCard();
-  renderPackBar(); syncWake();
+  renderPackBar(); void syncWake();
   return d;
 }
 function showAttempt(p) {
@@ -1148,6 +1158,7 @@ async function runAttempt(p) {
   if (p.cs.origin !== 'chooser') p.device = await freshHandle(p.device);
   showAttempt(p);
   if (!p.attemptTicker) p.attemptTicker = setInterval(() => connAct(p, 'connect-tick'), 1000);
+  // eslint-disable-next-line batray/ui-after-await -- the attempt that just started owns the button until it ends (conn-logic runs one at a time)
   $('connectBig').disabled = true;
   const t0 = Date.now(), attempt = p.cs.attempt;
   try {
@@ -1163,6 +1174,7 @@ async function runAttempt(p) {
       if (p.isActive) refreshCard();
     }
   } finally {
+    // eslint-disable-next-line batray/ui-after-await -- the attempt has ended, whatever happened meanwhile: the button is free again
     $('connectBig').disabled = false;
     if (p.attemptTicker) { clearInterval(p.attemptTicker); p.attemptTicker = null; }
   }
@@ -1170,11 +1182,12 @@ async function runAttempt(p) {
 async function runChooser(p, fresh) {
   try {
     if (p.device && p.device.gatt.connected) {
-      const gone = new Promise((res) => p.device.addEventListener('gattserverdisconnected', res, { once: true }));
+      const gone = new Promise((res) => { p.device.addEventListener('gattserverdisconnected', res, { once: true }); });
       p.device.gatt.disconnect();
-      await Promise.race([gone, new Promise((res) => setTimeout(res, 2000))]);
+      await Promise.race([gone, new Promise((res) => { setTimeout(res, 2000); })]);
     }
   } catch { /* nothing to drop */ }
+  // eslint-disable-next-line batray/ui-after-await -- the chooser is opening now, whatever the old handle's disconnect did
   setStatus(() => T.choosing);
   try {
     const device = await p.bms.requestDevice();
@@ -1333,7 +1346,7 @@ function renderChannelName() { $('qrName').textContent = shareS.name; }
 function shareTap() {
   const d = shareTapDecision(shareS);
   log(`share: tap -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}`);
-  if (d.action === 'stop') stopShare('toolbar');
+  if (d.action === 'stop') void stopShare('toolbar');
   else if (d.action === 'cancel') cancelShare();
   else if (d.action === 'setup') openSharePanel();
 }
@@ -1343,9 +1356,9 @@ async function beginShare() {
   try { localStorage.setItem('batray_share_name', b.name); } catch {}
   log(`share: name "${b.name}", ${b.reuse ? `reusing room ${b.reuse.room}` : 'new room'}`);
   $('sharePanel').hidden = true;
-  renderLiveChip(); syncWake();
+  renderLiveChip(); void syncWake();
   publisher = new Publisher({ log, onState: (s) => {
-    renderLiveChip(); syncWake(); watchReach(s);
+    renderLiveChip(); void syncWake(); watchReach(s);
     const v = viewersChange(shareS, s.viewers);
     if (v && alerts) alerts.notify('viewers', v.joined ? T.evViewerJoined : T.evViewerLeft, T.evWatching(v.viewers));
   }, onRequest: (m) => histRequest(m) });
@@ -1358,7 +1371,7 @@ async function beginShare() {
     if (st.toastNewLink) toast(T.shareNewLink, 9000);
     renderChannelName();
     showQr(true);
-    copyShareLink();
+    void copyShareLink();
     // late viewers need the pack list plus info/settings: resend every 10 s
     publisher.snapshotTimer = setInterval(sendSnapshots, 10000);
     sendSnapshots();
@@ -1366,8 +1379,8 @@ async function beginShare() {
     if (publisher !== pub) return;                                    // cancelled: its own toast already said so
     log(`share failed: ${err.message}`);
     toast(T.shareFailed(err.message), 9000);
-    publisher.stop(); publisher = null; shareFailed(shareS);
-  } finally { renderLiveChip(); syncWake(); }
+    void publisher.stop(); publisher = null; shareFailed(shareS);
+  } finally { renderLiveChip(); void syncWake(); }
 }
 // A viewer asked for history (its own day listing came with the request): send the gzipped day files it lacks,
 // newest first, in base64 chunks over the encrypted link, paced by the channels' backlog, only while live.
@@ -1399,11 +1412,11 @@ async function histRequest(m) {
         log(`history: sending ${item.day} ids ${rows[0].id}..${rows[rows.length - 1].id} (${rows.length} rows, ${gz.length} B gz) in ${chunks.length} chunks`);
         for (let i = 0; i < chunks.length; i++) {
           let waited = 0;
-          while (pub.backlog() > XFER_BACKLOG && waited < 30000 && publisher === pub) { await new Promise((res) => setTimeout(res, 100)); waited += 100; }
+          while (pub.backlog() > XFER_BACKLOG && waited < 30000 && publisher === pub) { await new Promise((res) => { setTimeout(res, 100); }); waited += 100; }
           if (publisher !== pub || !pub.state.live) { log('history: transfer stopped (link gone)'); return; }
           await pub.publish(envelope('hist-file', { id: '*', name: '*' }, { day: item.day, after, n: i, of: chunks.length, b64: chunks[i], rows: rows.length, bytes: gz.length }));
           histS.xfer.sent += chunks[i].length;
-          await new Promise((res) => setTimeout(res, 20));
+          await new Promise((res) => { setTimeout(res, 20); });
         }
         after = rows[rows.length - 1].id;
         if (rows.length < XFER_ROWS) break;
@@ -1428,16 +1441,16 @@ function cancelShare() {
   const pub = publisher; publisher = null;
   log('share: cancelled while starting');
   try { pub.stop(); } catch { /* never started */ }
-  renderLiveChip(); syncWake(); toast(T.cancelled, 4000);
+  renderLiveChip(); void syncWake(); toast(T.cancelled, 4000);
 }
 async function stopShare(why = 'chip') {
   if (!publisher) return;
   log(`share: stop (${why})`);
   clearInterval(publisher.snapshotTimer);
   const pub = publisher; publisher = null; shareStopped(shareS); histS.xfer = null;
-  renderLiveChip(); syncWake();
+  renderLiveChip(); void syncWake();
   await pub.stop();
-  showQr(false); renderLiveChip();
+  if (!publisher) { showQr(false); renderLiveChip(); }                   // unless a newer share owns the chip and the QR by now
   toast(T.shareStopped, 5000);
 }
 els.share.addEventListener('click', shareTap);
@@ -1508,7 +1521,7 @@ async function storeReceived(file) {
     histS.contig = info.contig; histS.todayRows = Math.max(histS.todayRows, info.maxId); histS.nextId = info.maxId + 1;
     const hole = info.contig < info.maxId; note = `; today complete to ${info.contig} of ${info.maxId}${hole ? ' (still a hole)' : ''}`;
     histS.gap = hole ? 'gap' : null;
-    if (hole && viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') requestHistory();
+    if (hole && viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') void requestHistory();
   }
   log(`history: got ${file.day} ids ${rows[0].id}..${rows[rows.length - 1].id}: ${r.inserted} new, ${r.ignored} already here${note}`);
   histS.days = await hist.days();
@@ -1527,11 +1540,11 @@ function startView() {
     onState: (s) => {
       renderViewChip(); watchReach(s);
       for (const p of packs.values()) { p.remoteLive = s.live; }
-      if (histReqDecision(histS, { live: s.live, now: Date.now() }).action === 'request') requestHistory();
+      if (histReqDecision(histS, { live: s.live, now: Date.now() }).action === 'request') void requestHistory();
       const ve = viewerEvent(viewS, s);           // the reader's presence: share-logic.js decides what is worth an alert
       if (ve && alerts) alerts.notify('reader', ve.readerAlert === 'on' ? T.evReaderOn : T.evReaderOff, ve.readerAlert === 'on' ? T.evReaderOnBody : T.evReaderOffBody);
       if (active) { if (!s.live) setStatus(() => (s.reader === false ? T.viewOfflineShort : T.viewReconnecting), 'bad'); else setStatus(() => T.viewingPack(active.label), 'good'); }
-      refreshCard(); renderPackBar(); syncWake();
+      refreshCard(); renderPackBar(); void syncWake();
     },
     onEnvelope: (env) => {
       if (env.k === 'hello') {
@@ -1727,7 +1740,7 @@ function watchCastMedia(sess) {
   };
   const poll = setInterval(tick, 3000); tick();
 }
-const castDiscovery = (ms) => new Promise((ok) => { if (discoveryKnown(castS)) return ok(); const t = setTimeout(ok, ms); castWaiters.push(() => { clearTimeout(t); ok(); }); });
+const castDiscovery = (ms) => new Promise((ok) => { if (discoveryKnown(castS)) { ok(); return; } const t = setTimeout(ok, ms); castWaiters.push(() => { clearTimeout(t); ok(); }); });
 // A 6 s H.264 test pattern (baseline profile, progressive MP4) served next to the app: if the TV plays this and not our
 // live stream, the stream is the problem, not the TV, the session or the host. Google's sample buckets were not
 // reachable from the build sandbox (403), so the file is ours.
@@ -1759,7 +1772,7 @@ async function castToTv(opts = {}) {
     if (uiS.sheet && uiS.sheet.kind === 'casting') closeSheet('done', why);
     for (const w of castWaiters) w(); castWaiters = [];
   };
-  openSheet('casting').then((r) => {
+  void openSheet('casting').then((r) => {
     if (castS.busy && (castS.phase === 'waiting' || castS.phase === 'buffering') && r !== 'done') {   // the user stops watching; the TV keeps playing
       log(`cast: sheet closed by the user while ${castS.phase}`); castFlowEnd(castS); renderCastButtons(); return;
     }
@@ -1768,8 +1781,8 @@ async function castToTv(opts = {}) {
   });
   const waitingOnTv = () => castS.busy && (castS.phase === 'waiting' || castS.phase === 'buffering');
   const tick = setInterval(() => {
-    const sheetOpen = !!(uiS.sheet && uiS.sheet.kind === 'casting');
-    if (!castS.busy && !sheetOpen) { clearInterval(tick); castFlowEnd(castS); renderCastButtons(); return; }
+    const castSheet = !!(uiS.sheet && uiS.sheet.kind === 'casting');
+    if (!castS.busy && !castSheet) { clearInterval(tick); castFlowEnd(castS); renderCastButtons(); return; }
     if (!castS.busy) { updateSheet('casting'); return; }                                             // a settled result on show
     const p = castProgress(castS, Date.now(), castBudget(castS.phase));
     if (p.timedOut && waitingOnTv()) { log(`cast: the TV showed nothing playing within ${Math.round(castTvMs / 1000)} s`); castSettleUi('nomedia', T.tvCastNoMedia); return; }
@@ -1791,7 +1804,8 @@ async function castToTv(opts = {}) {
     if (d.action === 'tap-again') { endFlow('done', d.why === 'discovery' ? T.tvCastTimeout : T.tvCastTapAgain); return; }
     if (d.action === 'request') {
       phase('picking', T.tvCastPick); const mine = castRequestStarted(castS, Date.now()); renderCastButtons();
-      try { await ctx.requestSession(); } finally { castRequestEnded(castS, mine); renderCastButtons(); }
+      // eslint-disable-next-line batray/ui-after-await -- castS is the one cast state; the buttons follow it after the request ends, whatever happened meanwhile
+    try { await ctx.requestSession(); } finally { castRequestEnded(castS, mine); renderCastButtons(); }
     }
     const sess = ctx.getCurrentSession();
     if (!sess) throw new Error('no cast session');
@@ -1843,7 +1857,7 @@ async function startTv(opts = {}) {
   try {
     const url = await t.start();
     if (tv !== t) return null;                                          // cancelled from the toolbar meanwhile
-    tvStarted(tvS); renderTvButtons(); castHint(T.tvCastLoads); renderTv(t.state); syncWake();
+    tvStarted(tvS); renderTvButtons(); castHint(T.tvCastLoads); renderTv(t.state); void syncWake();
     toast(T.tvStarting, 9000);
     return url;
   } catch (e) {
@@ -1858,15 +1872,15 @@ function cancelTv() {
   const t = tv; tv = null; renderTvButtons();
   log('tv: cancelled while starting');
   t.stop().catch(() => {});
-  syncWake(); toast(T.cancelled, 4000);
+  void syncWake(); toast(T.cancelled, 4000);
 }
 async function stopTv(why = 'card') {
   if (!tv) return;
   const t = tv; tv = null; tvStopped(tvS); renderTvButtons();
   log(`tv: stop (${why})`);
   await t.stop();
-  unloadPreview($('tvVideo')); $('tvQr').hidden = true;
-  syncWake(); toast(T.tvStopped, 5000);
+  if (!tv) { unloadPreview($('tvVideo')); $('tvQr').hidden = true; }    // unless a newer stream owns the card by now
+  void syncWake(); toast(T.tvStopped, 5000);
 }
 (function () {
   const RES_LABEL = { '1280x720': '720p', '1920x1080': '1080p' };
@@ -1878,7 +1892,7 @@ async function stopTv(why = 'card') {
   $('tv').addEventListener('click', () => {
     const d = tvTapDecision(tvS);
     log(`tv: tap -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}`);
-    if (d.action === 'stop') { stopTv('toolbar'); return; }
+    if (d.action === 'stop') { void stopTv('toolbar'); return; }
     if (d.action === 'cancel') { cancelTv(); return; }
     renderTvButtons();
     if (d.action === 'open-panel') $('tvPanel').scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -1894,7 +1908,7 @@ async function stopTv(why = 'card') {
     e.preventDefault(); e.stopPropagation();
     const d = tvCloseDecision(tvS);
     log(`tv: close -> ${d.action}`);
-    if (d.action === 'stop') stopTv('close'); else renderTvButtons();
+    if (d.action === 'stop') void stopTv('close'); else renderTvButtons();
   });
   $('tvStart').addEventListener('click', () => startTv().catch(() => {}));
   $('tvStop').addEventListener('click', () => stopTv('card'));
@@ -1908,7 +1922,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tv) => { if (ms) castFlowMs = ms; if (tv) castTvMs = tv; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
@@ -2043,7 +2057,8 @@ async function uploadLog(btn) {
   xhr.open('POST', '/batray/api/log'); xhr.setRequestHeader('Content-Type', 'text/plain; charset=utf-8'); xhr.send(bytes);
   log(`log upload: started, ${bytes.length} B`);
   // the sheet resolves on Cancel (or a tap outside / Back, which cancels too), or when the app closes it on completion
-  openSheet('uploading').then((r) => { if (!finished && r !== 'done') { log(`log upload: cancelled by the user (${uploadS.loaded} of ${uploadS.total} B sent)`); xhr.abort(); } });
+  // eslint-disable-next-line batray/ui-after-await -- the sheet is this upload's own progress dialog; Cancel on it aborts this xhr
+  void openSheet('uploading').then((r) => { if (!finished && r !== 'done') { log(`log upload: cancelled by the user (${uploadS.loaded} of ${uploadS.total} B sent)`); xhr.abort(); } });
   const r = await done;
   uploadS.xhr = null;
   if (uiS.sheet && uiS.sheet.kind === 'uploading') closeSheet('done', r.ok ? 'uploaded' : r.cancelled ? 'cancelled' : 'failed');
@@ -2077,7 +2092,7 @@ $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('ab
 
 for (const line of logHeaderLines()) log(line);     // typeof-guarded inside: a missing BluetoothDevice global must not abort startup
 logLastRun();
-logEnvAsync();
+void logEnvAsync();
 // one line a minute with everything that matters, so a log of a whole night reads as a timeline
 setInterval(() => {
   const p = active;
@@ -2087,8 +2102,8 @@ setInterval(() => {
   const tvs = tv ? `tv(segs=${tv.state.segs} kb=${Math.round(tv.state.bytes / 1024)} pull=${tv.state.pullAgeS}s err=${tv.state.error || '-'})` : '';
   const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
   const rate = histS.hbDay === histS.day && histS.hbRows !== undefined ? `${histS.todayRows - histS.hbRows}/min` : '-'; histS.hbDay = histS.day; histS.hbRows = histS.todayRows;
-  if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
-  if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now() }).action === 'request') requestHistory();
+  if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) void syncWake();   // watchdog
+  if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now() }).action === 'request') void requestHistory();
   log(hist.statsLine()); hist.statsReset(Date.now());
   log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} hist=${histS.backend}/${histS.days.length}d/${histS.todayRows}r/${rate}/${histS.contig}c/${pendingRows()}pend${histS.gap ? '/' + histS.gap : ''}/${Math.round(histS.usage / 1048576)}of${Math.round(histS.quota / 1048576)}MB${histS.xfer ? '/xfer' : ''} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
 }, 60000);
@@ -2109,6 +2124,6 @@ alerts = initAlerts({
     $('alertTxt').textContent = T.alertNote(st.channels.join(' + ') + (st.watchdog ? ' + ' + T.alertWatch : ''));
   },
 });
-initHistory().then(initLogStore);
+void initHistory().then(initLogStore);
 if (viewMode) startView();
 else if (new URLSearchParams(location.search).has('demo')) runDemo();

@@ -64,7 +64,7 @@ test('lifecycle loops: each link class has exactly one run(signal), start() refu
   for (const c of withLoops) {
     const name = c.split(/\s/)[0];
     assert.equal(count(c, /async run\(signal\)/g), 1, `${name}: one run()`);
-    assert.ok(/if \(this\.task\) return/.test(c), `${name}: start() must refuse a second loop (one owner)`);
+    assert.ok(/if \(this\.task !== null\) return/.test(c), `${name}: start() must refuse a second loop (one owner)`);
     assert.ok(/this\.task = this\.run\(this\.ac\.signal\)/.test(c), `${name}: start() launches run() under an AbortController`);
     assert.ok(/this\.ac\.abort\(\)/.test(c), `${name}: stop() aborts the loop`);
     assert.ok(/isAbort\(e\)\) throw e/.test(c), `${name}: the loop lets the stop signal through its catch`);

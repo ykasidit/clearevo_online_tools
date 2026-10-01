@@ -121,22 +121,22 @@ test('choice sheets: language, TV resolution, keep-awake mark the current choice
 });
 
 test("sheetModel('casting'): the Cast flow's phase, seconds left and progress; picking has no bar; Cancel while it runs, the TV phases (owner 2026-09-28) keep the sheet with a clock, a result has Close", () => {
-  const T = { tvCast: 'Cast to TV', cancel: 'Cancel', close: 'Close', castLoading: 'loading…', castLooking: 'looking…', castPicking: 'pick your TV', castSending: 'sending…', castLeft: (s) => `(${s} s left)`,
+  const TT = { tvCast: 'Cast to TV', cancel: 'Cancel', close: 'Close', castLoading: 'loading…', castLooking: 'looking…', castPicking: 'pick your TV', castSending: 'sending…', castLeft: (s) => `(${s} s left)`,
     castWaiting: (n) => `sent to ${n} - waiting`, castBuffering: (n) => `${n} buffering`, castPlaying: (n, t) => `playing on ${n} (${t} s)`, tvCastNoMedia: 'nothing played for a minute', tvCastTvError: (n) => `${n} could not play` };
   const base = { d: null, settings: null };
-  const a = sheetModel('casting', { ...base, cast: { phase: 'looking', pct: 25, leftS: 15 } }, T);
+  const a = sheetModel('casting', { ...base, cast: { phase: 'looking', pct: 25, leftS: 15 } }, TT);
   assert.equal(a.title, 'Cast to TV'); assert.equal(a.lead, 'looking… (15 s left)'); assert.equal(a.progress, 25);
   assert.deepEqual(a.actions.map((x) => x.id), ['cancel']);
-  const p = sheetModel('casting', { ...base, cast: { phase: 'picking', pct: 60, leftS: 8 } }, T);
+  const p = sheetModel('casting', { ...base, cast: { phase: 'picking', pct: 60, leftS: 8 } }, TT);
   assert.equal(p.lead, 'pick your TV'); assert.equal(p.progress, undefined, 'no clock while the list is on the screen');
-  assert.equal(sheetModel('casting', { ...base, cast: {} }, T).lead, 'loading… (0 s left)');
-  const w = sheetModel('casting', { ...base, cast: { phase: 'waiting', dev: 'Family room TV', pct: 10, leftS: 54 } }, T);
+  assert.equal(sheetModel('casting', { ...base, cast: {} }, TT).lead, 'loading… (0 s left)');
+  const w = sheetModel('casting', { ...base, cast: { phase: 'waiting', dev: 'Family room TV', pct: 10, leftS: 54 } }, TT);
   assert.equal(w.lead, 'sent to Family room TV - waiting (54 s left)'); assert.equal(w.progress, 10); assert.deepEqual(w.actions.map((x) => x.id), ['cancel']);
-  const b = sheetModel('casting', { ...base, cast: { phase: 'buffering', dev: 'Family room TV', pct: 30, leftS: 42 } }, T);
+  const b = sheetModel('casting', { ...base, cast: { phase: 'buffering', dev: 'Family room TV', pct: 30, leftS: 42 } }, TT);
   assert.equal(b.lead, 'Family room TV buffering (42 s left)'); assert.equal(b.progress, 30);
-  const pl = sheetModel('casting', { ...base, cast: { phase: 'playing', dev: 'Family room TV', tvT: 88 } }, T);
+  const pl = sheetModel('casting', { ...base, cast: { phase: 'playing', dev: 'Family room TV', tvT: 88 } }, TT);
   assert.equal(pl.lead, 'playing on Family room TV (88 s)'); assert.equal(pl.progress, undefined, 'a result has no clock');
   assert.deepEqual(pl.actions.map((x) => [x.id, x.primary]), [['ok', true]], 'the user closes the result');
-  assert.equal(sheetModel('casting', { ...base, cast: { phase: 'nomedia' } }, T).lead, 'nothing played for a minute');
-  assert.deepEqual(sheetModel('casting', { ...base, cast: { phase: 'error', dev: 'TV' } }, T).actions.map((x) => x.id), ['ok']);
+  assert.equal(sheetModel('casting', { ...base, cast: { phase: 'nomedia' } }, TT).lead, 'nothing played for a minute');
+  assert.deepEqual(sheetModel('casting', { ...base, cast: { phase: 'error', dev: 'TV' } }, TT).actions.map((x) => x.id), ['ok']);
 });

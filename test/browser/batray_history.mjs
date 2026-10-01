@@ -33,8 +33,8 @@ ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.
 const send = (method, params = {}) => new Promise((ok, err) => { const i = ++id; pending.set(i, { ok, err }); ws.send(JSON.stringify({ id: i, method, params })); });
 await new Promise((ok) => { ws.onopen = ok; });
 await send('Runtime.enable'); await send('Page.enable');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const evalJs = async (expr) => { const r = await Promise.race([send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }), new Promise((_, rej) => setTimeout(() => rej(new Error('eval timed out after 90 s: ' + expr.slice(0, 120))), 90000))]); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text); return r.result.value; };
+const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
+const evalJs = async (expr) => { const r = await Promise.race([send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }), new Promise((_, rej) => { setTimeout(() => rej(new Error('eval timed out after 90 s: ' + expr.slice(0, 120))), 90000); })]); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text); return r.result.value; };
 let fails = 0;
 const T00 = Date.now();
 const check = (name, cond, got) => { console.log(`${cond ? 'PASS' : 'FAIL'} [${Math.round((Date.now() - T00) / 1000)}s] ${name}${cond ? '' : ` - got ${JSON.stringify(got).slice(0, 700)}`}`); if (!cond) fails++; };
@@ -86,7 +86,7 @@ list = await evalJs('window.__batrayTest.histList()'); h = await hist();
 check('seeded rows land in their UTC day databases with ids continuing per day', seeded === 408 && list.length === 2 && list[0].day === yday && list[0].rows === 288 && list[1].day === today && list[1].rows === 123 && h.nextId === 124, { seeded, list, next: h.nextId });
 const box = await evalJs(`({ use: document.getElementById('stUse').textContent, hist: document.getElementById('stHistSize').textContent, note: document.getElementById('histNote').textContent })`);
 check('the Storage box: used of the maximum with a percent, the history row with days, the note says SQLite and .sqlite backups', /^[\d.]+ (KB|MB) of [\d.]+ (GB|MB) \([\d.]+ %\)$/.test(box.use) && /^\d+ KB · 2 days since /.test(box.hist) && /SQLite database per UTC day/.test(box.note) && /\.sqlite/.test(box.note), box);
-const hb = await evalJs(`(async () => { document.getElementById('histBrowse').click(); await new Promise((r) => setTimeout(r, 400)); const items = [...document.querySelectorAll('#sheetItems .item')].map((i) => [i.querySelector('.nm').textContent, i.querySelector('.sz').textContent]); history.back(); await new Promise((r) => setTimeout(r, 400)); return items; })()`);
+const hb = await evalJs(`(async () => { document.getElementById('histBrowse').click(); await new Promise((r) => { setTimeout(r, 400); }); const items = [...document.querySelectorAll('#sheetItems .item')].map((i) => [i.querySelector('.nm').textContent, i.querySelector('.sz').textContent]); history.back(); await new Promise((r) => { setTimeout(r, 400); }); return items; })()`);
 check('Browse lists the day databases newest first with their rows, today marked live', hb.length === 2 && /^\d{4}-\d{2}-\d{2}\.sqlite \(123 rows\) \(today, live\)$/.test(hb[0][0]) && hb[1][0] === `${yday}.sqlite (288 rows)` && /KB/.test(hb[0][1]), hb);
 
 // ---- 3. same time: inserts, chart queries and info calls fired together all settle; the statistics line ----
@@ -111,7 +111,7 @@ const to = await evalJs(`(async () => {
   const before = T.logLines().length; const t0 = Date.now();
   const r = await T.histSlow(1500).then(() => 'answered', (e) => e.name + ': ' + e.message);
   const ms = Date.now() - t0;
-  await new Promise((r) => setTimeout(r, 1400));                         // let the busy worker finish
+  await new Promise((r) => { setTimeout(r, 1400); });                         // let the busy worker finish
   const list = await T.histList();
   return { r, ms, logs: T.logLines().slice(before).filter((l) => /history:/.test(l)), raw: T.histStatsRaw(), listOk: Array.isArray(list) };
 })()`);
@@ -203,7 +203,7 @@ const memLine = await evalJs(`(() => { window.__batrayTest.memTick(); return doc
 check('the memory line counts queued readings, not a table in memory', /· \d+ readings in memory/.test(memLine) && !/\d{4,} readings/.test(memLine), memLine);
 
 // ---- 9. Browse deletes one day; Delete through a sheet empties the store, never confirm() ----
-const del = await evalJs(`(async () => { const T = window.__batrayTest; T.openBrowse('hist'); await new Promise((r) => setTimeout(r, 400)); await T.browseDelete('2026-09-10'); await new Promise((r) => setTimeout(r, 300)); history.back(); await new Promise((r) => setTimeout(r, 300)); return (await T.histList()).map((d) => d.day); })()`);
+const del = await evalJs(`(async () => { const T = window.__batrayTest; T.openBrowse('hist'); await new Promise((r) => { setTimeout(r, 400); }); await T.browseDelete('2026-09-10'); await new Promise((r) => { setTimeout(r, 300); }); history.back(); await new Promise((r) => { setTimeout(r, 300); }); return (await T.histList()).map((d) => d.day); })()`);
 check('Browse deletes one day database on its own', del.length === 3 && !del.includes('2026-09-10'), del);
 await evalJs(`window.__confirms = 0; window.confirm = () => { window.__confirms++; return true; }; document.getElementById('histClear').click(); 1`); await sleep(400);
 const sheet = await evalJs(`({ open: !document.getElementById('sheet').hidden, text: document.getElementById('sheet').textContent.replace(/\\s+/g, ' ').slice(0, 160), buttons: [...document.querySelectorAll('#sheet button')].map((b) => b.textContent.trim()) })`);
@@ -241,8 +241,8 @@ const before = await evalJs(`window.__batrayTest.histInfo('${today}')`);
 const live = await evalJs(`(async () => {
   const T = window.__batrayTest; const before = T.logLines().length;
   const dmg = await T.histCorrupt('${today}');
-  await new Promise((r) => setTimeout(r, 3100));                          // one stored row per pack per 3 s
-  window.__notify([${[...OWNER_32S_CELL].join(',')}]); await new Promise((r) => setTimeout(r, 200));
+  await new Promise((r) => { setTimeout(r, 3100); });                          // one stored row per pack per 3 s
+  window.__notify([${[...OWNER_32S_CELL].join(',')}]); await new Promise((r) => { setTimeout(r, 200); });
   await T.flushHistory();
   const info = await T.histInfo('${today}'); const rows = await T.histRows('${today}', 0, 10);
   return { dmg, info, ids: rows.map((r) => r.id), state: T.histState(), toast: document.getElementById('toast').textContent, hidden: document.getElementById('toast').hidden, logs: T.logLines().slice(before).filter((l) => /history/.test(l)), stats: T.histStatsRaw() };
@@ -255,7 +255,7 @@ check("a damaged today's file: the worker names the day and raises, the caller l
   && live.logs.some((l) => new RegExp(`history: (live write|history read): ${today} database is corrupt -> renew: deleted, a new live file starts`).test(l))
   && live.info.rows === 1 && live.info.maxId === 1 && live.info.contig === 1 && live.ids.join() === '1' && live.state.nextId === 2 && live.state.todayRows === 1
   && !live.hidden && /damaged: it was deleted and a new one started/.test(live.toast) && live.stats.restarts === 0, live);
-const more = await evalJs(`(async () => { const T = window.__batrayTest; window.__notify([${[...OWNER_32S_CELL].join(',')}]); await new Promise((r) => setTimeout(r, 3200)); window.__notify([${[...OWNER_32S_CELL].join(',')}]); await new Promise((r) => setTimeout(r, 200)); await T.flushHistory(); return (await T.histRows('${today}', 0, 10)).map((r) => r.id); })()`);
+const more = await evalJs(`(async () => { const T = window.__batrayTest; window.__notify([${[...OWNER_32S_CELL].join(',')}]); await new Promise((r) => { setTimeout(r, 3200); }); window.__notify([${[...OWNER_32S_CELL].join(',')}]); await new Promise((r) => { setTimeout(r, 200); }); await T.flushHistory(); return (await T.histRows('${today}', 0, 10)).map((r) => r.id); })()`);
 check('the new live file keeps taking rows with dense ids', more.join() === '1,2', more);
 await evalJs(`window.__batrayTest.histInsert('2026-09-05', Array.from({ length: 20 }, (_, i) => ({ id: i + 1, t: Date.UTC(2026, 8, 5, 0, 0, 0) + i * 60000, p: 'n11', soc: 50, v: 52, w: 100 })))`);
 const past = await evalJs(`(async () => {
