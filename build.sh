@@ -24,7 +24,13 @@ from pathlib import Path
 KEEP = re.compile(r'^(index\.html|manifest\.json|README.*|icon-.*|clinic.*|sw\.js)$')   # sw.js: a service worker URL must stay stable
 TEXT = ('.js', '.css', '.html')
 def anchored(name):   # match the filename only at a path/quote boundary
-    return re.compile(r'(?<![\w.\-])' + re.escape(name) + r'(?![\w\-])')
+    # ... and never when the "file name" is a property chain: `sqlite3.wasm.module = ...` in the vendored SQLite
+    # module is the object sqlite3's wasm property, not the file sqlite3.wasm. Rewriting it broke the deployed
+    # module's syntax from 0.9.40 to 0.9.55 (every phone fell back to memory-only history) - the local tests run on
+    # the unhashed public/ tree and never saw it. The dist syntax check below is the gate for that class.
+    # A real reference sits right after a quote, a slash or an opening paren (JS strings, HTML attributes, CSS
+    # url()); a bare `sqlite3.wasm` expression (`wasm = sqlite3.wasm,`) is code and stays.
+    return re.compile(r'(?<=["\'`/(])' + re.escape(name) + r'(?![\w\-]|\.[A-Za-z_$])')
 
 ntools = 0
 for src in sorted(Path('public').iterdir()):
@@ -64,4 +70,28 @@ for src in sorted(Path('public').iterdir()):
         print(f'{tool}: left unhashed (runtime-constructed or unreferenced): {", ".join(skipped)}')
     ntools += 1
 print(f'build ok -> dist/ ({ntools} tools, referenced assets content-hashed)')
+PY
+# the BUILT files must still parse: a hashed-name rewrite inside code (not a reference) is a syntax error that
+# only the deployed site would hit (sqlite3.wasm.module, 2026-10-01)
+for f in dist/*/*.js; do case "$f" in *.min.js) ;; *) node --check "$f" || { echo "build: $f does not parse after hashing"; exit 1; };; esac; done
+echo "build: every hashed js parses"
+# ... and no text file in dist still names a file that was renamed (a reference the anchor missed = a 404 live)
+python3 - <<'PY'
+import re, sys
+from pathlib import Path
+bad = 0
+for tool in sorted(Path('dist').iterdir()):
+    if not tool.is_dir(): continue
+    renamed = {}
+    for f in tool.iterdir():
+        m = re.match(r'^(.+)\.([0-9a-f]{8})\.(\w+)$', f.name)
+        if m: renamed[f'{m.group(1)}.{m.group(3)}'] = f.name
+    for f in tool.rglob('*'):
+        if f.suffix not in ('.js', '.css', '.html'): continue
+        t = f.read_text(errors='ignore')
+        for orig in renamed:
+            for m in re.finditer(r'(?<=["\'`/(])' + re.escape(orig) + r'(?![\w\-]|\.[A-Za-z_$])', t):
+                bad += 1; print(f'build: {f} still references {orig} (renamed to {renamed[orig]}): ...{t[max(0, m.start() - 40):m.end() + 10]!r}')
+if bad: sys.exit(1)
+print('build: no stale reference to a renamed file')
 PY

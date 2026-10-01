@@ -64,6 +64,29 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.56: the SQLite worker never ran on the deployed site (found 2026-10-01)
+
+The owner's first viewer log on 0.9.55 still said `history: worker error
+[object Event]` and `hist=memory`, on a site whose worker script carried
+the embedder-policy header. Reproduced from the sandbox against the live
+site, then split with blob module workers inside the live page: a module
+worker with no imports ran, one importing a plain module ran, one
+importing the vendored SQLite module died with the same bare error event.
+The deployed `sqlite3.<hash>.js` did not parse: `build.sh` had rewritten
+every bare `sqlite3.wasm` in it (`wasm = sqlite3.wasm,`,
+`sqlite3.wasm.module = ...` - the sqlite3 object's `wasm` property) into
+`sqlite3.2ee8f3da.wasm`, because the text matched the wasm file's name.
+Six places. The local tests run on the unhashed `public/` tree and never
+saw it, so every phone had memory-only history from 0.9.40 to 0.9.55; the
+0.9.50 embedder-policy fix was real but second.
+
+Build rules now: a file name counts as a reference only right after a
+quote, a slash or an opening paren (strings, attributes, `url()`), never
+when followed by `.identifier`; after hashing, `node --check` runs on
+every built js, and a scan fails the build if any built text file still
+names a renamed file. `./test.sh` runs first. Verified live with the
+headless runner: `history: SQLite 3.53.4 over opfs-sahpool`.
+
 ## 0.9.55: -Werror, and what the Dart analyzer catches (owner ask 2026-10-01, later)
 
 "In C I use clang analyze and coccinelle with cc -Werror; in Dart any
