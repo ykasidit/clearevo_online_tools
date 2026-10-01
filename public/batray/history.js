@@ -104,7 +104,7 @@ const KIND = { ping: 'ping', pause: 'other', resume: 'other', insert: 'insert', 
 export class HistoryStore {
   /** opts: { log(msg), forceMemory, backend (tests), makeWorker (tests), timeouts (tests: {op: ms}) } */
   constructor(opts = {}) {
-    this.log = opts.log || (() => {}); this.backend = 'none'; this.b = null; this.persistent = null; this.stats = statsState();
+    this.log = opts.log || (() => {}); this.backend = 'none'; this.b = null; this.persistent = null; this.stats = statsState(); this.onBackend = null;   // the app's hook when the backend changes (lock-out)
     this.timeouts = opts.timeouts || {}; this.makeWorker = opts.makeWorker || null; this.lastFail = '';
     this.ready = opts.backend ? this.adopt(opts.backend, opts.backendName || 'test') : this.open(!!opts.forceMemory);
   }

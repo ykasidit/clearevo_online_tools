@@ -16,7 +16,7 @@
 // 2026-09-20): `uiState()` is the one object; these functions decide what a
 // tab tap, a tile tap, a sheet choice or the Back button does, and build the
 // plain-language sheet contents from a reading. No DOM, no history API here.
-import { fmt, fmtSpan, flowModel, etaModel, chipList, socClass } from './view-logic.js';
+import { fmt, flowModel, etaModel, chipList, socClass } from './view-logic.js';
 
 export const TABS = ['now', 'history', 'more'];
 export function uiState(role) { return { role: role === 'viewer' ? 'viewer' : 'reader', tab: 'now', sheet: null, lowPower: false }; }

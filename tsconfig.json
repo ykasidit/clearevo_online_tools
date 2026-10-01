@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "allowJs": true, "checkJs": true, "noEmit": true,
+    "target": "es2022", "module": "es2022", "moduleResolution": "bundler",
+    "lib": ["es2022", "dom", "dom.iterable", "webworker"],
+    "strict": false, "noImplicitAny": false, "skipLibCheck": true, "types": []
+  },
+  "include": ["public/batray/*.js", "test/types/*.d.ts"],
+  "exclude": ["public/batray/mp4-muxer.js", "public/batray/uplot.js", "public/batray/sqlite3.js", "public/batray/qrcode.js", "public/batray/sw.js"]
+}

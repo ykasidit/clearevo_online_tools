@@ -79,7 +79,7 @@ export function makeChart(el, width, getCutoff) {
     },
     plugins: [pinchPlugin()],
   };
-  return new uPlot(opts, [[], [], [], [], []], el);   // eslint-disable-line no-undef
+  return new uPlot(opts, [[], [], [], [], []], el);
 }
 
 /** Put series (from chartSeries) on the chart and show the window from..to (ms). */

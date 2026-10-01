@@ -29,7 +29,7 @@ const TICK_MS = 5000, HEARTBEAT_MS = 60000;
 // account). Chrome notifications only, until a delivery path is settled.
 export const NTFY_ENABLED = false;
 
-export function initAlerts({ log, T, getPacks, viewMode, onStatus }) {
+export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg) => {} }) {
   let settings;
   try { settings = loadSettings(JSON.parse(localStorage.getItem(STORE) || 'null')); } catch { settings = defaultSettings(); }
   const ev = new Evaluator(settings);
@@ -156,8 +156,8 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus }) {
     on('alNtfy', 'change', (e) => { ch.ntfy = e.target.checked; if (!ch.ntfy && w.on) { w.on = false; stopWatch(); } save(); });
     on('alChrome', 'change', async (e) => { ch.chrome = e.target.checked; if (ch.chrome) await ensureChrome(); save(); });
     for (const id of ['alServer', 'alTopic', 'alToken']) on(id, 'change', () => { n.server = $('alServer').value.trim(); n.topic = $('alTopic').value.trim(); n.token = $('alToken').value.trim(); save(); if (w.on) heartbeat(true); });
-    on('alNtfyTest', 'click', async () => { try { await sendNtfy(A.testTitle, A.testBody, 3, 'test_tube'); log('ntfy test sent'); } catch (e) { log(`ntfy test failed: ${e.message}`); alert(`ntfy: ${e.message}`); } });
-    on('alChromeTest', 'click', async () => { try { await ensureChrome(); await sendChrome(A.testTitle, A.testBody, 'test'); } catch (e) { log(`chrome test failed: ${e.message}`); alert(e.message); } });
+    on('alNtfyTest', 'click', async () => { try { await sendNtfy(A.testTitle, A.testBody, 3, 'test_tube'); log('ntfy test sent'); } catch (e) { log(`ntfy test failed: ${e.message}`); toast(`ntfy: ${e.message}`); } });   // a toast, never alert() (house rule)
+    on('alChromeTest', 'click', async () => { try { await ensureChrome(); await sendChrome(A.testTitle, A.testBody, 'test'); } catch (e) { log(`chrome test failed: ${e.message}`); toast(e.message); } });
     $('alertsBody').querySelectorAll('[data-rule]').forEach((el) => el.addEventListener('change', () => { settings.rules[el.dataset.rule].on = el.checked; save(); }));
     $('alertsBody').querySelectorAll('[data-val]').forEach((el) => el.addEventListener('change', () => { const r = RULES.find((x) => x.id === el.dataset.val); const v = +el.value; if (Number.isFinite(v) && v >= 0) settings.rules[r.id].value = r.unit === 's' ? Math.max(60, Math.round(v * 60)) : v; save(); }));
     $('alertsBody').querySelectorAll('[data-hold]').forEach((el) => el.addEventListener('change', () => { const v = +el.value; if (Number.isFinite(v) && v >= 0) settings.rules[el.dataset.hold].holdS = Math.round(v * 60); save(); }));

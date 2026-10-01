@@ -20,7 +20,6 @@
 //
 // Run through ./run.sh (it starts Chrome with --remote-debugging-port=9333 and
 // serves public/ on 8077), or: BASE=... node batray_freeze.mjs
-import { readFileSync } from 'node:fs';
 import { OWNER_32S_CELL, AIO_32S_DEV } from '../batray_frames.js';
 
 const PORT = 8077, CDP = 9333;

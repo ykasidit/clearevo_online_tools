@@ -64,6 +64,49 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.54: static analysis as tests - the coccinelle and rustc of JavaScript (owner ask 2026-10-01)
+
+"Search for static code analysis like coccinelle in the kernel, cover the
+most common JS runtime issues as rustc would at build time, as a unit
+test." What exists, and what is now in `./test.sh`:
+
+- **ESLint** (`test/batray_lint.test.js`) is the pattern side: it walks
+  the syntax tree with rules, which is what coccinelle's semantic patches
+  do for C. The recommended set catches names that do not exist,
+  unreachable code, duplicate keys, bad regexes, a `catch` that swallows
+  a real error, `await` and Promise misuse; the rules added on top are
+  the ones that find bugs rather than style (`eqeqeq`, `no-var`, `prefer-
+  const`, `no-useless-assignment`, `no-duplicate-imports`, `array-
+  callback-return`, `no-constant-binary-expression`, `no-self-compare`,
+  `no-unreachable-loop`, `no-async-promise-executor`, `radix`, `guard-
+  for-in`, no `eval` of any shape, and the house rules: no `confirm` /
+  `alert` / `prompt`, no `document.write`). Zero findings is the bar;
+  the first run found four unused imports, a duplicate import, a dead
+  state variable and two redundant assignments, all removed. Vendored
+  files are skipped.
+- **The TypeScript checker in JS mode** (`test/batray_typecheck.test.js`,
+  `tsconfig.json` at the root so an editor shows the same) is the rustc
+  side: it infers types from the JavaScript and reports a property that
+  does not exist (naming the right spelling), a wrong argument count, a
+  comparison that can never be true, an operator on the wrong types, an
+  unknown property in a literal passed to a typed API. Those codes are
+  hard failures. The rest - DOM elements the checker sees as a bare
+  `Element`, an `Error` with extra fields, a default `{}` parameter - is
+  a per-file ceiling with a reason, so a file may only get better; the
+  way down is a JSDoc type where the checker lost track, never a cast
+  over a real finding. `test/types/batray.d.ts` declares the browser
+  APIs the checker's own library lacks (Web Bluetooth, the cast library,
+  `navigator.connection`, `performance.memory`). The first run found
+  `this.onBackend` set on the store without a field (now declared) and
+  a `onConn` default with no parameter, and two `alert()` calls in the
+  alerts card's test buttons (house rule: sheets and toasts) - now toasts.
+- What neither can do, and the replay tests still must: logic. rustc
+  would not have caught the 12:55 race either; the loop did.
+
+Not chosen: `ast-grep` (closer to coccinelle's syntax, a second tool for
+patterns ESLint already expresses), a full TypeScript conversion (the
+checker already reads the JS; types go in as JSDoc where they pay).
+
 ## 0.9.53: lifecycles are loops (owner decision 2026-10-01: "reduce entropy")
 
 The day after the ownership token shipped, the owner put the finger on

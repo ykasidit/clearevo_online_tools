@@ -22,7 +22,7 @@
 // share link's URL fragment, whichever path carries it. The relay Worker at
 // /batray/api/ holds the SFU secret, routes signalling, and counts how many
 // sockets are on an SFU/TURN path against the free cap.
-import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, SIG_DEAD_MS, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect, readerPresent, FRESH_MS } from './live-logic.js';
+import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect, readerPresent, FRESH_MS } from './live-logic.js';
 import { socketState, socketOpen, socketOwns, socketClosed, socketNudge } from './link-logic.js';
 import { Flag, Channel, sleep, select, isAbort, abortError } from './sync.js';
 
@@ -34,7 +34,7 @@ const FULL_RETRY_S = 30;       // when the free server is full
 const j = async (path, init = {}) => {
   const r = await fetch(`${API}/${path}`, { headers: { 'Content-Type': 'application/json' }, ...init });
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) { const e = new Error(`${path}: ${r.status} ${body.error || JSON.stringify(body).slice(0, 160)}`); e.status = r.status; e.body = body; throw e; }
+  if (!r.ok) { /** @type {any} */ const e = new Error(`${path}: ${r.status} ${body.error || JSON.stringify(body).slice(0, 160)}`); e.status = r.status; e.body = body; throw e; }
   return body;
 };
 
@@ -99,7 +99,7 @@ class Signal {
   constructor(room, role, token, log) {
     this.room = room; this.role = role; this.token = token; this.log = log;
     this.ws = null; this.closed = false; this.timer = null; this.handlers = new Set(); this.lastPath = null; this.ss = socketState();
-    this.connected = false; this.onConn = () => {};
+    this.connected = false; this.onConn = (_up) => {};
     this.now = () => Date.now(); this.lastMsgAt = 0; this.lastPingAt = 0;
     this.tick = setInterval(() => this.check(), 2000);           // the heartbeat (a frozen tab pauses it, and nudge() reopens on resume)
     this.open();

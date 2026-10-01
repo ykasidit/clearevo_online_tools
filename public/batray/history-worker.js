@@ -71,7 +71,6 @@ async function init() {
 }
 /** Hand the pool's files back (pagehide): every day database is closed and the access handles released, so the
  *  next page (or another tab) can take them. The next op takes them again. */
-async function pause() { if (!pool || pool.isPaused()) return { paused: !!pool }; for (const day of [...dbs.keys()]) if (day !== DEMO_DAY) close(day); await pool.pauseVfs(); return { paused: true }; }
 async function resume() { if (pool && pool.isPaused()) await pool.unpauseVfs(); return { paused: false }; }
 async function room(n = 3) { if (pool.getFileCount() + n > pool.getCapacity()) await pool.addCapacity(Math.max(8, n)); }
 const DEMO_DAY = 'demo';                 // the DEMO pack's rows: an in-memory database, never on disk, never listed or exported

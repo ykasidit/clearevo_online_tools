@@ -36,7 +36,7 @@ const samples = [];
 function rendererRssMb() {
   try {
     const out = execSync(`ps -eo rss=,args= | grep -- '--type=renderer' | grep -v grep | grep '${process.env.PROF || 'user-data-dir'}'`, { encoding: 'utf8' });
-    return Math.max(...out.trim().split('\n').map((l) => parseInt(l) / 1024));
+    return Math.max(...out.trim().split('\n').map((l) => parseInt(l, 10) / 1024));
   } catch { return 0; }
 }
 async function sample(tag) {

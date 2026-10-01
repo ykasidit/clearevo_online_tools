@@ -12,7 +12,7 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
-import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castSettle, castProgress, castButtons, castStateUi, castTapAllowed, castTvUpdate, castPhaseBudgetMs, CAST_FLOW_TIMEOUT_MS, CAST_TV_WAIT_MS } from './cast-logic.js';
+import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castSettle, castProgress, castButtons, castStateUi, castTapAllowed, castTvUpdate, CAST_FLOW_TIMEOUT_MS, CAST_TV_WAIT_MS } from './cast-logic.js';
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
 import { trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
@@ -23,7 +23,7 @@ import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, 
 import { startDemo } from './demo.js';
 import { I18N, detectLang } from './i18n.js';
 import { Publisher, Viewer } from './live.js';
-import { parseShare, envelope } from './live-logic.js';
+import { parseShare, envelope, suggestChannelName, parseSavedShare } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
 import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, TREND_REFRESH_MS } from './history-logic.js';
@@ -33,11 +33,11 @@ import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settin
 import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, LASTRUN_KEY } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
-import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.53';
+export const APP_VERSION = '0.9.54';
 
+/** @returns {any} */
 const $ = (id) => document.getElementById(id);
 const els = {
   disconnect: $('disconnect'), demoBtn: $('demoBtn'), copy: $('copy'), stat: $('stat'), empty: $('empty'), readouts: $('readouts'),
@@ -570,7 +570,7 @@ function recordRow(p, d, t, remoteRow = null) {
   queueRow(row);
   return row;
 }
-let histWriteFailed = false, histFlushing = false;
+let histFlushing = false;
 /** The queue into the day databases, one insert per day. A failed insert keeps its rows for the next flush
  *  (bounded); the store has already logged why. */
 async function flushHistory() {
@@ -584,7 +584,7 @@ async function flushHistory() {
         try {
           const r = await hist.insert(day, rows);
           if (r.ignored && !viewer) log(`history: ${r.ignored} of ${rows.length} rows for ${day} were already stored`);
-          histWriteFailed = false; break;
+          break;
         } catch (e) {
           if (isCorrupt(e)) { await corruptDb(e, 'live write', rows); break; }
           if (e.name === 'QuotaExceededError' && attempt === 0) {           // full: the oldest past day goes, then one more try
@@ -592,7 +592,7 @@ async function flushHistory() {
             log(`history: quota exceeded -> ${q.action} ${q.day || ''}`);
             if (q.action === 'delete') { await hist.remove(q.day).catch(() => {}); continue; }
           }
-          const l = histMem.pending.get(day) || []; histMem.pending.set(day, rows.concat(l).slice(-5000)); histWriteFailed = true; break;
+          const l = histMem.pending.get(day) || []; histMem.pending.set(day, rows.concat(l).slice(-5000)); break;
         }
       }
     }
@@ -614,7 +614,7 @@ function spillPending() {
   return rows.length;
 }
 async function unspill() {
-  let rows = []; try { rows = JSON.parse(localStorage.getItem(SPILL_KEY) || '[]'); localStorage.removeItem(SPILL_KEY); } catch { rows = []; }
+  let rows = []; try { rows = JSON.parse(localStorage.getItem(SPILL_KEY) || '[]'); localStorage.removeItem(SPILL_KEY); } catch { /* nothing spilled */ }
   if (!rows.length) return;
   const byDay = new Map(); for (const r of rows) { if (!r || typeof r.t !== 'number') continue; const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); }
   let n = 0; for (const [d, rs] of byDay) { try { n += (await hist.insert(d, rs)).inserted; } catch { /* logged by the store */ } }
@@ -819,7 +819,7 @@ setTimeout(memMeasure, 3000);
 window.addEventListener('pagehide', () => { if (!(window.__batrayTest && window.__batrayTest.skipLastRun)) writeLastRun(true); });
 /** Right after the header lines: what the previous run last reported, then this run's first record. */
 function logLastRun() {
-  let prev = null; try { prev = JSON.parse(localStorage.getItem(LASTRUN_KEY) || 'null'); } catch { prev = null; }
+  let prev = null; try { prev = JSON.parse(localStorage.getItem(LASTRUN_KEY) || 'null'); } catch { /* no record */ }
   const nav = performance.getEntriesByType ? (performance.getEntriesByType('navigation')[0] || {}).type : '';
   const report = lastRunReport(prev, Date.now(), { wasDiscarded: !!document.wasDiscarded, navType: nav });
   if (report) for (const line of report) log(line);
@@ -2102,7 +2102,7 @@ applyLang(detectLang());
 // Alerts (thresholds -> Chrome notifications; ntfy and the relay watchdog stay off behind NTFY_ENABLED).
 // Started after the language is set so the first render has strings.
 alerts = initAlerts({
-  log, T: () => T, getPacks: () => [...packs.values()], viewMode,
+  log, T: () => T, getPacks: () => [...packs.values()], viewMode, toast,
   onStatus: (st) => {
     const el = $('alertNote'); if (!el) return;
     el.hidden = !st.channels.length;

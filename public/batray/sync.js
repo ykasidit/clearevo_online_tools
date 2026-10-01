@@ -26,7 +26,8 @@ export const isAbort = (e) => !!e && e.name === 'AbortError';
 export const TIMEOUT = 'timeout';
 
 /** Wait on a list of wakers with an optional deadline and stop signal. Resolves `value` when woken, TIMEOUT after
- *  ms, rejects AbortError on the signal. The waker is removed whichever way it ends. */
+ *  ms, rejects AbortError on the signal. The waker is removed whichever way it ends.
+ *  @param {Function[]} wakers @param {{ ms?: number, signal?: AbortSignal }} [opts] @param {string} [value] */
 function waitOn(wakers, { ms, signal } = {}, value = 'set') {
   return new Promise((res, rej) => {
     if (signal && signal.aborted) { rej(abortError()); return; }

@@ -89,7 +89,7 @@ await evalJs(`document.getElementById('upload').click(); 1`); await sleep(300);
 const warn = await evalJs(`({ shown: !document.getElementById('sheet').hidden, lead: document.getElementById('sheetLead').textContent, ok: !!document.querySelector('#sheetActs [data-act=ok]') })`);
 check('the upload warning is a bottom sheet carrying the full wording, not a confirm()', warn.shown && /90 days/.test(warn.lead) && warn.ok, warn);
 await evalJs(`document.querySelector('#sheetActs [data-act=cancel]').click(); 1`); await sleep(300);
-let posts = await evalJs(`window.__logPosts.length`);
+const posts = await evalJs(`window.__logPosts.length`);
 check('declining the warning sends nothing', posts === 0 && (await evalJs(`window.__batrayTest.logLines().some((l) => /log upload: declined/.test(l))`)), posts);
 // accepted -> header + --- + lines, id shown
 await evalJs(`document.getElementById('upload2').click(); 1`); await sleep(200);
