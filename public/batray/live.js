@@ -23,7 +23,8 @@
 // /batray/api/ holds the SFU secret, routes signalling, and counts how many
 // sockets are on an SFU/TURN path against the free cap.
 import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, SIG_DEAD_MS, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect, readerPresent, FRESH_MS } from './live-logic.js';
-import { linkState, linkEvent, attemptOwns, socketState, socketOpen, socketOwns, socketClosed, socketNudge } from './link-logic.js';
+import { socketState, socketOpen, socketOwns, socketClosed, socketNudge } from './link-logic.js';
+import { Flag, Channel, sleep, select, isAbort, abortError } from './sync.js';
 
 const API = '/batray/api';
 const P2P_WAIT_MS = 7000;      // viewer waits this long for a direct offer/connection before using the SFU
@@ -51,17 +52,19 @@ async function iceServers(relayOnly) {
   return relayOnly ? { iceServers: iceCache.servers, iceTransportPolicy: 'relay', bundlePolicy: 'max-bundle' } : { iceServers: iceCache.servers, bundlePolicy: 'max-bundle' };
 }
 
-function waitConnected(pc, ms) {
+function waitConnected(pc, ms, signal) {
   return new Promise((res, rej) => {
     const t = setTimeout(() => rej(new Error(`not connected in ${Math.round(ms / 1000)} s (${pc.connectionState})`)), ms);
+    if (signal) signal.addEventListener('abort', () => { clearTimeout(t); rej(abortError()); }, { once: true });
     const chk = () => { if (pc.connectionState === 'connected') { clearTimeout(t); res(); } else if (['failed', 'closed'].includes(pc.connectionState)) { clearTimeout(t); rej(new Error('connection ' + pc.connectionState)); } };
     pc.addEventListener('connectionstatechange', chk); chk();
   });
 }
-function waitOpen(dc, ms) {
+function waitOpen(dc, ms, signal) {
   return new Promise((res, rej) => {
     if (dc.readyState === 'open') return res();
     const t = setTimeout(() => rej(new Error(`channel not open in ${Math.round(ms / 1000)} s (${dc.readyState})`)), ms);
+    if (signal) signal.addEventListener('abort', () => { clearTimeout(t); rej(abortError()); }, { once: true });
     dc.addEventListener('open', () => { clearTimeout(t); res(); }, { once: true });
     dc.addEventListener('close', () => { clearTimeout(t); rej(new Error('channel closed')); }, { once: true });
     dc.addEventListener('error', (e) => { clearTimeout(t); rej(new Error('channel error ' + (e.error && e.error.message))); }, { once: true });
@@ -72,20 +75,24 @@ async function directPathOf(pc) { try { const pr = selectedPair(await pc.getStat
 
 // Transport to the SFU: one silent audio track carries the offer/answer, the
 // DataChannel rides the same bundle.
-async function connectTransport(pc, sid, log) {
+async function connectTransport(pc, sid, log, signal) {
   const ac = new AudioContext();
   const dest = ac.createMediaStreamDestination();
   const tx = pc.addTransceiver(dest.stream.getAudioTracks()[0], { direction: 'sendonly' });
   pc.createDataChannel('bootstrap');
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
+  if (signal) signal.throwIfAborted();
   const r = await j(`sfu/session/${sid}/tracks`, { method: 'POST', body: JSON.stringify({ sessionDescription: { type: 'offer', sdp: offer.sdp }, tracks: [{ location: 'local', mid: tx.mid, trackName: 'silence' }] }) });
   if (!r.sessionDescription) throw new Error('SFU gave no answer: ' + JSON.stringify(r).slice(0, 200));
   await pc.setRemoteDescription(r.sessionDescription);
-  await waitConnected(pc, 20000);
+  await waitConnected(pc, 20000, signal);
   log(`sfu transport up (session ${sid.slice(0, 8)}…)`);
   return ac;
 }
+
+/** Close a transport's pieces; each may already be gone. */
+function closeLink(l) { if (!l) return; try { l.dc && l.dc.close(); } catch { /* */ } try { l.pc && l.pc.close(); } catch { /* */ } try { l.ac && l.ac.close(); } catch { /* */ } }
 
 /** Presence + signalling socket with automatic reopen. */
 class Signal {
@@ -137,31 +144,35 @@ function watchNet(self) {
 }
 function unwatchNet(self) { if (self.netHandler) { window.removeEventListener('online', self.netHandler); window.removeEventListener('offline', self.netHandler); self.netHandler = null; } }
 
-/** Countdown helper: calls tick(left) each second, then fn(). */
-function countdown(seconds, tick, fn) {
-  let left = seconds; tick(left);
-  const t = setInterval(() => { left -= 1; tick(left); if (left <= 0) { clearInterval(t); fn(); } }, 1000);
-  return () => clearInterval(t);
-}
+
+// ---- THE LIFECYCLE LOOPS (house rule, owner 2026-10-01). Each link is ONE async function with a loop: the state is
+// the program counter, there is one writer, every wait takes the stop signal. Callbacks at the platform boundary
+// only set a Flag or push into a Channel. The 2026-09-30 race (an SFU attempt waking after the direct channel had
+// taken the link, and writing "failed" over a flowing stream) cannot happen here: the attempt is an arm of a
+// select that the direct channel wins, and a losing arm is aborted, not consulted. ----
 
 export class Publisher {
-  /** opts: { log(msg), onState(state), onRequest(msg) } - state: { viewers, live, path, p2p, server, retryIn, error };
-   *  onRequest gets a viewer's `hist-req` ({ from, have }) */
+  /** opts: { log(msg), onState(state), onRequest(msg), retryS, fullRetryS } - state: { viewers, live, path, p2p, server, retryIn,
+   *  error }; onRequest gets a viewer's `hist-req` ({ from, have }) */
   constructor(opts) {
     this.log = opts.log || (() => {}); this.onState = opts.onState || (() => {}); this.onRequest = opts.onRequest || (() => {});
     this.room = null; this.pubToken = null; this.keyB64 = null; this.key = null; this.link = null;
-    this.pc = null; this.dc = null; this.sid = null; this.ac = null; this.sig = null;
+    this.sfu = null; this.sid = null; this.sig = null;
     this.peers = new Map();          // viewerId -> { pc, dc }
     // sig: presence socket to the server up; net: this device has internet
     this.state = { viewers: 0, live: false, path: classifyPath(null), p2p: 0, server: { conns: 0, limit: 0 }, retryIn: null, error: null, sent: 0, dropped: 0, sig: null, net: true };   // sig null = not tried yet
-    this.stopped = false; this.pathTimer = null; this.cancelRetry = null; this.relayOnly = false; this.ls = linkState();
+    this.stopped = false; this.relayOnly = false;
+    this.retryS = opts.retryS || RETRY_S; this.fullRetryS = opts.fullRetryS || FULL_RETRY_S;
+    this.resumed = new Channel();     // the tab came back: a retry countdown ends early
+    this.ac = null; this.task = null;
   }
   emit() { this.onState({ ...this.state }); }
 
   /** existing: { room, pub, key } from an earlier share - the same link keeps
-   *  working for viewers who bookmarked it. Falls back to a new room when the
-   *  relay no longer knows the old one. */
+   *  working for viewers who bookmarked it. Falls back to a new room only when
+   *  the relay says it no longer knows the old one. */
   async start(existing = null) {
+    if (this.task) return this.link;
     let room = null, pub = null;
     this.reused = false;
     if (existing && existing.room && existing.pub && existing.key) {
@@ -180,9 +191,75 @@ export class Publisher {
     this.sig.on((m) => this.onSignal(m));
     this.sig.onConn = (up) => this.onSigConn(up);
     watchNet(this);
-    await this.connectSfu();
+    this.ac = new AbortController();
+    this.task = this.run(this.ac.signal).catch((e) => { if (!isAbort(e)) this.log(`live: publisher loop died: ${e.message}`); });
     return this.link;
   }
+
+  /** The one owner of the SFU link: connect, publish until it drops, count down, again. */
+  async run(signal) {
+    for (;;) {
+      this.state.retryIn = null; this.state.error = null; this.emit();
+      let sfu;
+      try { sfu = await this.connectSfu(signal); } catch (e) {
+        if (isAbort(e)) throw e;
+        const full = e.status === 429;
+        if (!full && !this.relayOnly && /not connected|connection failed/.test(e.message)) { this.relayOnly = true; this.log('live: UDP path failed, next attempt via TURN relay'); }   // next: TURN-only (TCP/TLS 443)
+        this.state.error = full ? `server full (${e.body.conns}/${e.body.limit})` : e.message;
+        this.log('live: ' + this.state.error);
+        await this.retryWait(full ? this.fullRetryS : this.retryS, signal);
+        continue;
+      }
+      this.sfu = sfu; this.sid = sfu.session;
+      this.state.live = true; this.state.path = sfu.path; this.sig.reportPath(sfu.path.tier); this.emit();
+      this.log(`live: publishing on ${sfu.path.label}`);
+      const why = await this.watchLink(sfu, signal, 30000);
+      this.log(`live: transport ${sfu.pc.connectionState} (${why})`);
+      this.closeSfu();
+      this.state.live = false; this.state.path = classifyPath(null); this.sig.reportPath('none'); this.emit();
+      await this.retryWait(this.retryS, signal);
+    }
+  }
+  /** One SFU attempt, straight through; throws on failure and on the stop signal, leaving nothing open. */
+  async connectSfu(signal) {
+    const pc = new RTCPeerConnection(await iceServers(this.relayOnly));
+    const sfu = { kind: 'sfu', pc, dc: null, ac: null, session: null, path: null, closed: new Flag(false) };
+    try {
+      signal.throwIfAborted();
+      const { sessionId } = await j('sfu/session', { method: 'POST' }); signal.throwIfAborted();
+      sfu.session = sessionId;
+      sfu.ac = await connectTransport(pc, sessionId, this.log, signal);
+      const r = await j(`sfu/session/${sessionId}/dc`, { method: 'POST', body: JSON.stringify({ location: 'local', name: 'jk' }) }); signal.throwIfAborted();
+      const id = r.dataChannels && r.dataChannels[0] && r.dataChannels[0].id;
+      if (typeof id !== 'number') throw new Error('SFU gave no channel id: ' + JSON.stringify(r).slice(0, 200));
+      sfu.dc = pc.createDataChannel('jk', { negotiated: true, id, ordered: true });
+      await waitOpen(sfu.dc, 20000, signal);
+      await j(`room/${this.room}/session?token=${this.pubToken}`, { method: 'PUT', body: JSON.stringify({ session: sessionId }) }); signal.throwIfAborted();
+      sfu.path = await pathOf(pc);
+      pc.addEventListener('iceconnectionstatechange', () => this.log(`ice (sfu): ${pc.iceConnectionState}`));
+      pc.addEventListener('connectionstatechange', () => { if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) sfu.closed.set(true); });   // boundary: a flag, nothing else
+      return sfu;
+    } catch (e) { closeLink(sfu); throw e; }
+  }
+  /** While the link is live: wait for its end; every pathMs re-read the path (UDP <-> TURN) and tell the relay. */
+  async watchLink(link, signal, pathMs) {
+    for (;;) {
+      const d = await select(signal, { closed: (s) => link.closed.wait(true, { signal: s }), tick: (s) => sleep(pathMs, s) });
+      if (d.key !== 'tick') return d.key;
+      const p = await pathOf(link.pc);
+      if (p.tier !== this.state.path.tier) { this.log(`live: path changed ${this.state.path.label} -> ${p.label}`); this.sig.reportPath(p.tier); this.state.path = p; this.emit(); }
+    }
+  }
+  /** The retry countdown on the chip; the tab resuming (nudge) ends it early. */
+  async retryWait(seconds, signal) {
+    for (let left = seconds; left > 0; left--) {
+      this.state.retryIn = left; this.emit();
+      const r = await select(signal, { tick: (s) => sleep(1000, s), resume: (s) => this.resumed.next({ signal: s }) });
+      if (r.key === 'resume') { this.log('live: tab resumed, retrying now'); break; }
+    }
+    this.state.retryIn = null; this.emit();
+  }
+  closeSfu() { closeLink(this.sfu); this.sfu = null; }
 
   get credentials() { return { room: this.room, pub: this.pubToken, key: this.keyB64, at: Date.now() }; }
   onSigConn(up) {
@@ -221,7 +298,8 @@ export class Publisher {
   }
 
   // Direct Wi-Fi attempt: host candidates only. Succeeds only on the same LAN;
-  // otherwise the viewer falls back to the SFU on its own.
+  // otherwise the viewer falls back to the SFU on its own. The peer object is
+  // its own token: after each await the handle must still be the one in the map.
   async offerP2P(viewerId) {
     this.dropPeer(viewerId);
     const pc = new RTCPeerConnection({ iceServers: [] });
@@ -230,87 +308,34 @@ export class Publisher {
     this.peers.set(viewerId, peer);
     pc.onicecandidate = (e) => { if (e.candidate) this.sig.send({ type: 'ice', to: viewerId, cand: e.candidate.toJSON() }); };
     pc.oniceconnectionstatechange = () => this.log(`p2p ice (viewer ${viewerId.slice(0, 6)}): ${pc.iceConnectionState}`);
-    dc.onopen = async () => { peer.open = true; this.state.p2p = [...this.peers.values()].filter((p) => p.open).length; const d = await directPathOf(pc); if (this.peers.get(viewerId) !== peer) return; this.log(`p2p: viewer ${viewerId.slice(0, 6)} connected - ${d.label}`); this.emit(); this.resendSnapshot && this.resendSnapshot(); };
+    dc.onopen = () => this.peerUp(viewerId, peer);
     dc.onclose = () => { if (this.peers.get(viewerId) === peer) this.dropPeer(viewerId); };
     pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && this.peers.get(viewerId) === peer) this.dropPeer(viewerId); };
     const offer = await pc.createOffer();
-    if (this.peers.get(viewerId) !== peer) return;                           // replaced or dropped while the offer was made (ownership rule)
+    if (this.peers.get(viewerId) !== peer) return;
     await pc.setLocalDescription(offer);
     if (this.peers.get(viewerId) !== peer) return;
     this.sig.send({ type: 'offer', to: viewerId, sdp: { type: 'offer', sdp: offer.sdp } });
-    setTimeout(() => { if (this.peers.get(viewerId) === peer && !peer.open) { this.log(`p2p: no direct link to ${viewerId.slice(0, 6)} (not on this Wi-Fi), it will use the SFU`); this.dropPeer(viewerId); } }, P2P_WAIT_MS + 3000);
+    setTimeout(() => { if (this.peers.get(viewerId) === peer && !peer.open) { this.log(`p2p: no direct link to ${viewerId.slice(0, 6)} (not on this Wi-Fi), it will use the SFU`); this.dropPeer(viewerId); } }, P2P_WAIT_MS);
+  }
+  async peerUp(viewerId, peer) {
+    peer.open = true; this.state.p2p = [...this.peers.values()].filter((p) => p.open).length;
+    const d = await directPathOf(peer.pc);
+    if (this.peers.get(viewerId) !== peer) return;
+    this.log(`p2p: viewer ${viewerId.slice(0, 6)} connected - ${d.label}`); this.emit();
+    if (this.resendSnapshot) this.resendSnapshot();
   }
   dropPeer(id) {
     const peer = this.peers.get(id); if (!peer) return;
     this.peers.delete(id);
-    try { peer.dc.close(); } catch { /* */ } try { peer.pc.close(); } catch { /* */ }
+    closeLink(peer);
     this.state.p2p = [...this.peers.values()].filter((p) => p.open).length; this.emit();
-  }
-
-  async connectSfu() {
-    const d0 = linkEvent(this.ls, 'sfu-start', { stopped: this.stopped });
-    if (d0.action !== 'connect') { this.log(`live: no SFU attempt (${d0.why})`); return; }
-    const tok = d0.token, own = () => attemptOwns(this.ls, tok);             // after every await: still the current attempt? (link-logic)
-    this.teardownSfu();
-    if (this.cancelRetry) { this.cancelRetry(); this.cancelRetry = null; }
-    this.state.retryIn = null; this.state.error = null; this.emit();
-    try {
-      const pc = new RTCPeerConnection(await iceServers(this.relayOnly));
-      if (!own()) { pc.close(); return; }
-      this.pc = pc;
-      const { sessionId } = await j('sfu/session', { method: 'POST' });
-      if (!own()) return;
-      this.sid = sessionId;
-      this.ac = await connectTransport(pc, sessionId, this.log);
-      if (!own()) return;
-      const r = await j(`sfu/session/${sessionId}/dc`, { method: 'POST', body: JSON.stringify({ location: 'local', name: 'jk' }) });
-      if (!own()) return;
-      const id = r.dataChannels && r.dataChannels[0] && r.dataChannels[0].id;
-      if (typeof id !== 'number') throw new Error('SFU gave no channel id: ' + JSON.stringify(r).slice(0, 200));
-      this.dc = pc.createDataChannel('jk', { negotiated: true, id, ordered: true });
-      await waitOpen(this.dc, 20000);
-      if (!own()) return;
-      await j(`room/${this.room}/session?token=${this.pubToken}`, { method: 'PUT', body: JSON.stringify({ session: sessionId }) });
-      const path = await pathOf(pc);
-      const d = linkEvent(this.ls, 'sfu-open', { token: tok });
-      if (d.action !== 'live') { this.log(`live: SFU attempt ${tok} finished but ${d.why}`); return; }
-      this.state.live = true; this.state.path = path; this.sig.reportPath(this.state.path.tier); this.emit();
-      this.log(`live: publishing on ${this.state.path.label}`);
-      pc.addEventListener('iceconnectionstatechange', () => this.log(`ice (sfu): ${pc.iceConnectionState}`));
-      clearInterval(this.pathTimer);
-      this.pathTimer = setInterval(async () => { if (this.pc === pc && own()) { const p = await pathOf(pc); if (own() && p.tier !== this.state.path.tier) { this.log(`live: path changed ${this.state.path.label} -> ${p.label}`); this.sig.reportPath(p.tier); this.state.path = p; this.emit(); } } }, 30000);
-      pc.addEventListener('connectionstatechange', () => {
-        if (!['failed', 'disconnected', 'closed'].includes(pc.connectionState)) return;
-        const t = linkEvent(this.ls, 'transport-down', { token: tok });
-        if (t.action === 'retry') { this.log(`live: transport ${pc.connectionState}`); this.scheduleRetry(RETRY_S); }
-      });
-    } catch (err) {
-      const d = linkEvent(this.ls, 'sfu-failed', { token: tok, stopped: this.stopped, status: err.status, message: err.message, relayOnly: this.relayOnly });
-      if (d.action === 'stop') return;
-      if (d.action === 'ignore') { this.log(`live: SFU attempt ${tok} dropped, ${d.why}: ${err.message}`); return; }
-      // after a plain UDP failure, the next attempt goes TURN-only (TCP/TLS 443)
-      if (d.toRelay) { this.relayOnly = true; this.log('live: UDP path failed, next attempt via TURN relay'); }
-      this.state.error = d.full ? `server full (${err.body.conns}/${err.body.limit})` : err.message;
-      this.log('live: ' + this.state.error);
-      this.scheduleRetry(d.full ? FULL_RETRY_S : RETRY_S);
-    }
-  }
-  scheduleRetry(seconds) {
-    if (linkEvent(this.ls, 'retry', { stopped: this.stopped }).action !== 'countdown') return;
-    this.state.live = false; this.sig.reportPath('none');
-    if (this.cancelRetry) this.cancelRetry();
-    this.cancelRetry = countdown(seconds, (left) => { this.state.retryIn = left; this.emit(); }, () => { this.cancelRetry = null; if (linkEvent(this.ls, 'retry-fired', { stopped: this.stopped }).action === 'subscribe') this.connectSfu(); });
-  }
-  /** The tab just came back: reopen the socket and retry the transport now. */
-  nudge() {
-    if (this.stopped) return;
-    if (this.sig) this.sig.nudge();
-    if (linkEvent(this.ls, 'resume', { stopped: this.stopped }).action === 'subscribe') { this.log('live: tab resumed, retrying now'); this.connectSfu(); }
   }
 
   /** Bytes still queued on the busiest open channel: a big transfer waits while this is high instead of dropping. */
   backlog() {
-    let b = this.dc && this.dc.readyState === 'open' ? this.dc.bufferedAmount : 0;
+    const dc = this.sfu && this.sfu.dc;
+    let b = dc && dc.readyState === 'open' ? dc.bufferedAmount : 0;
     for (const p of this.peers.values()) if (p.open && p.dc.readyState === 'open') b = Math.max(b, p.dc.bufferedAmount);
     return b;
   }
@@ -319,20 +344,18 @@ export class Publisher {
     if (!this.key) { this.state.dropped++; return; }        // start() has not imported the key yet (a BMS event can land first)
     const bytes = await encrypt(this.key, env);
     let sent = 0;
-    if (this.dc && this.dc.readyState === 'open' && this.dc.bufferedAmount < 256 * 1024) { this.dc.send(bytes); sent++; }
+    const dc = this.sfu && this.sfu.dc;
+    if (dc && dc.readyState === 'open' && dc.bufferedAmount < 256 * 1024) { dc.send(bytes); sent++; }
     for (const p of this.peers.values()) if (p.open && p.dc.readyState === 'open' && p.dc.bufferedAmount < 256 * 1024) { p.dc.send(bytes); sent++; }
     if (sent) this.state.sent++; else this.state.dropped++;
   }
+  /** The tab just came back: reopen the socket and retry the transport now. */
+  nudge() { if (this.stopped) return; if (this.sig) this.sig.nudge(); this.resumed.push(1); }
 
-  teardownSfu() {
-    clearInterval(this.pathTimer); this.pathTimer = null;
-    try { this.dc && this.dc.close(); } catch { /* */ } try { this.pc && this.pc.close(); } catch { /* */ } try { this.ac && this.ac.close(); } catch { /* */ }
-    this.dc = null; this.pc = null; this.ac = null;
-  }
   async stop() {
-    this.stopped = true; linkEvent(this.ls, 'stop');
-    if (this.cancelRetry) { this.cancelRetry(); this.cancelRetry = null; }
-    this.teardownSfu();
+    this.stopped = true;
+    if (this.ac) this.ac.abort();
+    this.closeSfu();
     for (const id of [...this.peers.keys()]) this.dropPeer(id);
     if (this.sig) this.sig.close();
     unwatchNet(this);
@@ -343,29 +366,125 @@ export class Publisher {
 }
 
 export class Viewer {
-  /** opts: { room, keyB64, log(msg), onState(state), onEnvelope(env) } */
+  /** opts: { room, keyB64, log(msg), onState(state), onEnvelope(env), p2pWaitMs, retryS, fullRetryS } */
   constructor(opts) {
     this.room = opts.room; this.keyB64 = opts.keyB64;
     this.log = opts.log || (() => {}); this.onState = opts.onState || (() => {}); this.onEnvelope = opts.onEnvelope || (() => {});
     this.key = null; this.sig = null; this.pubSession = null;
-    this.p2p = null;                  // { pc, dc, open }
-    this.sfu = null;                  // { pc, dc, ac, session }
+    this.p2p = null;                  // the direct link { kind: 'p2p', pc, dc, open, closed: Flag, path }
+    this.sfu = null;                  // the SFU link { kind: 'sfu', pc, dc, ac, session, path, closed: Flag }
     // sig: presence socket up; net: this device has internet; reader: the
     // server reports the reader present (its session is registered)
     this.state = { viewers: 0, live: false, path: classifyPath(null), server: { conns: 0, limit: 0 }, retryIn: null, error: null, received: 0, sig: null, net: true, reader: null };   // null = not known yet
     this.lastRxAt = null; this.now = () => Date.now(); this.lastStatus = null; this.recheck = null;
-    this.stopped = false; this.pathTimer = null; this.cancelRetry = null; this.relayOnly = false; this.p2pDeadline = null; this.ls = linkState();
+    this.stopped = false; this.relayOnly = false;
+    this.p2pWaitMs = opts.p2pWaitMs || P2P_WAIT_MS; this.retryS = opts.retryS || RETRY_S; this.fullRetryS = opts.fullRetryS || FULL_RETRY_S;
+    // the loop waits on these; the socket and channel callbacks only set them
+    this.reader = new Flag(false);    // the relay reports a reader session (fresh readings keep it, see onStatus)
+    this.direct = new Flag(false);    // the direct channel is open
+    this.resumed = new Channel();     // the tab came back: a retry countdown ends early
+    this.freshSession = false;        // a new reader session: give its direct offer a head start
+    this.ac = null; this.task = null;
   }
   emit() { this.onState({ ...this.state }); }
   get connected() { return !!((this.p2p && this.p2p.open) || (this.sfu && this.sfu.dc && this.sfu.dc.readyState === 'open')); }
 
   async start() {
+    if (this.task) return;
     this.key = await importKey(this.keyB64);
     this.sig = new Signal(this.room, 'view', null, this.log);
     this.sig.on((m) => this.onSignal(m));
     this.sig.onConn = (up) => { this.state.sig = up; this.emit(); };
     watchNet(this);
+    this.ac = new AbortController();
+    this.task = this.run(this.ac.signal).catch((e) => { if (!isAbort(e)) this.log(`live: viewer loop died: ${e.message}`); });
   }
+
+  /** The one owner of the link: wait for a reader, let its direct offer go first, else the SFU; follow the link
+   *  until it ends; count down; again. The direct channel opening at any point wins the select it is an arm of. */
+  async run(signal) {
+    for (;;) {
+      await this.reader.wait(true, { signal });
+      if (this.freshSession) {                                             // rung 2: the direct offer gets a head start
+        this.freshSession = false;
+        const w = await select(signal, { direct: (s) => this.direct.wait(true, { signal: s }), gone: (s) => this.reader.wait(false, { signal: s }), timeout: (s) => sleep(this.p2pWaitMs, s) });
+        if (w.key === 'gone') continue;
+      }
+      let link;
+      if (this.direct.v) link = this.p2p;
+      else {
+        this.state.error = null; this.emit();
+        try {
+          const r = await select(signal, { sfu: (s) => this.connectSfu(s), direct: (s) => this.direct.wait(true, { signal: s }), gone: (s) => this.reader.wait(false, { signal: s }) });
+          if (r.key === 'gone') continue;
+          if (r.key === 'direct') { this.log('live: the direct link came up during the SFU attempt - using it'); link = this.p2p; }
+          else link = r.value;
+        } catch (e) {
+          if (isAbort(e)) throw e;
+          const full = e.status === 429;
+          if (!full && !this.relayOnly && /not connected|connection failed/.test(e.message)) { this.relayOnly = true; this.log('live: UDP path failed, next attempt via TURN relay'); }
+          this.state.error = full ? `server full (${e.body.conns}/${e.body.limit})` : e.message;
+          this.log('live: ' + this.state.error);
+          await this.retryWait(full ? this.fullRetryS : this.retryS, signal);
+          continue;
+        }
+      }
+      if (link.kind === 'sfu') this.sfu = link;
+      this.state.live = true; this.state.error = null; this.state.path = link.path; this.sig.reportPath(link.path.tier); this.emit();
+      this.log(link.kind === 'sfu' ? `live: subscribed on ${link.path.label}` : `p2p: ${link.path.label} (no server)`);
+      const why = await this.watchLink(link, signal);
+      this.log(`live: ${link.kind} link ended (${why})`);
+      if (link.kind === 'sfu') this.closeSfu();
+      this.state.live = false; this.state.path = classifyPath(null); this.sig.reportPath('none'); this.emit();
+      if (why === 'closed' && link.kind === 'sfu') await this.retryWait(this.retryS, signal);
+    }
+  }
+  /** One SFU attempt, straight through; throws on failure and on the stop signal, leaving nothing open. */
+  async connectSfu(signal) {
+    const pubSession = this.pubSession;
+    const pc = new RTCPeerConnection(await iceServers(this.relayOnly));
+    const sfu = { kind: 'sfu', pc, dc: null, ac: null, session: null, path: null, closed: new Flag(false) };
+    try {
+      signal.throwIfAborted();
+      const { sessionId } = await j('sfu/session', { method: 'POST' }); signal.throwIfAborted();
+      sfu.session = sessionId;
+      sfu.ac = await connectTransport(pc, sessionId, this.log, signal);
+      const r = await j(`sfu/session/${sessionId}/dc`, { method: 'POST', body: JSON.stringify({ location: 'remote', name: 'jk', sessionId: pubSession }) }); signal.throwIfAborted();
+      const c = r.dataChannels && r.dataChannels[0];
+      if (!c || typeof c.id !== 'number') throw new Error('SFU gave no channel id: ' + JSON.stringify(r).slice(0, 300));
+      const dc = pc.createDataChannel('jk', { negotiated: true, id: c.id, ordered: true });
+      dc.binaryType = 'arraybuffer';
+      dc.onmessage = (e) => this.onBytes(e.data);
+      sfu.dc = dc;
+      await waitOpen(dc, 20000, signal);
+      sfu.path = await pathOf(pc);
+      pc.addEventListener('iceconnectionstatechange', () => this.log(`ice (sfu): ${pc.iceConnectionState}`));
+      pc.addEventListener('connectionstatechange', () => { if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) sfu.closed.set(true); });   // boundary: a flag, nothing else
+      return sfu;
+    } catch (e) { closeLink(sfu); throw e; }
+  }
+  /** While a link is live: wait for its end, the reader leaving, or (on the SFU) the direct channel opening; every
+   *  5 s on the SFU re-read the path. Returns the arm that ended it. */
+  async watchLink(link, signal) {
+    for (;;) {
+      const arms = { closed: (s) => link.closed.wait(true, { signal: s }), gone: (s) => this.reader.wait(false, { signal: s }) };
+      if (link.kind === 'sfu') { arms.direct = (s) => this.direct.wait(true, { signal: s }); arms.tick = (s) => sleep(5000, s); }
+      const d = await select(signal, arms);
+      if (d.key !== 'tick') return d.key;
+      const p = await pathOf(link.pc);
+      if (p.tier !== this.state.path.tier) { this.log(`live: path changed ${this.state.path.label} -> ${p.label}`); this.sig.reportPath(p.tier); this.state.path = p; this.emit(); }
+    }
+  }
+  /** The retry countdown on the chip; the tab resuming, the direct channel opening or the reader leaving end it early. */
+  async retryWait(seconds, signal) {
+    for (let left = seconds; left > 0; left--) {
+      this.state.retryIn = left; this.emit();
+      const r = await select(signal, { tick: (s) => sleep(1000, s), resume: (s) => this.resumed.next({ signal: s }), direct: (s) => this.direct.wait(true, { signal: s }), gone: (s) => this.reader.wait(false, { signal: s }) });
+      if (r.key !== 'tick') { if (r.key === 'resume') this.log('live: tab resumed, retrying now'); break; }
+    }
+    this.state.retryIn = null; this.emit();
+  }
+  closeSfu() { closeLink(this.sfu); this.sfu = null; }
 
   /** Ask the reader for the history files this device lacks (0.9.30); `have` = this device's day listing. */
   request(have) { if (!this.sig) return false; this.sig.send({ type: 'hist-req', have }); return true; }
@@ -394,23 +513,21 @@ export class Viewer {
         this.emit(); return;
       }
       if (this.pubSession) this.log('live: publisher went offline');
-      this.pubSession = null; this.state.live = false; this.state.error = null; linkEvent(this.ls, 'no-reader');
-      this.teardownSfu(); this.clearRetry(); this.emit(); return;
+      this.pubSession = null; this.reader.set(false); this.emit(); return;
     }
     if (this.recheck) { clearTimeout(this.recheck); this.recheck = null; }
-    this.emit();
     if (m.session !== this.pubSession) {
-      this.pubSession = m.session;
-      // give the direct Wi-Fi offer a head start; the SFU only if it did not come through
-      if (!this.p2pDeadline) this.p2pDeadline = setTimeout(() => { this.p2pDeadline = null; this.act(linkEvent(this.ls, 'p2p-timeout', this.inp())); }, P2P_WAIT_MS);
+      if (this.pubSession) { this.log('live: the reader has a new session - reconnecting'); this.reader.set(false); }   // the loop ends the old link and comes back here
+      this.pubSession = m.session; this.freshSession = true;
     }
+    this.reader.set(true); this.emit();
   }
 
-  // ---- rung 2: direct Wi-Fi ----
+  // ---- rung 2: direct Wi-Fi. The p object is its own token: after each await the handle must still be this.p2p. ----
   async answerP2P(offer) {
     this.dropP2P();
     const pc = new RTCPeerConnection({ iceServers: [] });
-    const p = { pc, dc: null, open: false };
+    const p = { kind: 'p2p', pc, dc: null, open: false, closed: new Flag(false), path: { tier: 'p2p', sub: null, label: 'direct' } };
     this.p2p = p;
     pc.onicecandidate = (e) => { if (e.candidate) this.sig.send({ type: 'ice', cand: e.candidate.toJSON() }); };
     pc.oniceconnectionstatechange = () => this.log(`p2p ice: ${pc.iceConnectionState}`);
@@ -418,87 +535,31 @@ export class Viewer {
       p.dc = e.channel; p.dc.binaryType = 'arraybuffer';
       p.dc.onmessage = (ev) => this.onBytes(ev.data);
       p.dc.onopen = () => this.p2pUp(p, pc);
-      p.dc.onclose = () => { if (this.p2p === p) { this.log('p2p: direct link closed'); this.dropP2P(); this.act(linkEvent(this.ls, 'p2p-closed', this.inp())); } };
+      p.dc.onclose = () => { if (this.p2p === p) { this.log('p2p: direct link closed'); this.dropP2P(); } };
     };
-    pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && this.p2p === p) { this.dropP2P(); this.act(linkEvent(this.ls, 'p2p-closed', this.inp())); } };
+    pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && this.p2p === p) this.dropP2P(); };
     await pc.setRemoteDescription(offer);
-    if (this.p2p !== p) return;                                              // a newer offer replaced this one meanwhile (ownership rule)
+    if (this.p2p !== p) return;
     const answer = await pc.createAnswer();
     if (this.p2p !== p) return;
     await pc.setLocalDescription(answer);
     if (this.p2p !== p) return;
     this.sig.send({ type: 'answer', sdp: { type: 'answer', sdp: answer.sdp } });
-    setTimeout(() => { if (this.p2p === p && !p.open) { this.log('p2p: no direct link (different network), using the SFU'); this.dropP2P(); this.act(linkEvent(this.ls, 'p2p-timeout', this.inp())); } }, P2P_WAIT_MS + 3000);
+    setTimeout(() => { if (this.p2p === p && !p.open) { this.log('p2p: no direct link (different network), using the SFU'); this.dropP2P(); } }, P2P_WAIT_MS + 3000);
   }
-  /** The direct channel opened: it owns the link from here; an SFU attempt in flight finds itself superseded. */
+  /** The direct channel opened: read its path, then raise the flag the loop waits on. */
   async p2pUp(p, pc) {
     p.open = true;
-    const d = linkEvent(this.ls, 'p2p-open');
     const path = await directPathOf(pc);
-    if (this.p2p !== p) return;                                              // dropped while the stats were read
-    this.state.live = true; this.state.error = null; this.state.path = path; this.sig.reportPath('p2p');
-    this.log(`p2p: ${this.state.path.label} (no server) -> ${d.action}`);
-    this.clearRetry(); this.teardownSfu(); this.emit();
+    if (this.p2p !== p) return;
+    p.path = path; this.direct.set(true);
   }
-  inp() { return { hasReader: !!this.pubSession, stopped: this.stopped }; }
-  act(d) { if (d.action === 'subscribe') this.subscribe(); }
   dropP2P() {
     const p = this.p2p; if (!p) return; this.p2p = null;
-    try { p.dc && p.dc.close(); } catch { /* */ } try { p.pc.close(); } catch { /* */ }
-    if (this.state.path.tier === 'p2p') { this.state.live = false; this.state.path = classifyPath(null); this.emit(); }
+    closeLink(p);
+    this.direct.set(false); p.closed.set(true);                               // the loop takes it from here
   }
 
-  // ---- rung 3 and 4: SFU over UDP, then via TURN ----
-  async subscribe() {
-    const d0 = linkEvent(this.ls, 'sfu-start', this.inp());
-    if (d0.action !== 'connect') { if (d0.why !== 'no reader session') this.log(`live: no SFU attempt (${d0.why})`); return; }
-    const tok = d0.token, own = () => attemptOwns(this.ls, tok);             // after every await: still the current attempt? (link-logic)
-    this.clearRetry();
-    const pubSession = this.pubSession;
-    this.teardownSfu();
-    let s = null;
-    try {
-      const pc = new RTCPeerConnection(await iceServers(this.relayOnly));
-      if (!own()) { pc.close(); return; }
-      s = { pc, dc: null, ac: null, session: null };
-      this.sfu = s;
-      const { sessionId } = await j('sfu/session', { method: 'POST' });
-      if (!own()) return;
-      s.session = sessionId;
-      s.ac = await connectTransport(pc, sessionId, this.log);
-      if (!own()) return;
-      const r = await j(`sfu/session/${sessionId}/dc`, { method: 'POST', body: JSON.stringify({ location: 'remote', name: 'jk', sessionId: pubSession }) });
-      if (!own()) return;
-      const c = r.dataChannels && r.dataChannels[0];
-      if (!c || typeof c.id !== 'number') throw new Error('SFU gave no channel id: ' + JSON.stringify(r).slice(0, 300));
-      const dc = pc.createDataChannel('jk', { negotiated: true, id: c.id, ordered: true });
-      dc.binaryType = 'arraybuffer';
-      dc.onmessage = (e) => this.onBytes(e.data);
-      s.dc = dc;
-      await waitOpen(dc, 20000);
-      const path = await pathOf(pc);
-      const d = linkEvent(this.ls, 'sfu-open', { token: tok });
-      if (d.action !== 'live') { this.log(`live: SFU attempt ${tok} opened but ${d.why}`); if (this.sfu === s) this.teardownSfu(); return; }
-      this.state.live = true; this.state.error = null; this.state.path = path; this.sig.reportPath(this.state.path.tier); this.emit();
-      this.log(`live: subscribed on ${this.state.path.label}`);
-      pc.addEventListener('iceconnectionstatechange', () => this.log(`ice (sfu): ${pc.iceConnectionState}`));
-      clearInterval(this.pathTimer);
-      this.pathTimer = setInterval(async () => { if (this.sfu === s && own()) { const p = await pathOf(pc); if (own() && p.tier !== this.state.path.tier) { this.log(`live: path changed ${this.state.path.label} -> ${p.label}`); this.sig.reportPath(p.tier); this.state.path = p; this.emit(); } } }, 5000);
-      pc.addEventListener('connectionstatechange', () => {
-        if (!['failed', 'disconnected', 'closed'].includes(pc.connectionState)) return;
-        const t = linkEvent(this.ls, 'transport-down', { token: tok });
-        if (t.action === 'retry') { this.log(`live: transport ${pc.connectionState}`); this.scheduleRetry(RETRY_S); }
-      });
-    } catch (err) {
-      const d = linkEvent(this.ls, 'sfu-failed', { token: tok, stopped: this.stopped, status: err.status, message: err.message, relayOnly: this.relayOnly });
-      if (d.action === 'stop') return;
-      if (d.action === 'ignore') { this.log(`live: SFU attempt ${tok} dropped, ${d.why}: ${err.message}`); return; }   // the state belongs to the link that won
-      if (d.toRelay) { this.relayOnly = true; this.log('live: UDP path failed, next attempt via TURN relay'); }
-      this.state.error = d.full ? `server full (${err.body.conns}/${err.body.limit})` : err.message;
-      this.log('live: ' + this.state.error);
-      this.scheduleRetry(d.full ? FULL_RETRY_S : RETRY_S);
-    }
-  }
   async onBytes(data) {
     try {
       const env = await decrypt(this.key, new Uint8Array(data));
@@ -512,29 +573,13 @@ export class Viewer {
       this.onEnvelope(env);
     } catch { if (!this.state.error) this.log('live: a message could not be decrypted (wrong or missing key)'); this.state.error = 'cannot decrypt: wrong or missing key'; this.emit(); }
   }
-  scheduleRetry(seconds) {
-    const d = linkEvent(this.ls, 'retry', { stopped: this.stopped });
-    if (d.action !== 'countdown') { this.log(`live: no retry (${d.why})`); return; }
-    this.state.live = false; this.sig.reportPath('none'); this.teardownSfu();
-    this.clearRetry();
-    this.cancelRetry = countdown(seconds, (left) => { this.state.retryIn = left; this.emit(); }, () => { this.cancelRetry = null; this.state.retryIn = null; this.act(linkEvent(this.ls, 'retry-fired', this.inp())); });
-  }
-  clearRetry() { if (this.cancelRetry) { this.cancelRetry(); this.cancelRetry = null; } this.state.retryIn = null; }
   /** The tab just came back: do not sit out a retry countdown or the socket reopen delay. */
-  nudge() {
-    if (this.stopped) return;
-    if (this.sig) this.sig.nudge();
-    if (linkEvent(this.ls, 'resume', this.inp()).action === 'subscribe') { this.log('live: tab resumed, retrying now'); this.clearRetry(); this.subscribe(); }
-  }
-  teardownSfu() {
-    clearInterval(this.pathTimer); this.pathTimer = null;
-    const s = this.sfu; if (!s) return; this.sfu = null;
-    try { s.dc && s.dc.close(); } catch { /* */ } try { s.pc.close(); } catch { /* */ } try { s.ac && s.ac.close(); } catch { /* */ }
-    if (this.state.path.tier !== 'p2p') { this.state.live = false; this.state.path = classifyPath(null); }
-  }
+  nudge() { if (this.stopped) return; if (this.sig) this.sig.nudge(); this.resumed.push(1); }
   stop() {
-    this.stopped = true; linkEvent(this.ls, 'stop'); this.clearRetry(); clearTimeout(this.p2pDeadline); clearTimeout(this.recheck); this.recheck = null;
-    this.dropP2P(); this.teardownSfu(); if (this.sig) this.sig.close(); unwatchNet(this);
-    this.state.live = false; this.emit();
+    this.stopped = true;
+    if (this.ac) this.ac.abort();
+    clearTimeout(this.recheck); this.recheck = null;
+    this.dropP2P(); this.closeSfu(); if (this.sig) this.sig.close(); unwatchNet(this);
+    this.state.live = false; this.state.retryIn = null; this.emit();
   }
 }

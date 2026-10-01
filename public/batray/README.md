@@ -64,6 +64,71 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.53: lifecycles are loops (owner decision 2026-10-01: "reduce entropy")
+
+The day after the ownership token shipped, the owner put the finger on
+the real cause: "code that takes state and does stuff based on events is
+more error-prone than the same thing as a single function with a loop,
+waiting on a latch with a timeout. The state is in the lines of code."
+Ken Thompson and Linus Torvalds style, Go and kernel C over the
+object-oriented kind. The token, the decision table and the gate of
+0.9.52 were all ways of coping with two writers of one state; a loop has
+one writer, so all three went away.
+
+**The house rule now.** A thing with a lifecycle (a link, a stream, a
+Bluetooth connection) is ONE async function with a loop. The state is
+the program counter. Every wait in it takes the stop signal and a
+timeout. Platform callbacks (a socket message, a channel opening, a
+transport state change) exist only at the boundary and do one thing: set
+a `Flag` or push into a `Channel`. `await` everywhere above that line;
+no `.then` chains; no hand-rolled Promise where the primitive exists.
+
+- `sync.js` (the only new primitives): `Flag` (a level you can wait for;
+  a wait for the current value returns at once, so nothing is lost
+  between a callback and the loop - the kernel's completion), `Channel`
+  (a queue with `next({ ms, signal })`), `sleep(ms, signal)`, `select
+  (signal, { arm: (s) => promise })` (Go's select: the first arm wins,
+  the losers are aborted through the signal they were given), `isAbort`.
+- `Viewer.run(signal)`: wait for a reader; on a new session give its
+  direct offer a head start; else `select` between the SFU attempt, the
+  direct channel opening and the reader leaving; follow the link with
+  `watchLink` (closed / gone / direct / a 5 s path re-read); count down
+  with `retryWait` (tick / resume / direct / gone); again. `connectSfu
+  (signal)` is one straight function that throws on failure and on the
+  stop signal and closes what it opened. The 12:55 race cannot exist: the
+  attempt is an arm of a select that the direct channel wins, and a
+  losing arm is aborted, not consulted.
+- `Publisher.run(signal)`: connect, publish until the transport drops,
+  count down, again. Direct peers (`offerP2P`) stay event-driven at the
+  boundary with the peer object as their token.
+- The status handler only sets `reader` (the relay's word, or fresh
+  readings keeping it), the direct channel's onopen only sets `direct`
+  (after reading its path), `nudge()` pushes into `resumed`.
+- `test/batray_house_rules.test.js` is the gate: each link class has one
+  `run(signal)`, `start()` refuses a second loop, `stop()` aborts; every
+  wait in live.js carries the signal; no boundary callback writes the
+  loop's state; `.then(` chains, async callbacks and `new Promise(` are
+  ratchets with a per-file ceiling and a written reason (the TV upload
+  chain is round 2, the app shell round 3); logic modules stay pure.
+  `test/batray_presence.test.js` replays the 12:55 sequence on the real
+  loop over fakes (direct opens during the attempt -> abandoned; direct
+  drops -> SFU at once; transport fails -> countdown; resume ends it),
+  plus the publisher's connect / drop / countdown / stop.
+- Deploy: BatRay's hashed modules get their headers from the site's
+  worker.js (`assetHeaders`: immutable for a year, the embedder policy on
+  worker scripts) instead of one `_headers` rule per module - Cloudflare
+  allows 100 rules and the list had filled it.
+
+Kernel and Go mapping, for the record: `run()` is the kthread, `select`
+with `sleep` is `wait_event_timeout` / Go's `select` with `time.After`,
+`Flag` is `struct completion` / a closed channel, the stop signal is
+`kthread_should_stop()` checked inside every wait, `start()` refusing a
+second loop is the single kthread per device.
+
+Not converted yet, on purpose, one lifecycle per round with a real phone
+test between: the TV upload chain and the signalling socket (round 2),
+the Bluetooth connect flow and the app shell's handlers (round 3).
+
 ## 0.9.52: the ownership rule - the link machine in link-logic.js, and a gate for it (owner ask 2026-10-01)
 
 "How do we prevent the parallel thing happening again?" The honest answer

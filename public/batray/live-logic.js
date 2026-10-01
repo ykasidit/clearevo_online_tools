@@ -165,21 +165,6 @@ export function dataFlowing(lastRxAt, now = Date.now(), freshMs = FRESH_MS) {
  * gone. serverLive is the relay's word (session registered); it is overridden
  * by fresh data, never the other way round.
  */
-/** What a failed SFU attempt means for the viewer. Replay of the viewer log 2026-09-30 12:55: the tab resumed, the
- *  retry started an SFU attempt, the reader's direct offer came and its channel opened 0.6 s later (which tore the
- *  attempt's connection down), and the attempt then failed with "signalingState is 'closed'" - and scheduled a
- *  retry that painted "reconnecting" and "live: Failed to execute addTransceiver" over a stream flowing fine on
- *  the direct link, for good (the retry found the link up and did nothing). An attempt that is no longer the
- *  current one, or that lost to the direct link, is dropped without a word on the state. */
-export function sfuFailureDecision({ stopped, mine, p2pOpen, status, message, relayOnly }) {
-  if (stopped) return { action: 'stop' };
-  if (p2pOpen) return { action: 'ignore', why: 'the direct link is up' };
-  if (!mine) return { action: 'ignore', why: 'a newer attempt replaced it' };
-  const full = status === 429;
-  const toRelay = !full && !relayOnly && /not connected|connection failed/.test(message || '');
-  return { action: 'retry', full, toRelay };
-}
-
 export function readerPresent({ serverLive, lastRxAt, now = Date.now(), freshMs = FRESH_MS }) {
   if (dataFlowing(lastRxAt, now, freshMs)) return true;
   if (serverLive === null || serverLive === undefined) return null;

@@ -19,7 +19,8 @@
 // the publisher re-registers its session on every socket reopen.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readerPresent, dataFlowing, FRESH_MS, makeKeyB64, importKey, encrypt, envelope, sigDecision, SIG_PING_MS, SIG_DEAD_MS, sfuFailureDecision } from '../public/batray/live-logic.js';
+import { readerPresent, dataFlowing, FRESH_MS, makeKeyB64, importKey, encrypt, envelope, sigDecision, SIG_PING_MS, SIG_DEAD_MS } from '../public/batray/live-logic.js';
+import { Flag, sleep } from '../public/batray/sync.js';
 
 // ---- fakes for the browser globals live.js touches ----
 const sockets = [];
@@ -37,6 +38,10 @@ Object.defineProperty(globalThis, 'navigator', { value: { onLine: true }, config
 globalThis.window = { addEventListener() {}, removeEventListener() {} };
 globalThis.fetch = async (url, init = {}) => { fetches.push({ url, method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null }); return { ok: true, status: 200, json: async () => ({}) }; };
 const { Viewer, Publisher } = await import('../public/batray/live.js');
+// a transport as the loop sees it, without WebRTC
+const fakeLink = (kind = 'sfu') => ({ kind, pc: { connectionState: 'connected', getStats: async () => [], close() {} }, dc: { readyState: 'open', close() {} }, ac: { close() {} }, session: 'S', path: { tier: 'udp', sub: null, label: 'direct UDP' }, closed: new Flag(false), open: true });
+const settle = (ms = 15) => new Promise((r) => setTimeout(r, ms));
+const server = { conns: 1, limit: 1000 };
 
 test('readerPresent: fresh data overrides the server, otherwise the server decides', () => {
   const now = 1_000_000;
@@ -47,38 +52,42 @@ test('readerPresent: fresh data overrides the server, otherwise the server decid
   assert.equal(dataFlowing(null, now), false);
 });
 
-test('viewer keeps the link and says "reader present" while readings arrive, drops it only once they stop', async () => {
+test('viewer keeps the link and says "reader present" while readings arrive, drops it only once they stop; the loop reconnects when the reader is back', async () => {
   const keyB64 = makeKeyB64(); const key = await importKey(keyB64);
-  const states = [], got = [], logs = [];
-  const v = new Viewer({ room: 'r1', keyB64, log: (m) => logs.push(m), onState: (s) => states.push(s), onEnvelope: (e) => got.push(e) });
+  const states = [], got = [], logs = [], links = [];
+  const v = new Viewer({ room: 'r1', keyB64, log: (m) => logs.push(m), onState: (s) => states.push(s), onEnvelope: (e) => got.push(e), p2pWaitMs: 20, retryS: 1 });
   let t = 5_000_000; v.now = () => t;
+  v.connectSfu = async (signal) => { signal.throwIfAborted(); const l = fakeLink(); links.push(l); return l; };   // no WebRTC in node
   await v.start();
-  v.subscribe = async () => {};                 // no SFU in node; the direct link is what streams here
   const ws = sockets[sockets.length - 1]; ws.open();
-  ws.push({ type: 'status', viewers: 1, live: true, session: 'S1', server: { conns: 1, limit: 1000 } });
+  ws.push({ type: 'status', viewers: 1, live: true, session: 'S1', server });
   assert.equal(v.state.reader, true); assert.equal(v.pubSession, 'S1');
-  v.state.live = true;                          // as the open data channel would set it
+  await settle(60);                                                          // the direct offer's head start passes, the SFU stub answers
+  assert.equal(v.state.live, true); assert.equal(links.length, 1); assert.ok(logs.some((l) => /subscribed on direct UDP/.test(l)), logs.join('\n'));
   const bytes = await encrypt(key, envelope('data', { id: 'p', name: 'n11' }, { soc: 50 }));
   await v.onBytes(bytes.buffer ? bytes.buffer : bytes);
   assert.equal(got.length, 1); assert.equal(v.lastRxAt, t);
   // the reader's presence socket blinks: the relay wipes the session and says so
   t += 3000;
-  ws.push({ type: 'status', viewers: 1, live: false, server: { conns: 1, limit: 1000 } });
+  ws.push({ type: 'status', viewers: 1, live: false, server }); await settle();
   assert.equal(v.state.reader, true, 'fresh data must beat the server');
   assert.equal(v.pubSession, 'S1', 'the session must not be forgotten while data flows');
   assert.equal(v.state.live, true, 'the stream must not be torn down');
   assert.ok(logs.some((l) => /readings are still arriving/.test(l)), logs.join('\n'));
   // readings keep coming for a while: still present
   t += 5000; await v.onBytes(bytes.buffer ? bytes.buffer : bytes);
-  t += 5000; ws.push({ type: 'status', viewers: 1, live: false, server: { conns: 1, limit: 1000 } });
-  assert.equal(v.state.reader, true);
-  // ...then they stop for longer than FRESH_MS: now the server's word stands
+  t += 5000; ws.push({ type: 'status', viewers: 1, live: false, server }); await settle();
+  assert.equal(v.state.reader, true); assert.equal(v.state.live, true);
+  // ...then they stop for longer than FRESH_MS: now the server's word stands and the loop ends the link
   t += FRESH_MS + 1000;
-  ws.push({ type: 'status', viewers: 1, live: false, server: { conns: 1, limit: 1000 } });
+  ws.push({ type: 'status', viewers: 1, live: false, server }); await settle();
   assert.equal(v.state.reader, false); assert.equal(v.pubSession, null); assert.equal(v.state.live, false);
-  // and a reading arriving again flips it back at once, before any status
+  assert.ok(logs.some((l) => /sfu link ended \(gone\)/.test(l)), logs.join('\n'));
+  // a reading arriving again flips the display at once, before any status - but no reconnect without a session
   await v.onBytes(bytes.buffer ? bytes.buffer : bytes);
-  assert.equal(v.state.reader, true);
+  assert.equal(v.state.reader, true); await settle(60); assert.equal(links.length, 1);
+  ws.push({ type: 'status', viewers: 1, live: true, session: 'S1', server }); await settle(60);
+  assert.equal(v.state.live, true); assert.equal(links.length, 2, 'the reader is back: the loop connected again');
   v.stop();
 });
 
@@ -115,7 +124,7 @@ test('publisher keeps the earlier room when the check itself fails (0.9.50: a Wi
   const oldKey = makeKeyB64(); const posts = [];
   globalThis.fetch = async (url, init = {}) => { if (/\/room$/.test(String(url)) && (init.method || 'GET') === 'POST') posts.push(url); throw new TypeError('Failed to fetch'); };
   const lines = []; const p = new Publisher({ log: (l) => lines.push(l), onState: () => {} });
-  p.connectSfu = async () => {};
+  p.connectSfu = async () => fakeLink();
   const link = await p.start({ room: 'oldroom', pub: 'oldpub', key: oldKey, at: 1 });
   assert.equal(p.reused, true); assert.equal(p.room, 'oldroom'); assert.equal(p.pubToken, 'oldpub'); assert.equal(p.keyB64, oldKey); assert.match(link, /view=oldroom#k=/);
   assert.equal(posts.length, 0, 'no new room asked for'); assert.ok(lines.some((l) => /could not check the earlier room \(Failed to fetch\) - keeping it/.test(l)), lines.join('\n'));
@@ -134,7 +143,7 @@ test('publisher reuses an earlier room when the relay still has it, else makes a
   for (const alive of [true, false]) {
     globalThis.fetch = stubFetch(alive);
     const p = new Publisher({ log: () => {}, onState: () => {} });
-    p.connectSfu = async () => {};                                       // no WebRTC in node
+    p.connectSfu = async () => fakeLink();                                // no WebRTC in node
     const link = await p.start({ room: 'oldroom', pub: 'oldpub', key: oldKey, at: 1 });
     if (alive) {
       assert.equal(p.reused, true); assert.equal(p.room, 'oldroom'); assert.equal(p.pubToken, 'oldpub'); assert.equal(p.keyB64, oldKey);
@@ -165,7 +174,7 @@ test('2026-09-22 reader log: the signalling socket pings the relay every 10 s an
   const { Viewer } = await import('../public/batray/live.js');
   const v = new Viewer({ room: 'r1', keyB64: makeKeyB64(), log: (m) => logs.push(m), onState: () => {}, onEnvelope: () => {} });
   let t = 7_000_000; v.now = () => t;
-  await v.start(); v.subscribe = async () => {};
+  await v.start();
   const sig = v.sig; sig.now = () => t; clearInterval(sig.tick);
   const ws = sockets[sockets.length - 1]; ws.open();
   t += SIG_PING_MS; sig.check();
@@ -180,43 +189,46 @@ test('2026-09-22 reader log: the signalling socket pings the relay every 10 s an
   v.stop();
 });
 
-test('2026-09-30 12:55 viewer log: an SFU attempt that lost to the direct link (or was replaced) fails silently; a real failure still retries, 429 = server full, "not connected" moves to TURN', () => {
-  // the log: retry started an attempt (mine), the direct channel opened 0.6 s later and tore it down (mine=false), then
-  // "Failed to execute 'addTransceiver' ... signalingState is 'closed'"
-  const closed = "Failed to execute 'addTransceiver' on 'RTCPeerConnection': The RTCPeerConnection's signalingState is 'closed'.";
-  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: false, p2pOpen: true, message: closed }), { action: 'ignore', why: 'the direct link is up' });
-  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: false, p2pOpen: false, message: closed }), { action: 'ignore', why: 'a newer attempt replaced it' });
-  assert.deepEqual(sfuFailureDecision({ stopped: true, mine: true, p2pOpen: false, message: closed }), { action: 'stop' });
-  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: true, p2pOpen: false, status: 429, message: 'sfu/session: 429' }), { action: 'retry', full: true, toRelay: false });
-  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: true, p2pOpen: false, message: 'not connected in 20 s (failed)', relayOnly: false }), { action: 'retry', full: false, toRelay: true });
-  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: true, p2pOpen: false, message: 'not connected in 20 s (failed)', relayOnly: true }), { action: 'retry', full: false, toRelay: false });
-  assert.deepEqual(sfuFailureDecision({ stopped: false, mine: true, p2pOpen: false, message: 'channel closed' }), { action: 'retry', full: false, toRelay: false });
+test('2026-09-30 12:55 replayed on the loop: the direct channel opens while the SFU attempt is in flight - the attempt is abandoned, the link is the direct one, no error, no countdown; then the direct link drops, the SFU takes over, a transport failure counts down and a resume ends the countdown', async () => {
+  const logs = []; let attempts = 0;
+  const v = new Viewer({ room: 'r2', keyB64: makeKeyB64(), log: (m) => logs.push(m), onState: () => {}, onEnvelope: () => {}, p2pWaitMs: 20, retryS: 1 });
+  v.connectSfu = async (signal) => { attempts++; await sleep(300, signal); return fakeLink(); };   // a slow attempt that honours the stop signal
+  await v.start();
+  const ws = sockets[sockets.length - 1]; ws.open();
+  ws.push({ type: 'status', viewers: 1, live: true, session: 'S1', server }); await settle(60);   // the head start passed, the attempt is in flight
+  assert.equal(attempts, 1); assert.equal(v.state.live, false);
+  const p = { kind: 'p2p', pc: { getStats: async () => [], close() {} }, dc: null, open: false, closed: new Flag(false), path: null };
+  v.p2p = p; await v.p2pUp(p, p.pc); await settle();                        // 12:55:13.6 the direct channel opened
+  assert.equal(v.state.live, true); assert.equal(v.state.path.tier, 'p2p'); assert.equal(v.state.error, null); assert.equal(v.state.retryIn, null);
+  assert.ok(logs.some((l) => /direct link came up during the SFU attempt/.test(l)), logs.join('\n'));
+  await settle(350);
+  assert.equal(v.state.live, true, 'the abandoned attempt changed nothing when its time came'); assert.equal(v.sfu, null);
+  assert.ok(!logs.some((l) => /live: Failed|reconnecting|link loop died/.test(l)), logs.join('\n'));
+  // the direct link drops: the loop goes to the SFU at once (same session: no head start)
+  v.dropP2P(); await settle(400);
+  assert.ok(logs.some((l) => /p2p link ended \(closed\)/.test(l)));
+  assert.equal(attempts, 2); assert.equal(v.state.live, true); assert.equal(v.state.path.tier, 'udp');
+  // the SFU transport fails: the countdown shows on the chip, a resume ends it early and the loop connects again
+  v.sfu.closed.set(true); await settle(20);
+  assert.equal(v.state.live, false); assert.equal(v.state.retryIn, 1); assert.ok(logs.some((l) => /sfu link ended \(closed\)/.test(l)));
+  v.nudge(); await settle(400);
+  assert.ok(logs.some((l) => /tab resumed, retrying now/.test(l)));
+  assert.equal(attempts, 3); assert.equal(v.state.live, true); assert.equal(v.state.retryIn, null);
+  v.stop(); await settle();
+  assert.equal(v.state.live, false);
 });
 
-test('2026-09-30 12:55 viewer log replayed on the Viewer: the direct link opens while an SFU attempt is in flight - the attempt\'s failure leaves live=true, no error, no retry countdown', async () => {
-  const keyB64 = makeKeyB64();
-  const logs = [];
-  const v = new Viewer({ room: 'r2', keyB64, log: (m) => logs.push(m), onState: () => {}, onEnvelope: () => {} });
-  await v.start();
-  v.pubSession = 'S2';
-  // browser globals the SFU attempt touches: the session POST is where the direct link wins the race
-  globalThis.AudioContext = class { createMediaStreamDestination() { return { stream: { getAudioTracks: () => [{}] } }; } close() {} };
-  globalThis.RTCPeerConnection = class { constructor() { this.signalingState = 'stable'; } close() { this.signalingState = 'closed'; } addTransceiver() { if (this.signalingState === 'closed') throw new Error("Failed to execute 'addTransceiver' on 'RTCPeerConnection': The RTCPeerConnection's signalingState is 'closed'."); } };
-  globalThis.fetch = async (url, init = {}) => {
-    if (/sfu\/session$/.test(String(url))) {
-      const p = { open: false, pc: { close() {}, getStats: async () => [] }, dc: { close() {} } };
-      v.p2p = p; v.p2pUp(p, p.pc);                                               // the reader's direct channel just opened: its onopen takes the link (link-logic 'p2p-open')
-      return { ok: true, status: 200, json: async () => ({ sessionId: 'sfu1' }) };
-    }
-    return { ok: true, status: 200, json: async () => ({}) };
-  };
-  await v.subscribe(); await new Promise((r) => setTimeout(r, 20));
-  assert.equal(v.state.live, true, 'the direct link keeps the stream live');
-  assert.equal(v.state.error, null); assert.equal(v.state.retryIn, null); assert.equal(v.cancelRetry, null, 'no retry countdown');
-  assert.ok(logs.some((l) => /\(no server\) -> use-p2p/.test(l)), 'the direct link took the link: ' + logs.join('\n'));
-  assert.ok(!logs.some((l) => /live: Failed to execute|reconnecting/.test(l)), 'the superseded attempt said nothing: ' + logs.join('\n'));
-  assert.equal(v.ls.phase, 'p2p'); assert.equal(v.ls.p2p, true); assert.equal(v.ls.sfu, false);
-  assert.ok(!logs.some((l) => /^live: Failed to execute/.test(l)), 'the old error line must not appear');
-  v.stop();
-  delete globalThis.AudioContext; delete globalThis.RTCPeerConnection;
+test('publisher loop: connect, publish until the transport drops, count down, connect again; stop aborts the countdown', async () => {
+  const logs = []; const links = [];
+  const p = new Publisher({ log: (m) => logs.push(m), onState: () => {}, retryS: 1 });
+  p.connectSfu = async (signal) => { signal.throwIfAborted(); const l = fakeLink(); links.push(l); return l; };
+  await p.start(); await settle(20);
+  assert.equal(p.state.live, true); assert.equal(p.sid, 'S'); assert.equal(links.length, 1);
+  links[0].closed.set(true); await settle(20);
+  assert.equal(p.state.live, false); assert.equal(p.state.retryIn, 1); assert.ok(logs.some((l) => /live: transport connected \(closed\)/.test(l)));
+  await settle(1100);
+  assert.equal(links.length, 2); assert.equal(p.state.live, true, 'connected again after the countdown');
+  links[1].closed.set(true); await settle(20); assert.equal(p.state.retryIn, 1);
+  await p.stop(); await settle(20);
+  assert.equal(p.state.live, false); assert.equal(p.state.retryIn, null); assert.equal(links.length, 2, 'stop aborted the countdown: no third attempt');
 });

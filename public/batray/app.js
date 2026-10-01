@@ -36,7 +36,7 @@ import { TvStream } from './tv.js';
 import { suggestChannelName, parseSavedShare } from './live-logic.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.52';
+export const APP_VERSION = '0.9.53';
 
 const $ = (id) => document.getElementById(id);
 const els = {
