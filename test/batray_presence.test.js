@@ -204,17 +204,18 @@ test('2026-09-30 12:55 viewer log replayed on the Viewer: the direct link opens 
   globalThis.RTCPeerConnection = class { constructor() { this.signalingState = 'stable'; } close() { this.signalingState = 'closed'; } addTransceiver() { if (this.signalingState === 'closed') throw new Error("Failed to execute 'addTransceiver' on 'RTCPeerConnection': The RTCPeerConnection's signalingState is 'closed'."); } };
   globalThis.fetch = async (url, init = {}) => {
     if (/sfu\/session$/.test(String(url))) {
-      v.p2p = { open: true, pc: { close() {} }, dc: { close() {} } };            // the reader's direct channel just opened...
-      v.state.live = true; v.state.error = null; v.state.path = { tier: 'p2p', sub: null, label: 'direct' };
-      v.clearRetry(); v.teardownSfu();                                          // ...and its onopen tore the SFU attempt down
+      const p = { open: false, pc: { close() {}, getStats: async () => [] }, dc: { close() {} } };
+      v.p2p = p; v.p2pUp(p, p.pc);                                               // the reader's direct channel just opened: its onopen takes the link (link-logic 'p2p-open')
       return { ok: true, status: 200, json: async () => ({ sessionId: 'sfu1' }) };
     }
     return { ok: true, status: 200, json: async () => ({}) };
   };
-  await v.subscribe();
+  await v.subscribe(); await new Promise((r) => setTimeout(r, 20));
   assert.equal(v.state.live, true, 'the direct link keeps the stream live');
   assert.equal(v.state.error, null); assert.equal(v.state.retryIn, null); assert.equal(v.cancelRetry, null, 'no retry countdown');
-  assert.ok(logs.some((l) => /SFU attempt dropped, the direct link is up: Failed to execute 'addTransceiver'/.test(l)), logs.join('\n'));
+  assert.ok(logs.some((l) => /\(no server\) -> use-p2p/.test(l)), 'the direct link took the link: ' + logs.join('\n'));
+  assert.ok(!logs.some((l) => /live: Failed to execute|reconnecting/.test(l)), 'the superseded attempt said nothing: ' + logs.join('\n'));
+  assert.equal(v.ls.phase, 'p2p'); assert.equal(v.ls.p2p, true); assert.equal(v.ls.sfu, false);
   assert.ok(!logs.some((l) => /^live: Failed to execute/.test(l)), 'the old error line must not appear');
   v.stop();
   delete globalThis.AudioContext; delete globalThis.RTCPeerConnection;

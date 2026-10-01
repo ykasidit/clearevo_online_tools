@@ -64,6 +64,62 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.52: the ownership rule - the link machine in link-logic.js, and a gate for it (owner ask 2026-10-01)
+
+"How do we prevent the parallel thing happening again?" The honest answer
+first: JavaScript runs one thread, so nothing races in memory; flows
+interleave at every `await`. The 12:55 bug was ownership across an await:
+the SFU attempt awaited a network call, the direct channel opened and took
+the link, and the attempt woke up and wrote to state it no longer owned. A
+lock is the wrong tool - the direct link SHOULD preempt the attempt - so
+the primitive is preempt + cooperative cancel, the kernel's
+`kthread_should_stop()` and Go's `context.Done()`: every flow that will
+write shared state after an await takes a token when it starts and asks
+whether it still owns the link before each write; whoever supersedes it
+bumps the token. The superseded flow exits without a word on the state.
+
+**The rule, in one line: after an await, the first line re-checks
+ownership, and the check is a pure decision.** Now in code:
+
+- `link-logic.js`: `linkState()` (phase idle | sfu-connecting | sfu | p2p
+  | retry, `attempt` token, `p2p`, `sfu`), `attemptStart / attemptOwns /
+  attemptCancel`, and `linkEvent(ls, ev, inp)` for sfu-start (returns the
+  token; a newer start supersedes), sfu-open, sfu-failed, transport-down,
+  retry, retry-fired, resume, p2p-open (cancels any attempt in flight),
+  p2p-closed, p2p-timeout, no-reader, stop. Both `Viewer.subscribe` and
+  `Publisher.connectSfu` take the token, call `own()` after every await,
+  and route their catch through the 'sfu-failed' decision; `scheduleRetry`
+  and `nudge` act on 'retry' / 'resume' decisions. The direct-peer flows
+  (`offerP2P`, `answerP2P`) use the object they made as the token and
+  re-check it by identity after each await.
+- The signalling socket: `socketState / socketOpen / socketOwns /
+  socketClosed / socketNudge` - one generation per socket; an old socket's
+  late close no longer reopens a second one (the `viewers=2` blips).
+- The wake lock: `wakeRequestStart` marks a request in flight, so two
+  overlapping `syncWake` calls cannot hold two locks with only the last
+  ever released.
+- `test/batray_ownership.test.js` is the gate: every async function in
+  live.js that opens a transport checks ownership after its awaits (a
+  token for the SFU attempt, identity for a direct peer) and its catch
+  goes through the decision; every socket handler checks its generation;
+  the wake request is announced before the await; the shells keep their
+  `publisher !== pub` / `tv !== t` re-checks; and every `*-logic.js` is
+  free of DOM, timers, storage and network. `test/batray_link.test.js`
+  replays the 12:55 log on the machine, the publisher's retry-vs-resume
+  double start, the socket nudge race and the double wake request.
+
+Kernel patterns that map onto this code, for the record: the attempt
+token is a sequence / generation counter (what seqlock readers compare);
+`publisher !== pub` and `this.p2p !== p` are RCU-style publication - a
+new object is installed, old readers finish on the old one and must not
+write through it; `kthread_should_stop()` polled between steps is the
+cooperative cancel; `cancel_work_sync` is "bump the token, then await
+the task"; the `TvStream` upload chain and `histFlushing` are a
+single-threaded workqueue; `wait_for_completion_timeout` is the
+`waitOpen` / `waitConnected` deadline. Not used here on purpose: a mutex
+(would serialize what must preempt) and refcounts (nothing is shared
+between owners long enough to need them).
+
 ## 0.9.51: a resumed viewer said "failed" over a stream that flowed (owner's log 2026-09-30 12:55)
 
 "Connect / disconnect loop and a live-failed dialog, although streaming

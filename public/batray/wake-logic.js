@@ -23,11 +23,14 @@ export const WAKE_RETRY_MAX_MS = 30000;
 
 /** Owner decision 2026-09-22: the screen wake lock alone by default; the near-silent video is an opt-in ('auto' =
  *  when the lock keeps dropping, 'always'), and a viewer never plays it. */
-export function wakeState(hasApi, viewer = false) { return { hasApi: !!hasApi, viewer: !!viewer, wanted: false, held: false, drops: 0, refusals: 0, mode: 'never', videoOn: false }; }
+export function wakeState(hasApi, viewer = false) { return { hasApi: !!hasApi, viewer: !!viewer, wanted: false, held: false, requesting: false, drops: 0, refusals: 0, mode: 'never', videoOn: false }; }
 export function wakeMode(v) { return ['auto', 'always', 'never'].includes(v) ? v : 'never'; }
 
-export function wakeShouldRequest(ws, visible) { return ws.hasApi && ws.wanted && !ws.held && visible; }
-export function wakeAcquired(ws) { ws.held = true; }
+/** Ownership rule (link-logic): one request in flight at a time - two overlapping requests held two locks and only
+ *  the last was ever released, so the screen stayed on after the stop (audit 2026-10-01). */
+export function wakeShouldRequest(ws, visible) { return ws.hasApi && ws.wanted && !ws.held && !ws.requesting && visible; }
+export function wakeRequestStart(ws) { ws.requesting = true; }
+export function wakeAcquired(ws) { ws.held = true; ws.requesting = false; }
 /** The lock went away. 'dropped' = the system took it while we still wanted it in front. */
 export function wakeReleased(ws, visible) {
   ws.held = false;
@@ -36,7 +39,7 @@ export function wakeReleased(ws, visible) {
 }
 /** A refusal counts only while the tab is in front: "the requesting page is not visible" is the browser's rule, not a
  *  phone that refuses the lock (the 2026-09-22 viewer log counted one and started the video). */
-export function wakeRefused(ws, visible = true) { ws.held = false; if (!visible) return 'hidden'; ws.refusals++; return 'refused'; }
+export function wakeRefused(ws, visible = true) { ws.held = false; ws.requesting = false; if (!visible) return 'hidden'; ws.refusals++; return 'refused'; }
 export function wakeRetryDelayMs(ws) { return Math.min(WAKE_RETRY_MAX_MS, 1000 * 2 ** Math.min(5, ws.drops + ws.refusals)); }
 /** Layer 2: the near-silent video, by mode and by what the lock has done so far. */
 export function wakeVideoWanted(ws) {
