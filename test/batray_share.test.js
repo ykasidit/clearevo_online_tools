@@ -56,14 +56,15 @@ test('viewer count changes are reported once, with direction', () => {
   assert.deepEqual(viewersChange(ss, 1), { joined: false, viewers: 1 });
 });
 
-const T = { serverConns: (c, l) => `${c}/${l}`, netOffline: 'no internet', serverUnreachable: 'server unreachable', readerOffline: 'reader offline', liveError: (e) => `error ${e}`, retryIn: (s) => `retry in ${s}`, liveConnecting: 'connecting', path: { p2p: 'direct', udp: 'server' }, pathSub: {}, p2pCount: (n) => `${n} direct` };
-test('liveText: internet first, then the server, then the reader, then the live path', () => {
-  const base = { net: true, sig: true, live: true, viewers: 2, path: { tier: 'udp', label: 'x' }, p2p: 1, server: { conns: 3, limit: 1000 }, retryIn: null, error: null };
+const T = { netOffline: 'no internet', serverUnreachable: 'server unreachable', readerOffline: 'reader offline', liveError: (e) => `error ${e}`, retryIn: (s) => `retry in ${s}`, liveConnecting: 'connecting', path: { p2p: 'direct', udp: 'server' }, pathSub: {}, p2pCount: (n) => `${n} direct` };
+test('liveText: internet first, then the server, then the reader, then the viewer count (one transport since 0.9.60: no path)', () => {
+  const base = { net: true, sig: true, live: true, viewers: 2, retryIn: null, error: null };
   assert.equal(liveText({ ...base, net: false }, T, () => ''), 'no internet');
-  assert.equal(liveText({ ...base, sig: false }, T, () => ''), 'server unreachable · 3/1000');
-  assert.equal(liveText({ ...base, reader: false }, T, () => ''), 'reader offline · 3/1000');
-  assert.equal(liveText({ ...base, live: false, retryIn: 4, error: 'boom' }, T, () => ''), 'error boom · retry in 4 · 3/1000');
-  assert.equal(liveText(base, T, (v, p) => `${v} watching via ${p}`), '2 watching via server · 1 direct · 3/1000');
+  assert.equal(liveText({ ...base, sig: false }, T, () => ''), 'server unreachable');
+  assert.equal(liveText({ ...base, reader: false }, T, () => ''), 'reader offline');
+  assert.equal(liveText({ ...base, live: false, retryIn: 4, error: 'boom' }, T, () => ''), 'error boom · retry in 4');
+  assert.equal(liveText({ ...base, live: false }, T, () => ''), T.liveConnecting);
+  assert.equal(liveText(base, T, (v) => `${v} watching`), '2 watching');
 });
 
 test('reachability: a change must hold 10 s; a blink is cleared; the settle names the previous state', () => {

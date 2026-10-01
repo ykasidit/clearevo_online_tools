@@ -35,7 +35,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.56';
+export const APP_VERSION = '0.9.60';
 
 /** @returns {any} */
 const $ = (id) => document.getElementById(id);
@@ -208,8 +208,10 @@ class Pack {
       }
     });
   }
-  take(d, rowT = null, remoteRow = null) {
-    this.data = d; this.lastFrameAt = Date.now();
+  /** at: when the reading was taken as far as this device can know - a viewer passes the relay-measured time of a retained
+   *  message, so an hour-old last picture says "1 h ago", never "just now" (owner, 2026-10-01) */
+  take(d, rowT = null, remoteRow = null, at = Date.now()) {
+    this.data = d; this.lastFrameAt = at;
     this.iEma.push(d.current, this.lastFrameAt);
     return recordRow(this, d, rowT || this.lastFrameAt, remoteRow);   // a viewer gets the reader's stored row itself (remoteRow), so its file is a byte copy
   }
@@ -219,12 +221,12 @@ class Pack {
     const row = this.take(d);
     if (this.isActive) scheduleRender(this);
     schedulePackBar();
-    if (publisher) publisher.publish(envelope('data', this, d, row ? { r: row } : null));
+    if (publisher) void publisher.publish(envelope('data', this, d, row ? { r: row } : null));
     if (connEvent(this.cs, 'data').action === 'back' && this.isActive) setStatus(() => T.connectedTo(this.label), 'good');   // back after a gap: say so instead of staying amber
     if (first) void syncWake();
   }
-  onInfo(i) { this.info = i; if (this.isActive) renderDevice(i); if (publisher) publisher.publish(envelope('info', this, i)); }
-  onSettings(s) { this.settings = s; if (this.isActive) renderSettings(s); if (publisher) publisher.publish(envelope('settings', this, s)); }
+  onInfo(i) { this.info = i; if (this.isActive) renderDevice(i); if (publisher) void publisher.publish(envelope('info', this, i)); }
+  onSettings(s) { this.settings = s; if (this.isActive) renderSettings(s); if (publisher) void publisher.publish(envelope('settings', this, s)); }
 }
 
 const packs = new Map();
@@ -392,7 +394,7 @@ async function syncWake() {
   wakeS.wanted = [...packs.values()].some((p) => wakeWantedByConn(p.cs, p.connected)) || shareS.phase === 'on' || shareS.phase === 'starting' || !!(viewer && viewer.state.live) || tvS.phase === 'on';
   const el = $('wake');
   if (wakeShouldRequest(wakeS, document.visibilityState === 'visible')) {
-    wakeRequestStart(wakeS);                                                // one request in flight: a second call meanwhile asks nothing (link-logic ownership rule)
+    wakeRequestStart(wakeS);                                                // one request in flight: a second call meanwhile asks nothing (wake-logic ownership rule)
     try {
       const lock = await navigator.wakeLock.request('screen');
       wakeLock = lock; wakeAcquired(wakeS);
@@ -1286,10 +1288,7 @@ $('cancelRe').addEventListener('click', () => { const p = active; if (!p || p.re
 // The relay costs the author money (owner ask 2026-09-22, at ~80 visits a day): the limit and a sponsor link sit
 // next to the live chip and in the share setup card. The limit comes from the relay's own status when known.
 function renderServerNote() {
-  const st = publisher ? publisher.state : viewer ? viewer.state : null;
-  const limit = st && st.server && st.server.limit ? st.server.limit : (histS.serverLimit || null);
-  if (limit) histS.serverLimit = limit;
-  const html = T.serverNote(limit);
+  const html = T.serverNote;
   for (const el of document.querySelectorAll('.serverNote')) if (el.innerHTML !== html) el.innerHTML = html;
   $('serverNote').hidden = !(publisher || viewer || shareS.phase !== 'off');   // from the first tap on Share, not only once the room answers
 }
@@ -1372,7 +1371,8 @@ async function beginShare() {
     renderChannelName();
     showQr(true);
     void copyShareLink();
-    // late viewers need the pack list plus info/settings: resend every 10 s
+    // the room retains the newest hello / pack list / info / settings / data per pack for late viewers; the pack list
+    // (connected flags) is resent every 10 s, the rest goes out when it changes
     publisher.snapshotTimer = setInterval(sendSnapshots, 10000);
     sendSnapshots();
   } catch (err) {
@@ -1395,7 +1395,7 @@ async function histRequest(m) {
   if (!publisher || histS.backend === 'memory') { log(`history: request from ${String(m.from || '').slice(0, 6)} ignored (${!publisher ? 'not sharing' : 'nothing stored'})`); return; }
   await flushHistory();
   histS.days = await hist.days();
-  const plan = transferPlan(histS.days, Array.isArray(m.have) ? m.have : []);
+  const plan = transferPlan(histS.days, Array.isArray(m.have) ? m.have : []).map((x) => ({ ...x, to: m.from }));   // to the viewer that asked
   log(`history: request from ${String(m.from || '').slice(0, 6)}: viewer has ${Array.isArray(m.have) ? m.have.length : 0} days -> ${plan.length ? plan.map((x) => `${x.day} after id ${x.after} (${x.rows} rows)`).join(', ') : 'nothing to send'}`);
   if (!plan.length) return;
   if (histS.xfer) { histS.xfer.queue = plan; log('history: a transfer is running, the new plan replaces its queue'); return; }
@@ -1414,7 +1414,7 @@ async function histRequest(m) {
           let waited = 0;
           while (pub.backlog() > XFER_BACKLOG && waited < 30000 && publisher === pub) { await new Promise((res) => { setTimeout(res, 100); }); waited += 100; }
           if (publisher !== pub || !pub.state.live) { log('history: transfer stopped (link gone)'); return; }
-          await pub.publish(envelope('hist-file', { id: '*', name: '*' }, { day: item.day, after, n: i, of: chunks.length, b64: chunks[i], rows: rows.length, bytes: gz.length }));
+          await pub.publish(envelope('hist-file', { id: '*', name: '*' }, { day: item.day, after, n: i, of: chunks.length, b64: chunks[i], rows: rows.length, bytes: gz.length }), item.to);
           histS.xfer.sent += chunks[i].length;
           await new Promise((res) => { setTimeout(res, 20); });
         }
@@ -1427,14 +1427,9 @@ async function histRequest(m) {
 }
 function sendSnapshots() {
   if (!publisher) return;
-  publisher.publish(envelope('hello', { id: '*', name: '*' }, { channel: shareS.name, version: APP_VERSION }));
+  void publisher.publish(envelope('hello', { id: '*', name: '*' }, { channel: shareS.name, version: APP_VERSION }));
   const list = [...packs.values()].map((p) => ({ id: p.id, name: p.label, demo: !!p.demo, connected: p.connected }));
-  publisher.publish(envelope('packs', { id: '*', name: '*' }, list));
-  for (const p of packs.values()) {
-    if (p.info) publisher.publish(envelope('info', p, p.info));
-    if (p.settings) publisher.publish(envelope('settings', p, p.settings));
-    if (p.data) publisher.publish(envelope('data', p, p.data));
-  }
+  void publisher.publish(envelope('packs', { id: '*', name: '*' }, list));
 }
 function cancelShare() {
   if (!publisher) return;
@@ -1571,10 +1566,15 @@ function startView() {
       const seen = viewerDataSeen(viewS, !!env.stale, Math.round((Date.now() - env.t) / 1000));
       if (seen.droppedStale) log(`live: ${seen.droppedStale} queued readings up to ${seen.maxAgeS} s old were stored but not shown`);
       if (!env.stale) p.remoteLive = true;
+      if (env.retained && env.stale && env.k !== 'data') return;         // an old hello / pack list / info says nothing about now
       if (env.k === 'info') { p.info = env.v; if (p.isActive && !env.stale) renderDevice(env.v); }
       else if (env.k === 'settings') { p.settings = env.v; if (p.isActive && !env.stale) renderSettings(env.v); }
       else if (env.k === 'data') {
         const row = env.r && typeof env.r === 'object' && typeof env.r.t === 'number' ? env.r : null;
+        if (env.retained) {                                                 // the room's last picture: painted with its true age, live only if fresh
+          if (env.stale) { p.remoteLive = false; log(`live: last reading from the reader is ${env.ageS} s old (retained by the room)`); }
+          p.take(env.v, env.t, row, Date.now() - env.ageS * 1000); if (p.isActive) { render(env.v); refreshCard(); } renderPackBar(); return;
+        }
         if (env.stale) { recordRow(p, env.v, env.t, row); return; }
         p.take(env.v, env.t, row); if (p.isActive) { render(env.v); refreshCard(); } renderPackBar();
       }
@@ -2097,8 +2097,8 @@ void logEnvAsync();
 setInterval(() => {
   const p = active;
   const age = p && p.lastFrameAt ? Math.round((Date.now() - p.lastFrameAt) / 1000) : null;
-  const pub = publisher ? `pub(live=${publisher.state.live} viewers=${publisher.state.viewers} path=${publisher.state.path.tier} p2p=${publisher.state.p2p} sent=${publisher.state.sent} dropped=${publisher.state.dropped} sig=${publisher.state.sig})` : '';
-  const vw = viewer ? `view(live=${viewer.state.live} reader=${viewer.state.reader} path=${viewer.state.path.tier} received=${viewer.state.received} sig=${viewer.state.sig})` : '';
+  const pub = publisher ? `pub(live=${publisher.state.live} viewers=${publisher.state.viewers} sent=${publisher.state.sent} dropped=${publisher.state.dropped} sig=${publisher.state.sig})` : '';
+  const vw = viewer ? `view(live=${viewer.state.live} reader=${viewer.state.reader} received=${viewer.state.received} stale=${viewer.state.stale} sig=${viewer.state.sig})` : '';
   const tvs = tv ? `tv(segs=${tv.state.segs} kb=${Math.round(tv.state.bytes / 1024)} pull=${tv.state.pullAgeS}s err=${tv.state.error || '-'})` : '';
   const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
   const rate = histS.hbDay === histS.day && histS.hbRows !== undefined ? `${histS.todayRows - histS.hbRows}/min` : '-'; histS.hbDay = histS.day; histS.hbRows = histS.todayRows;

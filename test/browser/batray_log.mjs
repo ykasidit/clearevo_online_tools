@@ -37,7 +37,6 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     if (url.endsWith('/batray/api/log')) { window.__logPosts.push({ method: i.method, headers: i.headers, body: String(i.body) }); return ok({ id: 'TestLogId0000000000000', key: 'logs/x' }); }
     if (url.endsWith('/batray/api/room')) return ok({ room: 'testroom0000000000000A', pub: 'testpub00000000000000A' });
     if (url.includes('/batray/api/room/')) return ok({ viewers: 0, live: false });
-    if (url.includes('/batray/api/sfu') || url.includes('/batray/api/turn')) return ok({ error: 'no sfu in this test' }, 500);
     return rf(u, i);
   };
   // the log upload is an XMLHttpRequest (progress + abort): a fake that reports 50 % after 150 ms and finishes at 400 ms,

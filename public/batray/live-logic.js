@@ -76,67 +76,6 @@ export function validEnvelope(m) {
     && m.p && typeof m.p.id === 'string' && m.p.id.length <= 64 && typeof m.t === 'number';
 }
 
-/**
- * Label for the ICE path a PeerConnection ended up on, from its selected
- * candidate pair. With an SFU every path ends at Cloudflare; what differs is
- * whether UDP got through or a TURN relay had to carry it, and over what.
- */
-export function classifyPath(local) {
-  if (!local) return { tier: 'unknown', label: 'connecting' };
-  if (local.candidateType === 'relay') {
-    const p = (local.relayProtocol || local.protocol || '').toLowerCase();
-    if (p === 'tls') return { tier: 'relay-tls', label: 'TURN relay over TLS 443' };
-    if (p === 'tcp') return { tier: 'relay-tcp', label: 'TURN relay over TCP' };
-    return { tier: 'relay-udp', label: 'TURN relay over UDP' };
-  }
-  if ((local.protocol || '').toLowerCase() === 'tcp') return { tier: 'tcp', label: 'direct TCP to Cloudflare' };
-  return { tier: 'udp', label: 'direct UDP to Cloudflare' };
-}
-
-/** Private / link-local / mDNS addresses: reachable only on the same network.
- *  Anything else on a direct link means a public route - IPv6 peer to peer
- *  across the internet (seen on a phone on 5G reaching a home Wi-Fi reader). */
-export function isPrivateAddress(a) {
-  if (!a) return false;
-  const s = String(a).toLowerCase();
-  if (s.endsWith('.local')) return true;                              // mDNS name: only resolves on the LAN
-  if (/^(10\.|127\.|169\.254\.|192\.168\.)/.test(s)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(s)) return true;
-  if (s === '::1' || s.startsWith('fe80:') || /^f[cd][0-9a-f]{2}:/.test(s)) return true;   // loopback, link-local, ULA
-  return false;
-}
-
-/** Classify a direct (no server) link from its selected candidate pair. */
-export function classifyDirect(local, remote) {
-  const lan = !!local && !!remote && isPrivateAddress(local.address || local.ip) && isPrivateAddress(remote.address || remote.ip);
-  return lan ? { tier: 'p2p', sub: 'lan', label: 'direct, same network' } : { tier: 'p2p', sub: 'inet', label: 'direct, over the internet' };
-}
-
-/** Selected candidate pair {local, remote, rttMs} from a getStats() report. */
-export function selectedPair(stats) {
-  const byId = new Map(); let pairId = null;
-  stats.forEach((s) => { byId.set(s.id, s); if (s.type === 'transport' && s.selectedCandidatePairId) pairId = s.selectedCandidatePairId; });
-  let pair = pairId ? byId.get(pairId) : null;
-  if (!pair) stats.forEach((s) => { if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated) pair = s; });
-  if (!pair) return null;
-  return { local: byId.get(pair.localCandidateId) || null, remote: byId.get(pair.remoteCandidateId) || null, rttMs: pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null };
-}
-
-/** Pick the selected local candidate out of a getStats() report (Map-like). */
-export function selectedLocalCandidate(stats) {
-  const byId = new Map(); let pairId = null;
-  stats.forEach((s) => { byId.set(s.id, s); if (s.type === 'transport' && s.selectedCandidatePairId) pairId = s.selectedCandidatePairId; });
-  let pair = pairId ? byId.get(pairId) : null;
-  if (!pair) stats.forEach((s) => { if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated) pair = s; });
-  if (!pair) return null;
-  const l = byId.get(pair.localCandidateId) || null;
-  return l ? { ...l, rttMs: pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null } : null;
-}
-
-// ---- reader presence (viewer side) ----
-// The relay wipes the room's session the moment the reader's presence socket
-// closes, even for a 4 s blink, and tells every viewer "no reader". Meanwhile
-// the direct link (or the SFU stream) keeps delivering readings. Seen live on
 // 2026-09-17: "reader offline" over a screen that was updating every 3 s.
 // Rule, same as for the Bluetooth link: freshness decides. Data that arrived
 // within FRESH_MS proves the reader is there whatever the server says.

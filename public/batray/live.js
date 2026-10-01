@@ -1,4 +1,4 @@
-// BatRay by ClearEvo.com - Share live: signalling, direct Wi-Fi and server transports, retry ladder
+// BatRay by ClearEvo.com - Share live: one WebSocket per side through the relay room, encrypted end to end
 // Copyright (C) 2026 Kasidit Yusuf
 //
 // This program is free software; you can redistribute it and/or modify it
@@ -12,24 +12,26 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
-// BatRay live share.
+// BatRay live share, 0.9.60 (owner decision 2026-10-01: "ws only, no more ICE
+// and SFU / TURN / UDP").
 //
-// Ladder, per viewer: (1) presence/signalling socket to the relay, (2) a direct
-// Wi-Fi peer link (host candidates only, no STUN/TURN, so it can only succeed
-// on the same network), (3) the Cloudflare Realtime SFU over UDP, (4) the SFU
-// reached through a TURN relay (TCP/TLS 443) when UDP is blocked. Every frame
-// is AES-GCM encrypted on the publisher with a key that lives only in the
-// share link's URL fragment, whichever path carries it. The relay Worker at
-// /batray/api/ holds the SFU secret, routes signalling, and counts how many
-// sockets are on an SFU/TURN path against the free cap.
-import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, classifyPath, selectedLocalCandidate, selectedPair, classifyDirect, readerPresent, FRESH_MS } from './live-logic.js';
-import { socketState, socketOpen, socketOwns, socketClosed, socketNudge } from './link-logic.js';
-import { Flag, Channel, sleep, select, isAbort, abortError } from './sync.js';
+// One transport: a WebSocket from each side to the relay's room object. The
+// publisher sends every envelope AES-GCM encrypted with the key that lives
+// only in the share link's URL fragment; the room fans the ciphertext out to
+// the viewers and keeps the newest message of each slot (the hello, the pack
+// list, each pack's info / settings / data) for a viewer that joins later,
+// stamped with its age in the relay's clock. The relay cannot read a reading.
+//
+// Each side is ONE loop (house rule): open the socket, serve it until it dies
+// (messages, a ping every SIG_PING_MS, dead after SIG_DEAD_MS of silence),
+// count down, again. The socket callbacks only set a flag or push a channel.
+import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, readerPresent, FRESH_MS } from './live-logic.js';
+import { Flag, Channel, sleep, select, isAbort } from './sync.js';
 
 const API = '/batray/api';
-const P2P_WAIT_MS = 7000;      // viewer waits this long for a direct offer/connection before using the SFU
-const RETRY_S = 10;            // reconnect countdown, both sides
-const FULL_RETRY_S = 30;       // when the free server is full
+const RETRY_S = 4;             // reopen countdown after the socket dies
+const OPEN_MS = 10000;         // a socket that has not opened by then is given up
+const SEND_MAX = 256 * 1024;   // bytes queued on the socket before an envelope is dropped instead of queued
 
 const j = async (path, init = {}) => {
   const r = await fetch(`${API}/${path}`, { headers: { 'Content-Type': 'application/json' }, ...init });
@@ -37,102 +39,51 @@ const j = async (path, init = {}) => {
   if (!r.ok) { /** @type {any} */ const e = new Error(`${path}: ${r.status} ${body.error || JSON.stringify(body).slice(0, 160)}`); e.status = r.status; e.body = body; throw e; }
   return body;
 };
+const b64 = (bytes) => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); };
+const unb64 = (str) => Uint8Array.from(atob(str), (c) => c.charCodeAt(0));
 
-let iceCache = null;
-async function iceServers(relayOnly) {
-  if (!iceCache || iceCache.until < Date.now()) {
-    let servers = [{ urls: 'stun:stun.cloudflare.com:3478' }];
-    try {
-      const t = await j('turn', { method: 'POST' });
-      const s = Array.isArray(t.iceServers) ? t.iceServers : t.iceServers ? [t.iceServers] : [];
-      if (s.length) servers = s;
-    } catch { /* STUN only */ }
-    iceCache = { servers, until: Date.now() + 45 * 60 * 1000 };
+/** One WebSocket as the loop sees it: the callbacks set two flags and push one channel, nothing else. */
+class Sock {
+  constructor(url) {
+    this.ws = new WebSocket(url);
+    this.msgs = new Channel(); this.opened = new Flag(false); this.closed = new Flag(false); this.closeInfo = null;
+    this.ws.onopen = () => this.opened.set(true);
+    this.ws.onmessage = (e) => this.msgs.push(e.data);
+    this.ws.onclose = (e) => { this.closeInfo = { code: e.code, reason: e.reason || '', clean: e.wasClean }; this.closed.set(true); };
+    this.ws.onerror = () => {};                                 // the close that follows says it
   }
-  return relayOnly ? { iceServers: iceCache.servers, iceTransportPolicy: 'relay', bundlePolicy: 'max-bundle' } : { iceServers: iceCache.servers, bundlePolicy: 'max-bundle' };
+  get backlog() { return this.ws.readyState === 1 ? this.ws.bufferedAmount : 0; }
+  send(obj) { if (this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); }
+  close(code = 1000, reason = 'bye') { try { this.ws.close(code, reason); } catch { /* already closing */ } }
 }
-
-function waitConnected(pc, ms, signal) {
-  return new Promise((res, rej) => {
-    const t = setTimeout(() => rej(new Error(`not connected in ${Math.round(ms / 1000)} s (${pc.connectionState})`)), ms);
-    if (signal) signal.addEventListener('abort', () => { clearTimeout(t); rej(abortError()); }, { once: true });
-    const chk = () => { if (pc.connectionState === 'connected') { clearTimeout(t); res(); } else if (['failed', 'closed'].includes(pc.connectionState)) { clearTimeout(t); rej(new Error('connection ' + pc.connectionState)); } };
-    pc.addEventListener('connectionstatechange', chk); chk();
-  });
+/** Open a socket or throw: resolves once it is open, gives up on close or after OPEN_MS, aborts with the signal. */
+async function openSock(url, signal) {
+  const sock = new Sock(url);
+  let r;
+  try { r = await select(signal, { open: (s) => sock.opened.wait(true, { signal: s }), closed: (s) => sock.closed.wait(true, { signal: s }), timeout: (s) => sleep(OPEN_MS, s) }); }
+  catch (e) { sock.close(4002, 'aborted'); throw e; }
+  if (r.key === 'open') return sock;
+  sock.close(4002, 'no open');
+  throw new Error(r.key === 'timeout' ? `socket not open in ${Math.round(OPEN_MS / 1000)} s` : `socket closed before opening (code ${sock.closeInfo ? sock.closeInfo.code : '?'})`);
 }
-function waitOpen(dc, ms, signal) {
-  return new Promise((res, rej) => {
-    if (dc.readyState === 'open') { res(); return; }
-    const t = setTimeout(() => rej(new Error(`channel not open in ${Math.round(ms / 1000)} s (${dc.readyState})`)), ms);
-    if (signal) signal.addEventListener('abort', () => { clearTimeout(t); rej(abortError()); }, { once: true });
-    dc.addEventListener('open', () => { clearTimeout(t); res(); }, { once: true });
-    dc.addEventListener('close', () => { clearTimeout(t); rej(new Error('channel closed')); }, { once: true });
-    dc.addEventListener('error', (e) => { clearTimeout(t); rej(new Error('channel error ' + (e.error && e.error.message))); }, { once: true });
-  });
-}
-async function pathOf(pc) { try { return classifyPath(selectedLocalCandidate(await pc.getStats())); } catch { return classifyPath(null); } }
-async function directPathOf(pc) { try { const pr = selectedPair(await pc.getStats()); return classifyDirect(pr && pr.local, pr && pr.remote); } catch { return { tier: 'p2p', sub: null, label: 'direct' }; } }
-
-// Transport to the SFU: one silent audio track carries the offer/answer, the
-// DataChannel rides the same bundle.
-async function connectTransport(pc, sid, log, signal) {
-  const ac = new AudioContext();
-  const dest = ac.createMediaStreamDestination();
-  const tx = pc.addTransceiver(dest.stream.getAudioTracks()[0], { direction: 'sendonly' });
-  pc.createDataChannel('bootstrap');
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  if (signal) signal.throwIfAborted();
-  const r = await j(`sfu/session/${sid}/tracks`, { method: 'POST', body: JSON.stringify({ sessionDescription: { type: 'offer', sdp: offer.sdp }, tracks: [{ location: 'local', mid: tx.mid, trackName: 'silence' }] }) });
-  if (!r.sessionDescription) throw new Error('SFU gave no answer: ' + JSON.stringify(r).slice(0, 200));
-  await pc.setRemoteDescription(r.sessionDescription);
-  await waitConnected(pc, 20000, signal);
-  log(`sfu transport up (session ${sid.slice(0, 8)}…)`);
-  return ac;
-}
-
-/** Close a transport's pieces; each may already be gone. */
-function closeLink(l) { if (!l) return; try { l.dc && l.dc.close(); } catch { /* */ } try { l.pc && l.pc.close(); } catch { /* */ } try { l.ac && l.ac.close(); } catch { /* */ } }
-
-/** Presence + signalling socket with automatic reopen. */
-class Signal {
-  constructor(room, role, token, log) {
-    this.room = room; this.role = role; this.token = token; this.log = log;
-    this.ws = null; this.closed = false; this.timer = null; this.handlers = new Set(); this.lastPath = null; this.ss = socketState();
-    this.connected = false; this.onConn = (_up) => {};
-    this.now = () => Date.now(); this.lastMsgAt = 0; this.lastPingAt = 0;
-    this.tick = setInterval(() => this.check(), 2000);           // the heartbeat (a frozen tab pauses it, and nudge() reopens on resume)
-    this.open();
+/** Serve an open socket until it dies: each message to onMsg, a ping when due, a reopen after SIG_DEAD_MS of
+ *  silence (a half-open socket after a Wi-Fi change, 2026-09-22), onTick every 2 s. Returns why it ended. */
+async function serve(sock, signal, { onMsg, onTick, log, now, resumed }) {
+  let lastMsgAt = now(), lastPingAt = now();
+  for (;;) {
+    const r = await select(signal, { msg: (s) => sock.msgs.next({ signal: s }), closed: (s) => sock.closed.wait(true, { signal: s }), tick: (s) => sleep(2000, s), resume: (s) => resumed.next({ signal: s }) });
+    if (r.key === 'closed') { const c = sock.closeInfo || {}; return `closed code=${c.code} reason="${c.reason}" clean=${c.clean}`; }
+    if (r.key === 'msg') {
+      lastMsgAt = now();
+      let m; try { m = JSON.parse(r.value); } catch { log('signal: unparsable message'); continue; }
+      if (m.type !== 'pong') await onMsg(m);
+      continue;
+    }
+    const d = sigDecision({ lastMsgAt, lastPingAt, now: now() });
+    if (d.action === 'reopen') { log(`signal: no answer for ${d.silentS} s - the socket is dead, reopening`); sock.close(4001, 'no pong'); return 'dead'; }
+    if (d.action === 'ping' || r.key === 'resume') { lastPingAt = now(); sock.send({ type: 'ping' }); }   // a resumed tab asks at once
+    if (onTick) onTick();
   }
-  /** Ping the relay, or give up on a socket that has said nothing for SIG_DEAD_MS and reopen it. */
-  check() {
-    if (this.closed || !this.ws || this.ws.readyState !== 1) return;
-    const d = sigDecision({ lastMsgAt: this.lastMsgAt, lastPingAt: this.lastPingAt, now: this.now() });
-    if (d.action === 'ping') { this.lastPingAt = this.now(); this.send({ type: 'ping' }); }
-    else if (d.action === 'reopen') { this.log(`signal: no answer for ${d.silentS} s - the socket is dead, reopening`); this.lastMsgAt = this.now(); try { this.ws.close(4001, 'no pong'); } catch { /* */ } }
-  }
-  open() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}${API}/room/${this.room}/ws?role=${this.role}${this.token ? `&token=${this.token}` : ''}`);
-    this.ws = ws;
-    const tok = socketOpen(this.ss);                                         // an event from an older socket is ignored (link-logic)
-    const t0 = Date.now();
-    ws.onopen = () => { if (!socketOwns(this.ss, tok)) return; this.connected = true; this.lastMsgAt = this.lastPingAt = this.now(); this.log(`signal: socket open (${this.role}) in ${Date.now() - t0} ms`); this.onConn(true); if (this.lastPath) this.send({ type: 'path', path: this.lastPath }); };
-    ws.onmessage = (e) => { if (!socketOwns(this.ss, tok)) return; this.lastMsgAt = this.now(); let m; try { m = JSON.parse(e.data); } catch { this.log('signal: unparsable message'); return; } if (m.type === 'pong') return; for (const h of this.handlers) h(m); };
-    ws.onclose = (e) => {
-      const d = socketClosed(this.ss, tok, this.closed);
-      if (d === 'ignore') { this.log(`signal: an earlier socket closed code=${e.code} (ignored, a newer one is up)`); return; }
-      this.connected = false; this.log(`signal: socket closed code=${e.code} reason="${e.reason || ''}" clean=${e.wasClean}${d === 'reopen' ? ' - reopening in 4 s' : ''}`);
-      if (d === 'reopen') { this.onConn(false); this.timer = setTimeout(() => this.open(), 4000); }
-    };
-    ws.onerror = () => { if (socketOwns(this.ss, tok)) this.log('signal: socket error (close follows)'); };
-  }
-  on(h) { this.handlers.add(h); }
-  send(obj) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); }
-  reportPath(tier) { this.lastPath = tier; this.send({ type: 'path', path: tier }); }
-  /** Reopen now instead of after the 4 s delay (tab resumed). */
-  nudge() { if (socketNudge(this.closed, this.ws ? this.ws.readyState : null) !== 'open') return; clearTimeout(this.timer); this.timer = null; this.open(); }
-  close() { this.closed = true; clearTimeout(this.timer); clearInterval(this.tick); try { this.ws.close(1000, 'bye'); } catch { /* */ } }
 }
 
 /** Track the device's own internet state into state.net (navigator.onLine is
@@ -143,27 +94,21 @@ function watchNet(self) {
   window.addEventListener('online', self.netHandler); window.addEventListener('offline', self.netHandler);
 }
 function unwatchNet(self) { if (self.netHandler) { window.removeEventListener('online', self.netHandler); window.removeEventListener('offline', self.netHandler); self.netHandler = null; } }
-
-
-// ---- THE LIFECYCLE LOOPS (house rule, owner 2026-10-01). Each link is ONE async function with a loop: the state is
-// the program counter, there is one writer, every wait takes the stop signal. Callbacks at the platform boundary
-// only set a Flag or push into a Channel. The 2026-09-30 race (an SFU attempt waking after the direct channel had
-// taken the link, and writing "failed" over a flowing stream) cannot happen here: the attempt is an arm of a
-// select that the direct channel wins, and a losing arm is aborted, not consulted. ----
+const wsUrl = (room, role, token) => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${API}/room/${room}/ws?role=${role}${token ? `&token=${token}` : ''}`;
 
 export class Publisher {
-  /** opts: { log(msg), onState(state), onRequest(msg), retryS, fullRetryS } - state: { viewers, live, path, p2p, server, retryIn,
-   *  error }; onRequest gets a viewer's `hist-req` ({ from, have }) */
+  /** opts: { log(msg), onState(state), onRequest(msg), retryS } - state: { viewers, live, retryIn, error, sent, dropped, sig, net };
+   *  onRequest gets a viewer's `hist-req` ({ from, have }) */
   constructor(opts) {
     this.log = opts.log || (() => {}); this.onState = opts.onState || (() => {}); this.onRequest = opts.onRequest || (() => {});
     this.room = null; this.pubToken = null; this.keyB64 = null; this.key = null; this.link = null;
-    this.sfu = null; this.sid = null; this.sig = null;
-    this.peers = new Map();          // viewerId -> { pc, dc }
-    // sig: presence socket to the server up; net: this device has internet
-    this.state = { viewers: 0, live: false, path: classifyPath(null), p2p: 0, server: { conns: 0, limit: 0 }, retryIn: null, error: null, sent: 0, dropped: 0, sig: null, net: true };   // sig null = not tried yet
-    this.stopped = false; this.relayOnly = false;
-    this.retryS = opts.retryS || RETRY_S; this.fullRetryS = opts.fullRetryS || FULL_RETRY_S;
-    this.resumed = new Channel();     // the tab came back: a retry countdown ends early
+    this.sock = null; this.slots = new Map();   // pack id -> a short slot index: the relay retains per slot and never learns a pack id
+    // live: our socket is up (the room fans out from it); sig: the same thing, kept for the chip; net: this device has internet
+    this.state = { viewers: 0, live: false, retryIn: null, error: null, sent: 0, dropped: 0, sig: null, net: true };   // sig null = not tried yet
+    this.stopped = false; this.reused = false; this.lastStatusKey = null;
+    this.retryS = opts.retryS || RETRY_S;
+    this.now = () => Date.now();
+    this.resumed = new Channel();     // the tab came back: a countdown ends early, a serving socket is pinged now
     this.ac = null; this.task = null;
   }
   emit() { this.onState({ ...this.state }); }
@@ -187,399 +132,185 @@ export class Publisher {
     this.key = await importKey(this.keyB64);
     this.link = shareLink(location.origin, room, this.keyB64);
     this.log(`live share room ${room} ${this.reused ? 'reused' : 'created'}`);
-    this.sig = new Signal(room, 'pub', pub, this.log);
-    this.sig.on((m) => this.onSignal(m));
-    this.sig.onConn = (up) => this.onSigConn(up);
     watchNet(this);
     this.ac = new AbortController();
     this.task = this.run(this.ac.signal).catch((e) => { if (!isAbort(e)) this.log(`live: publisher loop died: ${e.message}`); });
     return this.link;
   }
 
-  /** The one owner of the SFU link: connect, publish until it drops, count down, again. */
+  /** The one owner of the socket: open, serve until it dies, count down, again. */
   async run(signal) {
     for (;;) {
       this.state.retryIn = null; this.state.error = null; this.emit();
-      let sfu;
-      try { sfu = await this.connectSfu(signal); } catch (e) {
+      const t0 = Date.now();
+      let sock;
+      try { sock = await openSock(wsUrl(this.room, 'pub', this.pubToken), signal); } catch (e) {
         if (isAbort(e)) throw e;
-        const full = e.status === 429;
-        if (!full && !this.relayOnly && /not connected|connection failed/.test(e.message)) { this.relayOnly = true; this.log('live: UDP path failed, next attempt via TURN relay'); }   // next: TURN-only (TCP/TLS 443)
-        this.state.error = full ? `server full (${e.body.conns}/${e.body.limit})` : e.message;
-        this.log('live: ' + this.state.error);
-        await this.retryWait(full ? this.fullRetryS : this.retryS, signal);
+        this.state.sig = false; this.state.error = e.message; this.emit();
+        this.log(`live: ${e.message}`);
+        await this.retryWait(this.retryS, signal);
         continue;
       }
-      this.sfu = sfu; this.sid = sfu.session;
-      this.state.live = true; this.state.path = sfu.path; this.sig.reportPath(sfu.path.tier); this.emit();
-      this.log(`live: publishing on ${sfu.path.label}`);
-      const why = await this.watchLink(sfu, signal, 30000);
-      this.log(`live: transport ${sfu.pc.connectionState} (${why})`);
-      this.closeSfu();
-      this.state.live = false; this.state.path = classifyPath(null); this.sig.reportPath('none'); this.emit();
+      this.sock = sock; this.state.sig = true; this.state.live = true; this.emit();
+      this.log(`signal: socket open (pub) in ${Date.now() - t0} ms - publishing`);
+      const why = await serve(sock, signal, { onMsg: (m) => this.onMsg(m), log: this.log, now: this.now, resumed: this.resumed });
+      this.sock = null; sock.close();
+      this.state.sig = false; this.state.live = false; this.emit();
+      this.log(`signal: socket ${why} - reopening in ${this.retryS} s`);
       await this.retryWait(this.retryS, signal);
     }
   }
-  /** One SFU attempt, straight through; throws on failure and on the stop signal, leaving nothing open. */
-  async connectSfu(signal) {
-    const pc = new RTCPeerConnection(await iceServers(this.relayOnly));
-    const sfu = { kind: 'sfu', pc, dc: null, ac: null, session: null, path: null, closed: new Flag(false) };
-    try {
-      signal.throwIfAborted();
-      const { sessionId } = await j('sfu/session', { method: 'POST' }); signal.throwIfAborted();
-      sfu.session = sessionId;
-      sfu.ac = await connectTransport(pc, sessionId, this.log, signal);
-      const r = await j(`sfu/session/${sessionId}/dc`, { method: 'POST', body: JSON.stringify({ location: 'local', name: 'jk' }) }); signal.throwIfAborted();
-      const id = r.dataChannels && r.dataChannels[0] && r.dataChannels[0].id;
-      if (typeof id !== 'number') throw new Error('SFU gave no channel id: ' + JSON.stringify(r).slice(0, 200));
-      sfu.dc = pc.createDataChannel('jk', { negotiated: true, id, ordered: true });
-      await waitOpen(sfu.dc, 20000, signal);
-      await j(`room/${this.room}/session?token=${this.pubToken}`, { method: 'PUT', body: JSON.stringify({ session: sessionId }) }); signal.throwIfAborted();
-      sfu.path = await pathOf(pc);
-      pc.addEventListener('iceconnectionstatechange', () => this.log(`ice (sfu): ${pc.iceConnectionState}`));
-      pc.addEventListener('connectionstatechange', () => { if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) sfu.closed.set(true); });   // boundary: a flag, nothing else
-      return sfu;
-    } catch (e) { closeLink(sfu); throw e; }
-  }
-  /** While the link is live: wait for its end; every pathMs re-read the path (UDP <-> TURN) and tell the relay. */
-  async watchLink(link, signal, pathMs) {
-    for (;;) {
-      const d = await select(signal, { closed: (s) => link.closed.wait(true, { signal: s }), tick: (s) => sleep(pathMs, s) });
-      if (d.key !== 'tick') return d.key;
-      const p = await pathOf(link.pc);
-      if (p.tier !== this.state.path.tier) { this.log(`live: path changed ${this.state.path.label} -> ${p.label}`); this.sig.reportPath(p.tier); this.state.path = p; this.emit(); }
-    }
-  }
-  /** The retry countdown on the chip; the tab resuming (nudge) ends it early. */
+  /** The countdown on the chip; the tab resuming (nudge) ends it early. */
   async retryWait(seconds, signal) {
     for (let left = seconds; left > 0; left--) {
       this.state.retryIn = left; this.emit();
       const r = await select(signal, { tick: (s) => sleep(1000, s), resume: (s) => this.resumed.next({ signal: s }) });
-      if (r.key === 'resume') { this.log('live: tab resumed, retrying now'); break; }
+      if (r.key === 'resume') { this.log('live: tab resumed, reconnecting now'); break; }
     }
     this.state.retryIn = null; this.emit();
   }
-  closeSfu() { closeLink(this.sfu); this.sfu = null; }
+  onMsg(m) {
+    if (m.type === 'status') {
+      const key = `${m.viewers}|${m.live}`;
+      if (key !== this.lastStatusKey) { this.lastStatusKey = key; this.log(`status: viewers=${m.viewers} live=${m.live}`); }
+      this.state.viewers = m.viewers; this.emit();
+    } else if (m.type === 'hist-req') this.onRequest(m);           // a viewer lists the day files it has; the app answers over publish(env, m.from)
+  }
 
   get credentials() { return { room: this.room, pub: this.pubToken, key: this.keyB64, at: Date.now() }; }
-  onSigConn(up) {
-    this.state.sig = up; this.emit();
-    // The relay forgets the session when this socket closes - even a 4 s blink
-    // - and viewers are told "no reader" while the stream is fine. Register it
-    // again on every reopen (2026-09-17).
-    if (up && this.sid && this.state.live) void this.registerSession('socket reopened');
+  /** Bytes still queued on the socket: a big transfer waits while this is high instead of dropping. */
+  backlog() { return this.sock ? this.sock.backlog : 0; }
+  /** The retain slot of an envelope: the relay keeps the newest per slot for late viewers. History chunks have none. */
+  slotOf(env) {
+    if (env.k === 'hist-file') return null;
+    if (!env.p || env.p.id === '*') return env.k;
+    if (!this.slots.has(env.p.id)) this.slots.set(env.p.id, this.slots.size);
+    return `${env.k}${this.slots.get(env.p.id)}`;
   }
-  async registerSession(why) {
-    if (!this.sid || !this.room) return;
-    try {
-      await j(`room/${this.room}/session?token=${this.pubToken}`, { method: 'PUT', body: JSON.stringify({ session: this.sid }) });
-      this.log(`live: session re-registered (${why})`);
-    } catch (e) { this.log(`live: session re-register failed: ${e.message}`); }
-  }
-
-  onSignal(m) {
-    if (m.type === 'status') {
-      const key = `${m.viewers}|${m.live}|${(m.session || '').slice(0, 8)}|${m.server ? m.server.conns : '?'}`;
-      if (key !== this.lastStatusKey) { this.lastStatusKey = key; this.log(`status: viewers=${m.viewers} live=${m.live} session=${(m.session || '-').slice(0, 8)} server=${m.server ? `${m.server.conns}/${m.server.limit}` : '?'}`); }
-      this.state.viewers = m.viewers; this.state.server = m.server || this.state.server; this.emit();
-      if (!m.live && this.sid && this.state.live && !this.registering) {   // the room lost our session while we are still publishing
-        this.registering = true; void this.registerSession('room reported no session').finally(() => { this.registering = false; });
-      }
-      return;
-    }
-    if (m.type === 'join') { this.offerP2P(m.from).catch((e) => this.log(`p2p offer to ${m.from.slice(0, 6)} failed: ${e.message}`)); return; }
-    if (m.type === 'hist-req') { this.onRequest(m); return; }            // a viewer lists the day files it has; the app answers over publish()
-    if (m.type === 'leave') { this.dropPeer(m.from); return; }
-    const peer = this.peers.get(m.from);
-    if (!peer) return;
-    if (m.type === 'answer' && m.sdp) peer.pc.setRemoteDescription(m.sdp).catch((e) => this.log('p2p answer: ' + e.message));
-    else if (m.type === 'ice' && m.cand) peer.pc.addIceCandidate(m.cand).catch(() => {});
-    else if (m.type === 'bye') this.dropPeer(m.from);
-  }
-
-  // Direct Wi-Fi attempt: host candidates only. Succeeds only on the same LAN;
-  // otherwise the viewer falls back to the SFU on its own. The peer object is
-  // its own token: after each await the handle must still be the one in the map.
-  async offerP2P(viewerId) {
-    this.dropPeer(viewerId);
-    const pc = new RTCPeerConnection({ iceServers: [] });
-    const dc = pc.createDataChannel('jk', { ordered: true });
-    const peer = { pc, dc, open: false };
-    this.peers.set(viewerId, peer);
-    pc.onicecandidate = (e) => { if (e.candidate) this.sig.send({ type: 'ice', to: viewerId, cand: e.candidate.toJSON() }); };
-    pc.oniceconnectionstatechange = () => this.log(`p2p ice (viewer ${viewerId.slice(0, 6)}): ${pc.iceConnectionState}`);
-    dc.onopen = () => this.peerUp(viewerId, peer);
-    dc.onclose = () => { if (this.peers.get(viewerId) === peer) this.dropPeer(viewerId); };
-    pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && this.peers.get(viewerId) === peer) this.dropPeer(viewerId); };
-    const offer = await pc.createOffer();
-    if (this.peers.get(viewerId) !== peer) return;
-    await pc.setLocalDescription(offer);
-    if (this.peers.get(viewerId) !== peer) return;
-    this.sig.send({ type: 'offer', to: viewerId, sdp: { type: 'offer', sdp: offer.sdp } });
-    setTimeout(() => { if (this.peers.get(viewerId) === peer && !peer.open) { this.log(`p2p: no direct link to ${viewerId.slice(0, 6)} (not on this Wi-Fi), it will use the SFU`); this.dropPeer(viewerId); } }, P2P_WAIT_MS);
-  }
-  async peerUp(viewerId, peer) {
-    peer.open = true; this.state.p2p = [...this.peers.values()].filter((p) => p.open).length;
-    const d = await directPathOf(peer.pc);
-    if (this.peers.get(viewerId) !== peer) return;
-    this.log(`p2p: viewer ${viewerId.slice(0, 6)} connected - ${d.label}`); this.emit();
-    if (this.resendSnapshot) this.resendSnapshot();
-  }
-  dropPeer(id) {
-    const peer = this.peers.get(id); if (!peer) return;
-    this.peers.delete(id);
-    closeLink(peer);
-    this.state.p2p = [...this.peers.values()].filter((p) => p.open).length; this.emit();
-  }
-
-  /** Bytes still queued on the busiest open channel: a big transfer waits while this is high instead of dropping. */
-  backlog() {
-    const dc = this.sfu && this.sfu.dc;
-    let b = dc && dc.readyState === 'open' ? dc.bufferedAmount : 0;
-    for (const p of this.peers.values()) if (p.open && p.dc.readyState === 'open') b = Math.max(b, p.dc.bufferedAmount);
-    return b;
-  }
-  /** Encrypt once, send to the SFU and to every direct peer. */
-  async publish(env) {
+  /** Encrypt and send; `to` addresses one viewer (its id from a hist-req), else every viewer gets it. */
+  async publish(env, to = null) {
     if (!this.key) { this.state.dropped++; return; }        // start() has not imported the key yet (a BMS event can land first)
     const bytes = await encrypt(this.key, env);
-    let sent = 0;
-    const dc = this.sfu && this.sfu.dc;
-    if (dc && dc.readyState === 'open' && dc.bufferedAmount < 256 * 1024) { dc.send(bytes); sent++; }
-    for (const p of this.peers.values()) if (p.open && p.dc.readyState === 'open' && p.dc.bufferedAmount < 256 * 1024) { p.dc.send(bytes); sent++; }
-    if (sent) this.state.sent++; else this.state.dropped++;
+    const sock = this.sock;
+    if (!sock || sock.backlog > SEND_MAX) { this.state.dropped++; return; }
+    const m = { type: 'd', b: b64(bytes) };
+    const slot = this.slotOf(env); if (slot) m.slot = slot;
+    if (to) m.to = to;
+    sock.send(m); this.state.sent++;
   }
-  /** The tab just came back: reopen the socket and retry the transport now. */
-  nudge() { if (this.stopped) return; if (this.sig) this.sig.nudge(); this.resumed.push(1); }
+  /** The tab just came back: end a countdown now, ping a serving socket now. */
+  nudge() { if (!this.stopped) this.resumed.push(1); }
 
   async stop() {
     this.stopped = true;
     if (this.ac) this.ac.abort();
-    this.closeSfu();
-    for (const id of [...this.peers.keys()]) this.dropPeer(id);
-    if (this.sig) this.sig.close();
+    if (this.sock) { this.sock.close(); this.sock = null; }
     unwatchNet(this);
-    if (this.room && this.pubToken) { try { await j(`room/${this.room}/session?token=${this.pubToken}`, { method: 'PUT', body: JSON.stringify({ session: '' }) }); } catch { /* */ } }
-    this.state.live = false; this.state.retryIn = null; this.emit();
+    this.state.live = false; this.state.sig = false; this.state.retryIn = null; this.emit();
     this.log('live share stopped');
   }
 }
 
 export class Viewer {
-  /** opts: { room, keyB64, log(msg), onState(state), onEnvelope(env), p2pWaitMs, retryS, fullRetryS } */
+  /** opts: { room, keyB64, log(msg), onState(state), onEnvelope(env), retryS } - state: { viewers, live, reader, retryIn, error,
+   *  received, stale, sig, net }. An envelope from the room's retained set carries retained=true and ageS (its age in
+   *  the relay's clock): the app paints it as "N s ago", never as "just now". */
   constructor(opts) {
     this.room = opts.room; this.keyB64 = opts.keyB64;
     this.log = opts.log || (() => {}); this.onState = opts.onState || (() => {}); this.onEnvelope = opts.onEnvelope || (() => {});
-    this.key = null; this.sig = null; this.pubSession = null;
-    this.p2p = null;                  // the direct link { kind: 'p2p', pc, dc, open, closed: Flag, path }
-    this.sfu = null;                  // the SFU link { kind: 'sfu', pc, dc, ac, session, path, closed: Flag }
-    // sig: presence socket up; net: this device has internet; reader: the
-    // server reports the reader present (its session is registered)
-    this.state = { viewers: 0, live: false, path: classifyPath(null), server: { conns: 0, limit: 0 }, retryIn: null, error: null, received: 0, sig: null, net: true, reader: null };   // null = not known yet
-    this.lastRxAt = null; this.now = () => Date.now(); this.lastStatus = null; this.recheck = null;
-    this.stopped = false; this.relayOnly = false;
-    this.p2pWaitMs = opts.p2pWaitMs || P2P_WAIT_MS; this.retryS = opts.retryS || RETRY_S; this.fullRetryS = opts.fullRetryS || FULL_RETRY_S;
-    // the loop waits on these; the socket and channel callbacks only set them
-    this.reader = new Flag(false);    // the relay reports a reader session (fresh readings keep it, see onStatus)
-    this.direct = new Flag(false);    // the direct channel is open
-    this.resumed = new Channel();     // the tab came back: a retry countdown ends early
-    this.freshSession = false;        // a new reader session: give its direct offer a head start
+    this.key = null; this.sock = null;
+    // sig: our socket is up; reader: the reader is there (its socket is in the room, or its readings still arrive);
+    // live: both; net: this device has internet
+    this.state = { viewers: 0, live: false, reader: null, retryIn: null, error: null, received: 0, stale: 0, sig: null, net: true };   // null = not known yet
+    this.lastRxAt = null; this.serverLive = null; this.lastStatusKey = null;
+    this.now = () => Date.now();
+    this.stopped = false;
+    this.retryS = opts.retryS || RETRY_S;
+    this.resumed = new Channel();
     this.ac = null; this.task = null;
   }
   emit() { this.onState({ ...this.state }); }
-  get connected() { return !!((this.p2p && this.p2p.open) || (this.sfu && this.sfu.dc && this.sfu.dc.readyState === 'open')); }
 
   async start() {
     if (this.task !== null) return;
     this.key = await importKey(this.keyB64);
-    this.sig = new Signal(this.room, 'view', null, this.log);
-    this.sig.on((m) => this.onSignal(m));
-    this.sig.onConn = (up) => { this.state.sig = up; this.emit(); };
     watchNet(this);
     this.ac = new AbortController();
     this.task = this.run(this.ac.signal).catch((e) => { if (!isAbort(e)) this.log(`live: viewer loop died: ${e.message}`); });
   }
 
-  /** The one owner of the link: wait for a reader, let its direct offer go first, else the SFU; follow the link
-   *  until it ends; count down; again. The direct channel opening at any point wins the select it is an arm of. */
+  /** The one owner of the socket: open, serve until it dies, count down, again. The retained messages arrive first. */
   async run(signal) {
     for (;;) {
-      await this.reader.wait(true, { signal });
-      if (this.freshSession) {                                             // rung 2: the direct offer gets a head start
-        this.freshSession = false;
-        const w = await select(signal, { direct: (s) => this.direct.wait(true, { signal: s }), gone: (s) => this.reader.wait(false, { signal: s }), timeout: (s) => sleep(this.p2pWaitMs, s) });
-        if (w.key === 'gone') continue;
+      this.state.retryIn = null; this.state.error = null; this.emit();
+      const t0 = Date.now();
+      let sock;
+      try { sock = await openSock(wsUrl(this.room, 'view', null), signal); } catch (e) {
+        if (isAbort(e)) throw e;
+        this.state.sig = false; this.state.error = e.message; this.emit();
+        this.log(`live: ${e.message}`);
+        await this.retryWait(this.retryS, signal);
+        continue;
       }
-      let link;
-      if (this.direct.v) link = this.p2p;
-      else {
-        this.state.error = null; this.emit();
-        try {
-          const r = await select(signal, { sfu: (s) => this.connectSfu(s), direct: (s) => this.direct.wait(true, { signal: s }), gone: (s) => this.reader.wait(false, { signal: s }) });
-          if (r.key === 'gone') continue;
-          if (r.key === 'direct') { this.log('live: the direct link came up during the SFU attempt - using it'); link = this.p2p; }
-          else link = r.value;
-        } catch (e) {
-          if (isAbort(e)) throw e;
-          const full = e.status === 429;
-          if (!full && !this.relayOnly && /not connected|connection failed/.test(e.message)) { this.relayOnly = true; this.log('live: UDP path failed, next attempt via TURN relay'); }
-          this.state.error = full ? `server full (${e.body.conns}/${e.body.limit})` : e.message;
-          this.log('live: ' + this.state.error);
-          await this.retryWait(full ? this.fullRetryS : this.retryS, signal);
-          continue;
-        }
-      }
-      if (link.kind === 'sfu') this.sfu = link;
-      this.state.live = true; this.state.error = null; this.state.path = link.path; this.sig.reportPath(link.path.tier); this.emit();
-      this.log(link.kind === 'sfu' ? `live: subscribed on ${link.path.label}` : `p2p: ${link.path.label} (no server)`);
-      const why = await this.watchLink(link, signal);
-      this.log(`live: ${link.kind} link ended (${why})`);
-      if (link.kind === 'sfu') this.closeSfu();
-      this.state.live = false; this.state.path = classifyPath(null); this.sig.reportPath('none'); this.emit();
-      if (why === 'closed' && link.kind === 'sfu') await this.retryWait(this.retryS, signal);
+      this.sock = sock; this.state.sig = true; this.emit();
+      this.log(`signal: socket open (view) in ${Date.now() - t0} ms`);
+      const why = await serve(sock, signal, { onMsg: (m) => this.onMsg(m), onTick: () => this.judgeReader(), log: this.log, now: this.now, resumed: this.resumed });
+      this.sock = null; sock.close();
+      this.state.sig = false; this.state.live = false; this.emit();
+      this.log(`signal: socket ${why} - reopening in ${this.retryS} s`);
+      await this.retryWait(this.retryS, signal);
     }
   }
-  /** One SFU attempt, straight through; throws on failure and on the stop signal, leaving nothing open. */
-  async connectSfu(signal) {
-    const pubSession = this.pubSession;
-    const pc = new RTCPeerConnection(await iceServers(this.relayOnly));
-    const sfu = { kind: 'sfu', pc, dc: null, ac: null, session: null, path: null, closed: new Flag(false) };
-    try {
-      signal.throwIfAborted();
-      const { sessionId } = await j('sfu/session', { method: 'POST' }); signal.throwIfAborted();
-      sfu.session = sessionId;
-      sfu.ac = await connectTransport(pc, sessionId, this.log, signal);
-      const r = await j(`sfu/session/${sessionId}/dc`, { method: 'POST', body: JSON.stringify({ location: 'remote', name: 'jk', sessionId: pubSession }) }); signal.throwIfAborted();
-      const c = r.dataChannels && r.dataChannels[0];
-      if (!c || typeof c.id !== 'number') throw new Error('SFU gave no channel id: ' + JSON.stringify(r).slice(0, 300));
-      const dc = pc.createDataChannel('jk', { negotiated: true, id: c.id, ordered: true });
-      dc.binaryType = 'arraybuffer';
-      dc.onmessage = (e) => this.onBytes(e.data);
-      sfu.dc = dc;
-      await waitOpen(dc, 20000, signal);
-      sfu.path = await pathOf(pc);
-      pc.addEventListener('iceconnectionstatechange', () => this.log(`ice (sfu): ${pc.iceConnectionState}`));
-      pc.addEventListener('connectionstatechange', () => { if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) sfu.closed.set(true); });   // boundary: a flag, nothing else
-      return sfu;
-    } catch (e) { closeLink(sfu); throw e; }
-  }
-  /** While a link is live: wait for its end, the reader leaving, or (on the SFU) the direct channel opening; every
-   *  5 s on the SFU re-read the path. Returns the arm that ended it. */
-  async watchLink(link, signal) {
-    for (;;) {
-      const arms = { closed: (s) => link.closed.wait(true, { signal: s }), gone: (s) => this.reader.wait(false, { signal: s }) };
-      if (link.kind === 'sfu') { arms.direct = (s) => this.direct.wait(true, { signal: s }); arms.tick = (s) => sleep(5000, s); }
-      const d = await select(signal, arms);
-      if (d.key !== 'tick') return d.key;
-      const p = await pathOf(link.pc);
-      if (p.tier !== this.state.path.tier) { this.log(`live: path changed ${this.state.path.label} -> ${p.label}`); this.sig.reportPath(p.tier); this.state.path = p; this.emit(); }
-    }
-  }
-  /** The retry countdown on the chip; the tab resuming, the direct channel opening or the reader leaving end it early. */
+  /** The countdown on the chip; the tab resuming ends it early. */
   async retryWait(seconds, signal) {
     for (let left = seconds; left > 0; left--) {
       this.state.retryIn = left; this.emit();
-      const r = await select(signal, { tick: (s) => sleep(1000, s), resume: (s) => this.resumed.next({ signal: s }), direct: (s) => this.direct.wait(true, { signal: s }), gone: (s) => this.reader.wait(false, { signal: s }) });
-      if (r.key !== 'tick') { if (r.key === 'resume') this.log('live: tab resumed, retrying now'); break; }
+      const r = await select(signal, { tick: (s) => sleep(1000, s), resume: (s) => this.resumed.next({ signal: s }) });
+      if (r.key === 'resume') { this.log('live: tab resumed, reconnecting now'); break; }
     }
     this.state.retryIn = null; this.emit();
   }
-  closeSfu() { closeLink(this.sfu); this.sfu = null; }
-
-  /** Ask the reader for the history files this device lacks (0.9.30); `have` = this device's day listing. */
-  request(have) { if (!this.sig) return false; this.sig.send({ type: 'hist-req', have }); return true; }
-  onSignal(m) {
+  async onMsg(m) {
     if (m.type === 'status') { this.onStatus(m); return; }
-    if (m.type === 'offer' && m.sdp) { this.answerP2P(m.sdp).catch((e) => this.log('p2p: ' + e.message)); return; }
-    if (m.type === 'ice' && m.cand && this.p2p) { this.p2p.pc.addIceCandidate(m.cand).catch(() => {}); return; }
-    if (m.type === 'bye') this.dropP2P();
+    if (m.type === 'd' && typeof m.b === 'string') await this.onData(m);
   }
-
   onStatus(m) {
-    const key = `${m.viewers}|${m.live}|${(m.session || '').slice(0, 8)}|${m.server ? m.server.conns : '?'}`;
-    if (key !== this.lastStatusKey) { this.lastStatusKey = key; this.log(`status: viewers=${m.viewers} live=${m.live} session=${(m.session || '-').slice(0, 8)} server=${m.server ? `${m.server.conns}/${m.server.limit}` : '?'} lastRx=${this.lastRxAt ? Math.round((this.now() - this.lastRxAt) / 1000) + 's' : '-'}`); }
-    this.state.viewers = m.viewers; this.state.server = m.server || this.state.server;
-    this.lastStatus = m;
-    const serverLive = !!(m.live && m.session);
-    // Freshness first: readings still arriving prove the reader is there, whatever
-    // the relay says (its session is wiped by a blink of the reader's socket).
-    this.state.reader = readerPresent({ serverLive, lastRxAt: this.lastRxAt, now: this.now() });
-    if (!serverLive) {
-      if (this.state.reader) {
-        if (!this.recheck) {
-          this.log('live: server reports no reader session, but readings are still arriving - keeping the link');
-          this.recheck = setTimeout(() => { this.recheck = null; if (this.lastStatus && !this.stopped) this.onStatus(this.lastStatus); }, FRESH_MS);
-        }
-        this.emit(); return;
-      }
-      if (this.pubSession) this.log('live: publisher went offline');
-      this.pubSession = null; this.reader.set(false); this.emit(); return;
-    }
-    if (this.recheck) { clearTimeout(this.recheck); this.recheck = null; }
-    if (m.session !== this.pubSession) {
-      if (this.pubSession) { this.log('live: the reader has a new session - reconnecting'); this.reader.set(false); }   // the loop ends the old link and comes back here
-      this.pubSession = m.session; this.freshSession = true;
-    }
-    this.reader.set(true); this.emit();
+    const key = `${m.viewers}|${m.live}`;
+    if (key !== this.lastStatusKey) { this.lastStatusKey = key; this.log(`status: viewers=${m.viewers} live=${m.live} lastRx=${this.lastRxAt ? Math.round((this.now() - this.lastRxAt) / 1000) + 's' : '-'}`); }
+    this.state.viewers = m.viewers; this.serverLive = !!m.live;
+    this.judgeReader(true);
   }
-
-  // ---- rung 2: direct Wi-Fi. The p object is its own token: after each await the handle must still be this.p2p. ----
-  async answerP2P(offer) {
-    this.dropP2P();
-    const pc = new RTCPeerConnection({ iceServers: [] });
-    const p = { kind: 'p2p', pc, dc: null, open: false, closed: new Flag(false), path: { tier: 'p2p', sub: null, label: 'direct' } };
-    this.p2p = p;
-    pc.onicecandidate = (e) => { if (e.candidate) this.sig.send({ type: 'ice', cand: e.candidate.toJSON() }); };
-    pc.oniceconnectionstatechange = () => this.log(`p2p ice: ${pc.iceConnectionState}`);
-    pc.ondatachannel = (e) => {
-      p.dc = e.channel; p.dc.binaryType = 'arraybuffer';
-      p.dc.onmessage = (ev) => this.onBytes(ev.data);
-      p.dc.onopen = () => this.p2pUp(p, pc);
-      p.dc.onclose = () => { if (this.p2p === p) { this.log('p2p: direct link closed'); this.dropP2P(); } };
-    };
-    pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && this.p2p === p) this.dropP2P(); };
-    await pc.setRemoteDescription(offer);
-    if (this.p2p !== p) return;
-    const answer = await pc.createAnswer();
-    if (this.p2p !== p) return;
-    await pc.setLocalDescription(answer);
-    if (this.p2p !== p) return;
-    this.sig.send({ type: 'answer', sdp: { type: 'answer', sdp: answer.sdp } });
-    setTimeout(() => { if (this.p2p === p && !p.open) { this.log('p2p: no direct link (different network), using the SFU'); this.dropP2P(); } }, P2P_WAIT_MS + 3000);
+  /** Freshness first: readings still arriving prove the reader is there, whatever the room says (2026-09-17); once
+   *  they stop, the room's word decides. Re-judged on every status and every 2 s tick. */
+  judgeReader(force = false) {
+    const reader = readerPresent({ serverLive: this.serverLive, lastRxAt: this.lastRxAt, now: this.now() });
+    const live = reader === true && this.state.sig === true;
+    if (!force && reader === this.state.reader && live === this.state.live) return;
+    if (this.state.reader !== false && reader === false) this.log('live: the reader is not in the room and nothing has arrived for a while - reader offline');
+    this.state.reader = reader; this.state.live = live; this.emit();
   }
-  /** The direct channel opened: read its path, then raise the flag the loop waits on. */
-  async p2pUp(p, pc) {
-    p.open = true;
-    const path = await directPathOf(pc);
-    if (this.p2p !== p) return;
-    p.path = path; this.direct.set(true);
-  }
-  dropP2P() {
-    const p = this.p2p; if (!p) return; this.p2p = null;
-    closeLink(p);
-    this.direct.set(false); p.closed.set(true);                               // the loop takes it from here
-  }
-
-  async onBytes(data) {
+  async onData(m) {
     try {
-      const env = await decrypt(this.key, new Uint8Array(data));
+      const env = await decrypt(this.key, unb64(m.b));
       if (!validEnvelope(env)) return;
       this.state.received++;
-      // a frozen tab gets the whole queue on resume: a reading older than FRESH_MS is marked stale, proves nothing
-      // about the reader being there now, and the app stores it without painting it
-      env.stale = staleEnvelope(env, this.now());
-      if (env.stale) this.state.stale = (this.state.stale || 0) + 1;
-      else { this.lastRxAt = this.now(); if (this.state.reader === false) { this.state.reader = true; this.emit(); } }   // fresh data beats the server's word
+      if (typeof m.ago === 'number') {                                       // from the room's retained set: its age is the relay's measure
+        env.retained = true; env.ageS = Math.round(m.ago / 1000); env.stale = m.ago > FRESH_MS;
+      } else env.stale = staleEnvelope(env, this.now());                     // a frozen tab gets the whole queue on resume: old ones are stored, not painted
+      if (env.stale) this.state.stale++;
+      else { this.lastRxAt = this.now(); this.judgeReader(); }              // fresh data beats the room's word
       this.onEnvelope(env);
     } catch { if (!this.state.error) this.log('live: a message could not be decrypted (wrong or missing key)'); this.state.error = 'cannot decrypt: wrong or missing key'; this.emit(); }
   }
-  /** The tab just came back: do not sit out a retry countdown or the socket reopen delay. */
-  nudge() { if (this.stopped) return; if (this.sig) this.sig.nudge(); this.resumed.push(1); }
+  /** Ask the reader for the history this device lacks (0.9.30); `have` = this device's day listing. */
+  request(have) { if (!this.sock) return false; this.sock.send({ type: 'hist-req', have }); return true; }
+  /** The tab just came back: end a countdown now, ping a serving socket now. */
+  nudge() { if (!this.stopped) this.resumed.push(1); }
   stop() {
     this.stopped = true;
     if (this.ac) this.ac.abort();
-    clearTimeout(this.recheck); this.recheck = null;
-    this.dropP2P(); this.closeSfu(); if (this.sig) this.sig.close(); unwatchNet(this);
-    this.state.live = false; this.state.retryIn = null; this.emit();
+    if (this.sock) { this.sock.close(); this.sock = null; }
+    unwatchNet(this);
+    this.state.live = false; this.state.sig = false; this.state.retryIn = null; this.emit();
   }
 }

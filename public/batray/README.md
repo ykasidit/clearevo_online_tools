@@ -64,6 +64,58 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.60: one transport - a WebSocket through the relay room (owner decision 2026-10-01)
+
+"Use ws tcp only, no more ICE and SFU / TURN / UDP." The two viewer logs of
+that morning had shown what the WebRTC ladder was costing: on the owner's
+phones the direct link never opened ("different network", every time), the
+SFU came up in 0.3 s but only after our own 10 s head start, and the three
+transports racing each other had produced the 2026-09-30 race in the first
+place. Cloudflare's Pub/Sub (MQTT) was retired on 2025-08-20 and Workers
+terminate no WebTransport, so the WebSocket the relay already carried for
+signalling became the only path.
+
+- **The room is the broker.** The publisher sends every envelope AES-GCM
+  encrypted (the key lives only in the link's fragment) as `{type:'d', b:
+  <base64>, slot?, to?}` on its socket; the room sends `{type:'d', b}` to
+  every viewer, or to the one named by `to` (a history chunk goes to the
+  viewer that asked). The relay cannot read a reading. A message is at most
+  64 KB; the socket's `bufferedAmount` is the back-pressure (an envelope is
+  dropped, not queued, above 256 KB; a history transfer waits).
+- **Retained messages, MQTT's retain.** The room keeps the newest message
+  per `slot` (`hello`, `packs`, `info0`, `settings0`, `data0`, ... - slot
+  names are the publisher's, a pack id never reaches the relay) in its
+  storage and sends them to a viewer the moment its socket opens, each
+  with `ago`: its age in milliseconds by the relay's clock, so two phones'
+  clocks never meet. The viewer paints a retained reading with that age
+  (`Pack.take(..., at)` sets the "updated N ago" clock to now - ago) and
+  marks the pack not live when it is older than FRESH_MS: an hour-old last
+  picture says "1 h ago", never "just now" (the owner's condition). The
+  retained set outlives the publisher: a viewer joining while the reader
+  is away still gets the last picture and "reader offline".
+- **Presence is the socket.** `status: {viewers, live}` where live = the
+  publisher's socket is in the room; no more session registry. The viewer
+  still judges the reader by freshness first (`readerPresent`), re-judged
+  on every status and every 2 s tick.
+- **Each side is one loop**, as the house rule asks: open the socket (10 s
+  to open or give up), serve it (messages, a ping every 10 s, dead after
+  30 s of silence, a resumed tab pings at once), count down 4 s, again.
+  The socket callbacks only set two flags and push one channel. live.js is
+  a third of its size; `link-logic.js` and the ICE path classifiers are
+  gone; the relay lost the SFU proxy, the TURN minting, the path reports,
+  the Counter object and the `SERVER_LIMIT` cap (a Durable Object
+  migration deletes the class).
+- **What the user sees:** the chip says `LIVE · 2 viewers` (no path), the
+  relay note says "a limited number of connections" (there is no
+  "server full" state to report), and the first picture is at socket-open
+  time instead of ten seconds later.
+- Tests: `batray_presence.test.js` replays the loops over a fake socket
+  (reader by the room's word and by data, a retained message's age, dead
+  socket, countdown, resume, stop, slots, addressed chunks, backlog drop,
+  the heartbeat); `cargo test` covers retain / retained_for / handle;
+  `relay.test.mjs` runs the fan-out, the retained set with ages, the
+  addressed chunk and the forgeries against the live relay.
+
 ## 0.9.56: the SQLite worker never ran on the deployed site (found 2026-10-01)
 
 The owner's first viewer log on 0.9.55 still said `history: worker error

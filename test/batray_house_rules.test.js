@@ -50,7 +50,6 @@ const ASYNC_CB_CEILING = {
 // hand-rolled `new Promise(`: sync.js has Flag / Channel / sleep / select; what remains wraps a platform event
 const PROMISE_CEILING = {
   'app.js': [8, 'rAF, file reads, sheet results, timers in the app shell: round 3'],
-  'live.js': [2, 'waitConnected / waitOpen: adapters from RTCPeerConnection and RTCDataChannel events (they take the signal)'],
   'jkbms.js': [2, 'GATT connect timeout and the handshake wait'],
   'history.js': [2, 'the worker reply wait with its deadline, the pool reopen'],
   'history-worker.js': [2, 'the sync access handle waits'],
@@ -69,20 +68,20 @@ test('lifecycle loops: each link class has exactly one run(signal), start() refu
     assert.ok(/this\.ac\.abort\(\)/.test(c), `${name}: stop() aborts the loop`);
     assert.ok(/isAbort\(e\)\) throw e/.test(c), `${name}: the loop lets the stop signal through its catch`);
   }
-  assert.ok(!/attemptOwns|linkEvent\(/.test(src), 'the ownership token and the event machine are gone: the loop is the owner');
+  assert.ok(!/attemptOwns|linkEvent\(|RTCPeerConnection|connectSfu|offerP2P/.test(src), 'the ownership token, the event machine and the WebRTC transports are gone: one socket loop is the owner');
 });
 
 test('every wait in the live link takes the stop signal', () => {
   const src = strip(read('live.js'));
-  const calls = src.match(/\b(sleep|select|waitOpen|waitConnected|connectTransport)\([^;]*?\)|\.(wait|next)\(\{?[^;]*?\)/g) || [];
-  assert.ok(calls.length >= 15, `found ${calls.length} waits`);
+  const calls = src.match(/\b(sleep|select)\([^;]*?\)|\.(wait|next)\(\{?[^;]*?\)/g) || [];
+  assert.ok(calls.length >= 12, `found ${calls.length} waits`);
   for (const c of calls) assert.ok(/\bsignal\b|\(s\)|, s\)|: s \}/.test(c), `a wait without the stop signal: ${c.slice(0, 80)}`);
 });
 
 test('callbacks at the platform boundary only set a flag, push a channel, log or drop - never the loop\'s state', () => {
   const src = strip(read('live.js'));
   const lines = src.split('\n').filter((l) => /\.on[a-z]+ = |addEventListener\(/.test(l));
-  assert.ok(lines.length >= 10);
+  assert.ok(lines.length >= 5, `${lines.length} boundary callbacks (the socket's four and the two net listeners)`);
   for (const l of lines) assert.ok(!/state\.(live|error|path|retryIn)\b/.test(l), `a callback writes the loop's state: ${l.trim().slice(0, 100)}`);
 });
 

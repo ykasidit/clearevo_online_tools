@@ -13,22 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { socketState, socketOpen, socketOwns, socketClosed, socketNudge } from '../public/batray/link-logic.js';
 import { wakeState, wakeShouldRequest, wakeRequestStart, wakeAcquired, wakeRefused, wakeReleased } from '../public/batray/wake-logic.js';
-
-test('signalling socket generation: a nudge during a closing socket opens a new one, the old socket\'s late close must not reopen a third', () => {
-  const ss = socketState();
-  const g1 = socketOpen(ss); assert.equal(socketOwns(ss, g1), true);
-  assert.equal(socketNudge(false, 1), 'none', 'open socket: nothing to do');
-  assert.equal(socketNudge(false, 0), 'none', 'connecting: nothing to do');
-  assert.equal(socketNudge(false, 2), 'open', 'closing: open a new one now');
-  const g2 = socketOpen(ss);
-  assert.equal(socketClosed(ss, g1, false), 'ignore', 'the old socket closes late: no reopen (this made viewers=2 blips)');
-  assert.equal(socketOwns(ss, g1), false); assert.equal(socketOwns(ss, g2), true);
-  assert.equal(socketClosed(ss, g2, false), 'reopen');
-  assert.equal(socketClosed(ss, g2, true), 'done', 'closed for good: no reopen');
-  assert.equal(socketNudge(true, 3), 'none');
-});
 
 test('wake lock: one request in flight at a time (two overlapping requests held two locks)', () => {
   const ws = wakeState(true); ws.wanted = true;

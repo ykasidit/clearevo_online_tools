@@ -57,16 +57,12 @@ export function viewersChange(ss, n) {
 
 /** One line for the live / view chips. s = Publisher or Viewer state, T = strings. */
 export function liveText(s, T, fmtChip) {
-  const srv = s.server && s.server.limit ? ' · ' + T.serverConns(s.server.conns, s.server.limit) : '';
   if (!s.net) return T.netOffline;                            // this device has no internet: nothing else can be judged
-  if (s.sig === false) return T.serverUnreachable + srv;      // internet ok, but the server does not answer (null = first connect in progress)
-  if (s.reader === false) return T.readerOffline + srv;       // viewer only: server says the reader is not there
-  if (s.retryIn !== null && s.retryIn !== undefined) return `${s.error ? T.liveError(s.error) + ' · ' : ''}${T.retryIn(s.retryIn)}${srv}`;
-  if (!s.live) return (s.error ? T.liveError(s.error) : T.liveConnecting) + srv;
-  const path = (T.path[s.path.tier] || s.path.label) + (s.path.sub && T.pathSub[s.path.sub] ? ` · ${T.pathSub[s.path.sub]}` : '');
-  const extra = [];
-  if (s.p2p) extra.push(T.p2pCount(s.p2p));
-  return fmtChip(s.viewers, path) + (extra.length ? ' · ' + extra.join(' · ') : '') + srv;
+  if (s.sig === false) return T.serverUnreachable;            // internet ok, but the server does not answer (null = first connect in progress)
+  if (s.reader === false) return T.readerOffline;             // viewer only: the reader is not in the room and nothing arrives
+  if (s.retryIn !== null && s.retryIn !== undefined) return `${s.error ? T.liveError(s.error) + ' · ' : ''}${T.retryIn(s.retryIn)}`;
+  if (!s.live) return s.error ? T.liveError(s.error) : T.liveConnecting;
+  return fmtChip(s.viewers);
 }
 
 // ---- internet / server reachability of THIS device, same on both sides. A
