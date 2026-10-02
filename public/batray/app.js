@@ -26,7 +26,7 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope, suggestChannelName, parseSavedShare } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
-import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, TREND_REFRESH_MS } from './history-logic.js';
+import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, TREND_REFRESH_MS } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
@@ -35,7 +35,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.60';
+export const APP_VERSION = '0.9.61';
 
 /** @returns {any} */
 const $ = (id) => document.getElementById(id);
@@ -328,6 +328,7 @@ function applyLang(code) {
   $('keepAwake').textContent = T[{ auto: 'keepAwakeAuto', always: 'keepAwakeAlways', never: 'keepAwakeNever' }[wakeS.mode]] || wakeS.mode;
   document.querySelectorAll('[data-i18n]').forEach((el) => { const v = T[el.dataset.i18n]; if (typeof v === 'string') el.textContent = v; });
   document.querySelectorAll('[data-i18n-html]').forEach((el) => { const v = T[el.dataset.i18nHtml]; if (typeof v === 'string') el.innerHTML = v; });
+  if ($('histParams')) buildParamChips();
   document.querySelectorAll('[data-i18n-aria]').forEach((el) => { const v = T[el.dataset.i18nAria]; if (typeof v === 'string') { el.setAttribute('aria-label', v); el.title = v; } });
   renderServerNote();
   $('fSysLbl').textContent = T.system;
@@ -533,7 +534,7 @@ function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 const histS = historyState();
 const hist = new HistoryStore({ log });
 hist.onBackend = (name) => { histS.backend = name; renderStorage(); };   // memory-only after a locked pool: the Storage box says so
-const histMem = { pending: new Map(), plot: null, series: null, drawAt: 0, drawing: false, redraw: false, spanAt: 0, demoId: 0 };
+const histMem = { pending: new Map(), plot: null, plotParams: '', cursorIdx: null, series: null, drawAt: 0, drawing: false, redraw: false, spanAt: 0, demoId: 0 };
 const utf8 = new TextEncoder();
 function pendingRows() { let n = 0; for (const l of histMem.pending.values()) n += l.length; return n; }
 function queueRow(row, day = dayKey(row.t)) { const l = histMem.pending.get(day) || []; l.push(row); histMem.pending.set(day, l); }
@@ -979,11 +980,38 @@ function paintHistory() {
   const s = histMem.series; if (!s || !active) return;
   $('trendEnergy').textContent = T.trendEnergy(fmtSpan((s.to - s.from) / 3600000), fmtWh(s.energy.charged), fmtWh(s.energy.discharged));
   const el = $('trend'), width = Math.max(200, el.clientWidth || el.parentElement.clientWidth);
-  if (!histMem.plot) histMem.plot = makeChart(el, width, () => cutoffPct);
-  drawChart(histMem.plot, s.s, s.from, s.to, width);
-  renderHistNote();
+  const key = histS.params.join(',');
+  if (histMem.plot && histMem.plotParams !== key) { histMem.plot.destroy(); histMem.plot = null; }   // a different set of lines = a new chart (axes and scales are built from it)
+  if (!histMem.plot) { histMem.plot = makeChart(el, width, histS.params, PARAMS, { getCutoff: () => cutoffPct, onCursor: (idx) => { histMem.cursorIdx = idx; renderParamChips(); } }); histMem.plotParams = key; }
+  drawChart(histMem.plot, s.s, histS.params, PARAMS, s.from, s.to, width);
+  renderHistNote(); renderParamChips();
   document.querySelectorAll('#histRanges button').forEach((b) => b.classList.toggle('on', b.dataset.range === histS.range));
 }
+/** The line chips under the range row: one per reading, the chosen ones lit in their line's colour, each showing the
+ *  value under the pointer or the newest one. Built once from T (applyLang rebuilds), values refreshed on each draw. */
+function buildParamChips() {
+  const row = $('histParams'); row.textContent = '';
+  for (const key of PARAM_KEYS) {
+    const b = document.createElement('button'); b.type = 'button'; b.dataset.param = key; b.style.setProperty('--line', PARAMS[key].color);
+    const dot = document.createElement('span'); dot.className = 'dot'; const lbl = document.createElement('span'); lbl.className = 'lbl'; lbl.textContent = T.param[key]; const val = document.createElement('span'); val.className = 'val';
+    b.append(dot, lbl, val); row.append(b);
+  }
+  renderParamChips();
+}
+function renderParamChips() {
+  const chips = paramChips(histMem.series ? histMem.series.s : null, histS.params, histMem.cursorIdx);
+  for (const c of chips) { const b = document.querySelector(`#histParams button[data-param="${c.key}"]`); if (!b) continue; b.classList.toggle('on', c.on); b.setAttribute('aria-pressed', String(c.on)); b.querySelector('.val').textContent = c.text; }
+}
+try { histS.params = parseParams(localStorage.getItem('batray_hist_params')); } catch { /* default */ }
+$('histParams').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-param]'); if (!b) return;
+  const d = paramTap(histS.params, b.dataset.param);
+  log(`history: line ${b.dataset.param} -> ${d.action} [${d.params.join(',')}]`);
+  if (d.action === 'full') { toast(T.histMax4, 4000); return; }
+  if (d.action === 'last') { toast(T.histMin1, 4000); return; }
+  histS.params = d.params; try { localStorage.setItem('batray_hist_params', JSON.stringify(d.params)); } catch {}
+  if (histMem.series) paintHistory(); else renderParamChips();
+});
 try { const r = localStorage.getItem('batray_hist_range'); if (r && RANGES[r] !== undefined) histS.range = r; } catch {}
 $('histRanges').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-range]'); if (!b) return;

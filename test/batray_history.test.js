@@ -17,7 +17,7 @@
 // assembly, chart windows and buckets, and the store-call statistics.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { corruptDecision, isCorruptError, historyState, dayKey, dayStartMs, daysInRange, rowDue, rowFromReading, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, bucketsFromRows, energyFromRows, opTimeoutMs, statsState, statsAdd, stuckDecision, statsLine, statsReset, HEADROOM_BYTES, HIST_REQ_MS, GAP_REQ_MS, GAP_ASKS_MAX, MIN_ROW_MS, RANGES, XFER_CHUNK, OP_TIMEOUT_MS, STUCK_RESTART } from '../public/batray/history-logic.js';
+import { parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, DEFAULT_PARAMS, MAX_PARAMS, corruptDecision, isCorruptError, historyState, dayKey, dayStartMs, daysInRange, rowDue, rowFromReading, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, bucketsFromRows, energyFromRows, opTimeoutMs, statsState, statsAdd, stuckDecision, statsLine, statsReset, HEADROOM_BYTES, HIST_REQ_MS, GAP_REQ_MS, GAP_ASKS_MAX, MIN_ROW_MS, RANGES, XFER_CHUNK, OP_TIMEOUT_MS, STUCK_RESTART } from '../public/batray/history-logic.js';
 import { decodeCellInfo } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -126,8 +126,8 @@ test('chart window, bucket step and series from per-day buckets', () => {
   assert.equal(bucketStep(0, 60e3, 800), MIN_ROW_MS, 'never finer than a stored row');
   assert.equal(bucketStep(0, 7 * 86400e3, 800), Math.ceil(7 * 86400e3 / 800));
   assert.deepEqual(RANGES.all, 0);
-  const s = seriesFromBuckets([{ t: [1000, 4000], w: [-100, 200], soc: [50, 51], v: [52, 52.1] }, { t: [7000], w: [null], soc: [null], v: [null] }]);
-  assert.deepEqual(s, { t: [1, 4, 7], w: [-100, 200, null], wc: [0, 200, null], wd: [-100, 0, null], soc: [50, 51, null], v: [52, 52.1, null] });
+  const s = seriesFromBuckets([{ t: [1000, 4000], w: [-100, 200], soc: [50, 51], v: [52, 52.1], tm: [30, 31] }, { t: [7000], w: [null], soc: [null], v: [null] }]);
+  assert.deepEqual([s.t, s.w, s.soc, s.v, s.tm, s.i], [[1, 4, 7], [-100, 200, null], [50, 51, null], [52, 52.1, null], [30, 31, null], [null, null, null]], 'one column per reading, null where a bucket lacks it');
   assert.deepEqual(daysNeeded([{ day: '2026-09-20' }, { day: '2026-09-23' }, { day: '2026-09-24' }, { day: '2026-09-25' }], Date.UTC(2026, 8, 22), Date.UTC(2026, 8, 24, 12)), ['2026-09-23', '2026-09-24']);
 });
 
@@ -137,6 +137,7 @@ test('bucketsFromRows and energyFromRows match the SQL\'s definitions (the memor
   rows.push(mk(5, 's-01', { w: 9 }));
   const b = bucketsFromRows(rows, { p: 'm-00', from: T0, to: T0 + 3600e3 - 1, stepMs: 300000 });
   assert.equal(b.t.length, 12); assert.equal(b.n[0], 100); assert.equal(b.w[0], 600); assert.equal(b.wmin[0], 600); assert.equal(b.soc[0], 50); assert.equal(b.t[0], Math.floor(T0 / 300000) * 300000);
+  assert.equal(b.tm[0], null, 'a reading no row carried is null, not 0');
   const e = energyFromRows(rows, { p: 'm-00', from: T0, to: T0 + 86400e3, maxGapMs: 60000 });
   assert.ok(Math.abs(e.charged - 600 * (1199 * 3) / 3600) < 0.01); assert.ok(Math.abs(e.discharged - 300 * (1199 * 3 + 60) / 3600) < 0.01);
 });
@@ -167,4 +168,27 @@ test('a corrupt day: today is renewed (deleted, a new live file), a past day is 
   assert.equal(isCorruptError(new Error('SQLITE_FULL: database or disk is full')), false);
   assert.equal(isCorruptError(new Error('insert timed out after 8 s')), false);
   assert.equal(isCorruptError(null), false);
+});
+
+test('chart lines (owner ask 2026-10-02): default battery % / voltage / current / MOSFET temp, up to four, never none; saved selection parsed; chip values at the cursor or the newest', () => {
+  assert.deepEqual(DEFAULT_PARAMS, ['soc', 'v', 'i', 'tm']); assert.equal(MAX_PARAMS, 4);
+  assert.deepEqual(historyState().params, DEFAULT_PARAMS);
+  assert.deepEqual(parseParams(null), DEFAULT_PARAMS); assert.deepEqual(parseParams('garbage'), DEFAULT_PARAMS); assert.deepEqual(parseParams('["nope"]'), DEFAULT_PARAMS);
+  assert.deepEqual(parseParams('["w","tm","w","soc","v","i","ah"]'), ['w', 'tm', 'soc', 'v'], 'duplicates dropped, cut to four, order kept');
+  let sel = DEFAULT_PARAMS.slice();
+  assert.deepEqual(paramTap(sel, 'w'), { action: 'full', params: sel });
+  let d = paramTap(sel, 'tm'); assert.deepEqual(d, { action: 'off', params: ['soc', 'v', 'i'] }); sel = d.params;
+  d = paramTap(sel, 'w'); assert.deepEqual(d, { action: 'on', params: ['soc', 'v', 'i', 'w'] }); sel = d.params;
+  for (const k of ['soc', 'v', 'i']) sel = paramTap(sel, k).params;
+  assert.deepEqual(paramTap(sel, 'w'), { action: 'last', params: ['w'] });
+  assert.deepEqual(paramTap(sel, 'bogus'), { action: 'ignore', params: ['w'] });
+  for (const k of PARAM_KEYS) assert.ok(PARAMS[k].col && PARAMS[k].unit !== undefined && /^#[0-9a-f]{6}$/.test(PARAMS[k].color), k);
+  const series = { t: [1, 2, 3], soc: [50, 51, null], v: [52.123, 52.2, 52.3], i: [1.5, null, null], w: [10, 20, 30], ah: [null, null, null], tm: [30.04, 31, 32], t1: [25, 25, 25], t2: [26, 26, 26] };
+  const newest = paramChips(series, ['soc', 'tm'], null);
+  assert.deepEqual(newest.find((c) => c.key === 'soc'), { key: 'soc', on: true, text: '51 %' }, 'the newest non-null');
+  assert.deepEqual(newest.find((c) => c.key === 'i'), { key: 'i', on: false, text: '1.5 A' });
+  assert.deepEqual(newest.find((c) => c.key === 'ah'), { key: 'ah', on: false, text: '' });
+  const at0 = paramChips(series, ['soc'], 0);
+  assert.deepEqual([at0.find((c) => c.key === 'v').text, at0.find((c) => c.key === 'tm').text], ['52.12 V', '30.0 °C']);
+  assert.equal(paramChips(null, ['soc'], null).find((c) => c.key === 'soc').text, '', 'no series yet');
 });

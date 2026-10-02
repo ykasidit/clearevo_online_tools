@@ -106,15 +106,16 @@ export function lastRows(db, p, n = 1) {
 }
 
 /** Time buckets for a chart: rows of pack p with from <= t <= to grouped into stepMs buckets. Columns as arrays
- *  (uPlot style): t = bucket start (ms), w mean, wmin, wmax, soc mean, v mean, n rows. A bucket holds only the
- *  numbers, never rows, so a 30 d chart costs the same memory as a 1 h one. */
+ *  (uPlot style): t = bucket start (ms), the mean of every reading column (soc v i w ah tm t1 t2), wmin / wmax, n
+ *  rows. A bucket holds only the numbers, never rows, so a 30 d chart costs the same memory as a 1 h one. */
+const BUCKET_COLS = ['soc', 'v', 'i', 'w', 'ah', 'tm', 't1', 't2'];
 export function buckets(db, { p, from, to, stepMs }) {
   const step = Math.max(1, Math.round(stepMs));
   const rows = db.selectObjects(
-    `SELECT (t / ?) AS b, avg(w) AS w, min(w) AS wmin, max(w) AS wmax, avg(soc) AS soc, avg(v) AS v, count(*) AS n
+    `SELECT (t / ?) AS b, ${BUCKET_COLS.map((c) => `avg(${c}) AS ${c}`).join(', ')}, min(w) AS wmin, max(w) AS wmax, count(*) AS n
        FROM readings WHERE p = ? AND t BETWEEN ? AND ? GROUP BY b ORDER BY b`, [step, p, Math.round(from), Math.round(to)]);
-  const out = { t: [], w: [], wmin: [], wmax: [], soc: [], v: [], n: [] };
-  for (const r of rows) { out.t.push(r.b * step); out.w.push(r.w); out.wmin.push(r.wmin); out.wmax.push(r.wmax); out.soc.push(r.soc); out.v.push(r.v); out.n.push(r.n); }
+  const out = { t: [], wmin: [], wmax: [], n: [] }; for (const c of BUCKET_COLS) out[c] = [];
+  for (const r of rows) { out.t.push(r.b * step); out.wmin.push(r.wmin); out.wmax.push(r.wmax); out.n.push(r.n); for (const c of BUCKET_COLS) out[c].push(r[c]); }
   return out;
 }
 

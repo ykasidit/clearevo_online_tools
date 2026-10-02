@@ -102,6 +102,7 @@ test('buckets: a day of two packs at one row per 3 s into 5 min buckets, means a
   assert.equal(b.wmin[0], -930); assert.equal(b.wmax[0], 620); assert.ok(Math.abs(b.w[0] - (-155)) < 1, 'mean of the alternating rows');
   assert.equal(b.t[0], T0); assert.equal(b.t[287], T0 + 287 * 300000);
   assert.ok(b.soc.every((s) => s >= 50 && s <= 59));
+  assert.deepEqual([b.v[0], b.tm[0], b.t1[0], b.ah[0]], [52.1, 30, 25, 150], 'every reading column is averaged'); assert.ok(Math.abs(b.i[0] - (-3)) < 0.01, 'current mean of the alternating rows');
   const s = buckets(db, { p: 's-01', from: T0, to: T0 + 3600e3 - 1, stepMs: 3600e3 });
   assert.deepEqual([s.t.length, s.w[0], s.n[0]], [1, 100, 1200], 'the other pack, one bucket of an hour');
   assert.deepEqual(buckets(db, { p: 'nobody', from: T0, to: T0 + 86400e3, stepMs: 60000 }).t, []);

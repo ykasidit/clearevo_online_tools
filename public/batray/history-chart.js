@@ -23,6 +23,7 @@ function timeLabels(u, ts) {
   const span = u.scales.x.max - u.scales.x.min;
   return ts.map((t) => { const d = new Date(t * 1000); const day = `${d.getDate()}/${d.getMonth() + 1}`; return span > 2 * 86400 || (d.getHours() === 0 && d.getMinutes() === 0) ? day : `${pad(d.getHours())}:${pad(d.getMinutes())}`; });
 }
+/** @type {any} */
 const AXIS = { stroke: '#7fb0d8', font: '10px DejaVu Sans Mono, monospace', grid: { stroke: '#1c3550', width: 1 }, ticks: { stroke: '#1c3550', width: 1 } };
 
 function pinchPlugin() {
@@ -47,44 +48,44 @@ function pinchPlugin() {
   return { hooks: { init } };
 }
 
-/** Make the chart in el. getCutoff() returns the inverter cut-off % for the dashed line. */
-export function makeChart(el, width, getCutoff) {
+// y ranges per scale: battery % is always 0..100; current and power keep zero in view; the rest pad the data
+const withZero = (u, min, max) => { const lo = Math.min(0, min || 0), hi = Math.max(0, max || 0), d = Math.max(1, (hi - lo) * 0.1); return [lo === 0 ? 0 : lo - d, hi === 0 ? 0 : hi + d]; };
+const padded = (u, min, max) => { const d = Math.max(0.5, ((max || 0) - (min || 0)) * 0.1); return [(min || 0) - d, (max || 0) + d]; };
+const RANGES = { pct: () => [0, 100], i: withZero, w: withZero };
+
+/** Make the chart in el for the chosen lines (keys of PARAMS, in order). The first line owns the left axis, the
+ *  second the right one, a third and fourth draw without an axis (their values show on the chips). getCutoff()
+ *  returns the inverter cut-off % for the dashed line (drawn only with the battery % line). onCursor(idx) is
+ *  told where the pointer is (null when it leaves). */
+export function makeChart(el, width, params, PARAMS, { getCutoff, onCursor }) {
+  const scales = { x: { time: true } }, axes = [{ ...AXIS, space: 70, values: timeLabels }], series = [{}];
+  params.forEach((key, k) => {
+    const p = PARAMS[key];
+    if (!scales[p.scale]) scales[p.scale] = { range: RANGES[p.scale] || padded };
+    if (k < 2) axes.push({ ...AXIS, scale: p.scale, side: k === 0 ? 3 : 1, size: 64, stroke: p.color, values: (u, vs) => vs.map((x) => `${Number.isInteger(x) ? x : x.toFixed(p.dec)}${p.unit === '%' ? '%' : ' ' + p.unit}`), grid: k === 0 ? AXIS.grid : { show: false } });
+    series.push({ scale: p.scale, stroke: p.color, width: k === 0 ? 2 : 1.5, spanGaps: false });
+  });
+  const hasSoc = params.includes('soc');
   const opts = {
     width, height: 200, legend: { show: false }, cursor: { drag: { x: true, y: false }, points: { show: false } },
-    scales: {
-      x: { time: true },
-      w: { range: (u, min, max) => { const m = Math.ceil(Math.max(100, Math.abs(min || 0), Math.abs(max || 0)) / 100) * 100; return [-m, m]; } },
-      pct: { range: [0, 100] },
-      v: { range: (u, min, max) => [(min || 0) - 1, (max || 0) + 1] },
-    },
-    axes: [
-      { ...AXIS, space: 70, values: timeLabels },
-      { ...AXIS, scale: 'w', size: 54, values: (u, vs) => vs.map((x) => `${x} W`) },
-      { ...AXIS, scale: 'pct', side: 1, size: 40, values: (u, vs) => vs.map((x) => `${x}%`), grid: { show: false } },
-    ],
-    series: [
-      {},
-      { scale: 'w', stroke: '#5fd39a', fill: 'rgba(95,211,154,.45)', width: 1, spanGaps: false, fillTo: () => 0 },
-      { scale: 'w', stroke: '#ffb74d', fill: 'rgba(255,183,77,.45)', width: 1, spanGaps: false, fillTo: () => 0 },
-      { scale: 'pct', stroke: '#4aa9e0', width: 2, spanGaps: false },
-      { scale: 'v', show: false },
-    ],
+    scales, axes, series,
     hooks: {
       draw: [(u) => {
-        const cut = getCutoff(); if (!(cut > 0)) return;
+        const cut = getCutoff(); if (!hasSoc || !(cut > 0)) return;
         const ctx = u.ctx, y = u.valToPos(cut, 'pct', true);
         ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = '#ff8a80'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(u.bbox.left, y); ctx.lineTo(u.bbox.left + u.bbox.width, y); ctx.stroke(); ctx.restore();
       }],
+      setCursor: [(u) => { if (onCursor) onCursor(u.cursor.idx === null || u.cursor.idx === undefined ? null : u.cursor.idx); }],
     },
     plugins: [pinchPlugin()],
   };
-  return new uPlot(opts, [[], [], [], [], []], el);
+  return new uPlot(opts, [[], ...params.map(() => [])], el);
 }
 
-/** Put series (from chartSeries) on the chart and show the window from..to (ms). */
-export function drawChart(u, series, from, to, width) {
+/** Put series (from seriesFromBuckets) on the chart for the chosen lines and show the window from..to (ms). */
+export function drawChart(u, series, params, PARAMS, from, to, width) {
   if (width && u.width !== width) u.setSize({ width, height: u.height });
-  u.setData([series.t, series.wc, series.wd, series.soc, series.v], false);
+  u.setData([series.t, ...params.map((k) => series[PARAMS[k].col])], false);
   u.setScale('x', { min: from / 1000, max: to / 1000 });
 }

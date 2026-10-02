@@ -30,6 +30,54 @@ export const HIST_REQ_MS = 10 * 60e3;           // a viewer asks again this ofte
 export const GAP_REQ_MS = 5000;                 // ... and this soon after a live row shows a hole in its copy of today
 export const GAP_ASKS_MAX = 3;                  // unanswered 5 s gap requests before falling back to the 10 min rhythm (2026-09-22 log: asked every 5 s for 5 h)
 export const MIN_ROW_MS = 3000;                 // one stored row per pack per 3 s: a BMS that pushes frames every second is shown, not logged, faster
+// ---- the chart's lines (owner ask 2026-10-02: pick the readings, up to four at a time) ----
+// Every column a bucket averages; a line is one of them. `scale` groups lines that share a y axis (the three
+// temperatures), `dec` the digits shown, the colours are fixed per reading so a line is recognisable across sessions.
+export const PARAMS = {
+  soc: { col: 'soc', unit: '%', dec: 0, color: '#4aa9e0', scale: 'pct' },
+  v: { col: 'v', unit: 'V', dec: 2, color: '#ffb74d', scale: 'v' },
+  i: { col: 'i', unit: 'A', dec: 1, color: '#5fd39a', scale: 'i' },
+  w: { col: 'w', unit: 'W', dec: 0, color: '#c792ea', scale: 'w' },
+  tm: { col: 'tm', unit: '°C', dec: 1, color: '#ff8a80', scale: 'c' },
+  t1: { col: 't1', unit: '°C', dec: 1, color: '#f78c6c', scale: 'c' },
+  t2: { col: 't2', unit: '°C', dec: 1, color: '#ffcb6b', scale: 'c' },
+  ah: { col: 'ah', unit: 'Ah', dec: 1, color: '#89ddff', scale: 'ah' },
+};
+export const PARAM_KEYS = Object.keys(PARAMS);
+export const BUCKET_COLS = PARAM_KEYS.map((k) => PARAMS[k].col);
+export const DEFAULT_PARAMS = ['soc', 'v', 'i', 'tm'];      // the owner's default: battery %, voltage, current, MOSFET temperature
+export const MAX_PARAMS = 4;
+/** The saved selection (localStorage JSON), or the default when it is missing, malformed, or names nothing known. */
+export function parseParams(raw) {
+  try {
+    const a = JSON.parse(raw);
+    const keys = Array.isArray(a) ? [...new Set(a.filter((k) => PARAMS[k]))].slice(0, MAX_PARAMS) : [];
+    return keys.length ? keys : DEFAULT_PARAMS.slice();
+  } catch { return DEFAULT_PARAMS.slice(); }
+}
+/** A tap on a line's chip: off when it is on (never the last one), on when there is room, else 'full'. */
+export function paramTap(params, key) {
+  if (!PARAMS[key]) return { action: 'ignore', params };
+  if (params.includes(key)) {
+    if (params.length === 1) return { action: 'last', params };
+    return { action: 'off', params: params.filter((k) => k !== key) };
+  }
+  if (params.length >= MAX_PARAMS) return { action: 'full', params };
+  return { action: 'on', params: [...params, key] };
+}
+/** The chips' values: at the cursor index when the pointer is on the chart, else the newest reading of each line.
+ *  Returns { key, on, text } for every known reading; text is '' without data. */
+export function paramChips(series, params, idx = null) {
+  return PARAM_KEYS.map((key) => {
+    const p = PARAMS[key], col = series ? series[p.col] : null;
+    let v = null;
+    if (col && col.length) {
+      if (idx !== null && idx !== undefined && idx >= 0 && idx < col.length) v = col[idx];
+      else for (let k = col.length - 1; k >= 0; k--) if (col[k] !== null && col[k] !== undefined) { v = col[k]; break; }
+    }
+    return { key, on: params.includes(key), text: v === null || v === undefined ? '' : `${v.toFixed(p.dec)} ${p.unit}` };
+  });
+}
 export const CHART_MAX_POINTS = 800;            // buckets per chart window (a phone screen is narrower than that)
 export const RANGES = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 24 * 3600e3, '7d': 7 * 86400e3, all: 0 };
 export const TREND_REFRESH_MS = 10000;          // a live chart is re-queried this often (right after the flush)
@@ -44,6 +92,7 @@ export function historyState() {
   return {
     day: null, todayRows: 0, nextId: 1, contig: 0, days: [], backend: 'none', persistent: null, range: '6h', usage: 0, quota: 0,
     reqAt: 0, wasLive: false, gapAsks: 0, xfer: null, rx: null, gap: null, spanFirst: null, spanLast: null,
+    params: DEFAULT_PARAMS.slice(),
   };
 }
 
@@ -178,32 +227,33 @@ export function chartRange(rangeKey, nowMs, first = null) {
 export function bucketStep(from, to, points = CHART_MAX_POINTS, minMs = MIN_ROW_MS) {
   return Math.max(minMs, Math.ceil(Math.max(1, to - from) / Math.max(1, points)));
 }
-/** Merge per-day bucket results (same step, ascending days) into one series and the uPlot columns: seconds,
- *  power (mean W), charge part (>= 0), discharge part (<= 0), battery (%), voltage (V). */
+/** Merge per-day bucket results (same step, ascending days) into one series: t in seconds (uPlot) and one column
+ *  per reading in BUCKET_COLS (bucket means; a bucket without the reading is null). */
 export function seriesFromBuckets(parts) {
-  const t = [], w = [], wc = [], wd = [], soc = [], v = [];
+  const out = { t: [] }; for (const c of BUCKET_COLS) out[c] = [];
   for (const b of parts) {
     for (let i = 0; i < b.t.length; i++) {
-      const p = b.w[i] === null || b.w[i] === undefined ? null : b.w[i];
-      t.push(b.t[i] / 1000); w.push(p); wc.push(p === null ? null : Math.max(0, p)); wd.push(p === null ? null : Math.min(0, p));
-      soc.push(b.soc[i] === null || b.soc[i] === undefined ? null : b.soc[i]); v.push(b.v[i] === null || b.v[i] === undefined ? null : b.v[i]);
+      out.t.push(b.t[i] / 1000);
+      for (const c of BUCKET_COLS) { const x = b[c] ? b[c][i] : null; out[c].push(x === null || x === undefined ? null : x); }
     }
   }
-  return { t, w, wc, wd, soc, v };
+  return out;
 }
 /** Buckets from plain rows (the memory-only backend and tests): the same columns the SQL gives. */
 export function bucketsFromRows(rows, { p, from, to, stepMs }) {
   const step = Math.max(1, Math.round(stepMs)); const m = new Map();
   for (const r of rows) {
     if (r.p !== p || r.t < from || r.t > to) continue;
-    const b = Math.floor(r.t / step); let a = m.get(b); if (!a) { a = { n: 0, w: 0, wn: 0, wmin: null, wmax: null, soc: 0, sn: 0, v: 0, vn: 0 }; m.set(b, a); }
+    const b = Math.floor(r.t / step); let a = m.get(b); if (!a) { a = { n: 0, wmin: null, wmax: null, sum: {}, cnt: {} }; m.set(b, a); }
     a.n++;
-    if (r.w !== null && r.w !== undefined) { a.w += r.w; a.wn++; a.wmin = a.wmin === null ? r.w : Math.min(a.wmin, r.w); a.wmax = a.wmax === null ? r.w : Math.max(a.wmax, r.w); }
-    if (r.soc !== null && r.soc !== undefined) { a.soc += r.soc; a.sn++; }
-    if (r.v !== null && r.v !== undefined) { a.v += r.v; a.vn++; }
+    if (r.w !== null && r.w !== undefined) { a.wmin = a.wmin === null ? r.w : Math.min(a.wmin, r.w); a.wmax = a.wmax === null ? r.w : Math.max(a.wmax, r.w); }
+    for (const c of BUCKET_COLS) if (r[c] !== null && r[c] !== undefined) { a.sum[c] = (a.sum[c] || 0) + r[c]; a.cnt[c] = (a.cnt[c] || 0) + 1; }
   }
-  const out = { t: [], w: [], wmin: [], wmax: [], soc: [], v: [], n: [] };
-  for (const b of [...m.keys()].sort((x, y) => x - y)) { const a = m.get(b); out.t.push(b * step); out.w.push(a.wn ? a.w / a.wn : null); out.wmin.push(a.wmin); out.wmax.push(a.wmax); out.soc.push(a.sn ? a.soc / a.sn : null); out.v.push(a.vn ? a.v / a.vn : null); out.n.push(a.n); }
+  const out = { t: [], wmin: [], wmax: [], n: [] }; for (const c of BUCKET_COLS) out[c] = [];
+  for (const b of [...m.keys()].sort((x, y) => x - y)) {
+    const a = m.get(b); out.t.push(b * step); out.wmin.push(a.wmin); out.wmax.push(a.wmax); out.n.push(a.n);
+    for (const c of BUCKET_COLS) out[c].push(a.cnt[c] ? a.sum[c] / a.cnt[c] : null);
+  }
   return out;
 }
 /** Energy from plain rows, the SQL's rule: each row's power over the time since the row before, gaps capped. */

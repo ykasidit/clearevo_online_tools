@@ -64,6 +64,29 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.61: choose the History lines (owner ask 2026-10-02)
+
+"Make the history selectable, up to four at a time; default battery %,
+voltage, current, MOSFET temperature." The chart used to be fixed: signed
+power area plus the battery % line.
+
+- A row of chips under the range buttons, one per stored reading (battery
+  %, voltage, current, power, MOSFET temp, temp 1, temp 2, remaining Ah),
+  each in its line's colour with the newest value, or the value under the
+  pointer while it is on the chart. A tap turns a line on or off; a fifth
+  is refused with a toast, the last one cannot be removed. The choice is
+  saved (`batray_hist_params`) and survives a reload.
+- The first chosen line owns the left axis, the second the right one; a
+  third and a fourth draw without an axis and are read off their chips.
+  Battery % is always 0..100 with the inverter cut-off dashes; current and
+  power keep zero in view; the rest pad their own range. The three
+  temperatures share one scale.
+- The bucket query now averages every reading column, so any line is one
+  query away; the charged / discharged line above the chart is unchanged.
+  The pure decisions (`parseParams`, `paramTap`, `paramChips`, the `PARAMS`
+  table) sit in history-logic.js with unit tests; the browser test taps
+  the chips, refuses the fifth, swaps a line and reloads.
+
 ## 0.9.60: one transport - a WebSocket through the relay room (owner decision 2026-10-01)
 
 "Use ws tcp only, no more ICE and SFU / TURN / UDP." The two viewer logs of
