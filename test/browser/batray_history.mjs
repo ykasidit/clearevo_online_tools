@@ -202,19 +202,19 @@ await evalJs(`document.querySelector('#histRanges button[data-range="6h"]').clic
 // ---- chart lines (owner ask 2026-10-02): the default four, a fifth is refused, a swap redraws, the choice survives a reload ----
 const chips = async () => evalJs(`({ on: [...document.querySelectorAll('#histParams button.on')].map((b) => b.dataset.param), all: document.querySelectorAll('#histParams button').length, vals: [...document.querySelectorAll('#histParams button.on .val')].map((b) => b.textContent), socLbl: document.querySelector('#histParams button[data-param="soc"] .lbl').textContent, series: (window.__batrayTest.histState().plot ? 1 : 0), saved: localStorage.getItem('batray_hist_params'), toast: document.getElementById('toast').textContent })`);
 let c = await chips();
-check('eight line chips, the default four lit (battery %, voltage, current, MOSFET temp), each with its newest value', c.all === 8 && c.on.join(',') === 'soc,v,i,tm' && c.vals.length === 4 && c.vals.every((v) => /\d/.test(v)) && c.socLbl === 'battery %', c);
-await evalJs(`document.querySelector('#histParams button[data-param="w"]').click(); 1`); await sleep(300);
+check('eight line chips, the default four lit (battery %, voltage, power, MOSFET temp), each with its newest value', c.all === 8 && c.on.join(',') === 'soc,v,w,tm' && c.vals.length === 4 && c.vals.every((v) => /\d/.test(v)) && c.socLbl === 'battery %', c);
+await evalJs(`document.querySelector('#histParams button[data-param="i"]').click(); 1`); await sleep(300);
 c = await chips();
-check('a fifth line is refused with a toast and nothing changes', c.on.join(',') === 'soc,v,i,tm' && /four lines/.test(c.toast), c);
+check('a fifth line is refused with a toast and nothing changes', c.on.join(',') === 'soc,v,w,tm' && /four lines/.test(c.toast), c);
 await evalJs(`document.querySelector('#histParams button[data-param="tm"]').click(); 1`); await sleep(300);
-await evalJs(`document.querySelector('#histParams button[data-param="w"]').click(); 1`); await sleep(600);
+await evalJs(`document.querySelector('#histParams button[data-param="i"]').click(); 1`); await sleep(600);
 c = await chips();
 const canvas = await evalJs(`({ n: document.querySelectorAll('#trend canvas').length, w: (document.querySelector('#trend canvas') || {}).width || 0 })`);
-check('taking MOSFET temp off and adding power redraws the chart with soc, v, i, w and saves the choice', c.on.join(',') === 'soc,v,i,w' && c.saved === '["soc","v","i","w"]' && canvas.n === 1 && canvas.w > 100, { c, canvas });
+check('taking MOSFET temp off and adding current redraws the chart with soc, v, w, i and saves the choice (the row keeps its fixed order, the saved list the tap order)', c.on.join(',') === 'soc,v,i,w' && c.saved === '["soc","v","w","i"]' && canvas.n === 1 && canvas.w > 100, { c, canvas });
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(4000);
 c = await chips();
-check('after a reload the saved lines are the lit ones', c.on.join(',') === 'soc,v,i,w', c);
-await evalJs(`localStorage.setItem('batray_hist_params', JSON.stringify(['soc', 'v', 'i', 'tm'])); 1`);
+check('after a reload the saved lines are the lit ones', c.on.join(',') === 'soc,v,i,w' && c.saved === '["soc","v","w","i"]', c);
+await evalJs(`localStorage.setItem('batray_hist_params', JSON.stringify(['soc', 'v', 'w', 'tm'])); 1`);
 const memLine = await evalJs(`(() => { window.__batrayTest.memTick(); return document.getElementById('memUse').textContent; })()`);
 check('the memory line counts queued readings, not a table in memory', /· \d+ readings in memory/.test(memLine) && !/\d{4,} readings/.test(memLine), memLine);
 

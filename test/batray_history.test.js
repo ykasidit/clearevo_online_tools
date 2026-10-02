@@ -171,17 +171,17 @@ test('a corrupt day: today is renewed (deleted, a new live file), a past day is 
 });
 
 test('chart lines (owner ask 2026-10-02): default battery % / voltage / current / MOSFET temp, up to four, never none; saved selection parsed; chip values at the cursor or the newest', () => {
-  assert.deepEqual(DEFAULT_PARAMS, ['soc', 'v', 'i', 'tm']); assert.equal(MAX_PARAMS, 4);
+  assert.deepEqual(DEFAULT_PARAMS, ['soc', 'v', 'w', 'tm']); assert.equal(MAX_PARAMS, 4);
   assert.deepEqual(historyState().params, DEFAULT_PARAMS);
   assert.deepEqual(parseParams(null), DEFAULT_PARAMS); assert.deepEqual(parseParams('garbage'), DEFAULT_PARAMS); assert.deepEqual(parseParams('["nope"]'), DEFAULT_PARAMS);
   assert.deepEqual(parseParams('["w","tm","w","soc","v","i","ah"]'), ['w', 'tm', 'soc', 'v'], 'duplicates dropped, cut to four, order kept');
   let sel = DEFAULT_PARAMS.slice();
-  assert.deepEqual(paramTap(sel, 'w'), { action: 'full', params: sel });
-  let d = paramTap(sel, 'tm'); assert.deepEqual(d, { action: 'off', params: ['soc', 'v', 'i'] }); sel = d.params;
-  d = paramTap(sel, 'w'); assert.deepEqual(d, { action: 'on', params: ['soc', 'v', 'i', 'w'] }); sel = d.params;
-  for (const k of ['soc', 'v', 'i']) sel = paramTap(sel, k).params;
-  assert.deepEqual(paramTap(sel, 'w'), { action: 'last', params: ['w'] });
-  assert.deepEqual(paramTap(sel, 'bogus'), { action: 'ignore', params: ['w'] });
+  assert.deepEqual(paramTap(sel, 'i'), { action: 'full', params: sel });
+  let d = paramTap(sel, 'tm'); assert.deepEqual(d, { action: 'off', params: ['soc', 'v', 'w'] }); sel = d.params;
+  d = paramTap(sel, 'i'); assert.deepEqual(d, { action: 'on', params: ['soc', 'v', 'w', 'i'] }); sel = d.params;
+  for (const k of ['soc', 'v', 'w']) sel = paramTap(sel, k).params;
+  assert.deepEqual(paramTap(sel, 'i'), { action: 'last', params: ['i'] });
+  assert.deepEqual(paramTap(sel, 'bogus'), { action: 'ignore', params: ['i'] });
   for (const k of PARAM_KEYS) assert.ok(PARAMS[k].col && PARAMS[k].unit !== undefined && /^#[0-9a-f]{6}$/.test(PARAMS[k].color), k);
   const series = { t: [1, 2, 3], soc: [50, 51, null], v: [52.123, 52.2, 52.3], i: [1.5, null, null], w: [10, 20, 30], ah: [null, null, null], tm: [30.04, 31, 32], t1: [25, 25, 25], t2: [26, 26, 26] };
   const newest = paramChips(series, ['soc', 'tm'], null);

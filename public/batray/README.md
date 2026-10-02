@@ -67,7 +67,9 @@ when the screen repaints.
 ## 0.9.61: choose the History lines (owner ask 2026-10-02)
 
 "Make the history selectable, up to four at a time; default battery %,
-voltage, current, MOSFET temperature." The chart used to be fixed: signed
+voltage, current, MOSFET temperature" - then, asked for a saner default
+from the apps people know: power instead of current, which is what the
+consumer apps chart and what the charged / discharged line is made of. The chart used to be fixed: signed
 power area plus the battery % line.
 
 - A row of chips under the range buttons, one per stored reading (battery

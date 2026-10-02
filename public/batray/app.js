@@ -35,7 +35,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.61';
+export const APP_VERSION = '0.9.62';
 
 /** @returns {any} */
 const $ = (id) => document.getElementById(id);

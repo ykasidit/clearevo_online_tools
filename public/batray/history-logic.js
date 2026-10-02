@@ -45,7 +45,7 @@ export const PARAMS = {
 };
 export const PARAM_KEYS = Object.keys(PARAMS);
 export const BUCKET_COLS = PARAM_KEYS.map((k) => PARAMS[k].col);
-export const DEFAULT_PARAMS = ['soc', 'v', 'i', 'tm'];      // the owner's default: battery %, voltage, current, MOSFET temperature
+export const DEFAULT_PARAMS = ['soc', 'v', 'w', 'tm'];      // battery %, voltage, power, MOSFET temperature (owner 2026-10-02: power over current, as the consumer apps chart it)
 export const MAX_PARAMS = 4;
 /** The saved selection (localStorage JSON), or the default when it is missing, malformed, or names nothing known. */
 export function parseParams(raw) {
