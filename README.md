@@ -49,15 +49,23 @@ Windows XP theme (xp.css window + title bar), A-/A+ font-size buttons top-right,
 PWA manifest + icons, an emoji favicon, and a status bar with the privacy note +
 "verify" link. See the app READMEs for details.
 
-## State handling (BatRay, and the rule for every app from 2026-09-20 on)
+## House rules (BatRay, and the rule for every app from 2026-09-20 on)
 
-Stateful flows keep their state in one plain object per flow and decide through
-pure functions that take that object as a parameter ("functional core,
-imperative shell"; the author's preference from kernel, Go and Rust work, where
-a context struct is passed in and the function stays pure). `<flow>-logic.js`
-is the core, `<flow>.js` the I/O, `test/<app>_<flow>.test.js` replays the
-sequence from a real log. See [BatRay's README](public/batray/README.md#code-layout-functional-core-imperative-shell)
-for the layout and the table of flows.
+- A lifecycle (a socket, a stream, a Bluetooth link) is one `async run(signal)`
+  loop: the state is in the lines of the function, there is one writer, every
+  wait takes the stop signal and a timeout (`sync.js`: `Flag`, `Channel`,
+  `sleep`, `select`), platform callbacks only set a flag or push a channel.
+- `await` everywhere: no `.then` chains, no hand-rolled promises, no callback
+  that awaits; a deliberately un-awaited call is written `void f()`. A paint
+  after an await re-checks ownership first.
+- Everything else is a pure decision over one plain state object per flow
+  (`<flow>-logic.js`), replayed in a node test from a real log; `<flow>.js` is
+  the I/O.
+- All of it is enforced by tests that fail the build (`./build.sh` runs
+  `./test.sh` first, every lint rule an error): a house-rules source sweep with
+  listed exceptions, ESLint with the type-aware rules plus our own
+  paint-after-await rule, `tsc --checkJs`, the replay tests, the headless-Chrome
+  suites. See [BatRay's README](public/batray/README.md#house-rules-and-the-tests-that-enforce-them).
 
 ## Copyright & license
 

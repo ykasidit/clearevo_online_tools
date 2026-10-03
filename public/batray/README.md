@@ -8,6 +8,74 @@ Live: **https://www.clearevo.com/batray/**
 
 Part of [ClearEvo online tools](../../README.md). Battery data stays on the device unless Share live is turned on.
 
+## House rules, and the tests that enforce them
+
+Decided by the author over 2026-09-20 to 2026-10-01, after flaky state had
+bitten reconnect, presence, Cast and the live link in turn. The habit comes
+from Linux kernel drivers, Go and Rust: a loop with the state in its lines,
+not a machine with the state in a table. Every rule below has a test that
+fails the build (`./build.sh` runs `./test.sh` first; `-Werror`, nothing is
+a warning).
+
+**1. A lifecycle is one loop.** Anything with a lifetime (a socket, a
+stream, a Bluetooth link) is ONE `async run(signal)` function with a loop:
+open, serve until it ends, count down, again. The state is the program
+counter; there is one writer; `start()` refuses a second loop (`if
+(this.task !== null) return`), `stop()` aborts it through an
+`AbortController`. This replaced an event machine plus an ownership token
+(0.9.52) that existed only because two writers shared one state - the
+2026-09-30 race, where an SFU attempt woke after the direct link had taken
+over and wrote "failed" over a flowing stream, cannot happen in a loop. The
+kernel mapping: `run()` is a kthread, `select` + `sleep` is
+`wait_event_timeout`, a `Flag` is a completion, the stop signal is
+`kthread_should_stop()`; in Java terms the loop waits on a countdown latch
+with a timeout.
+
+**2. Every wait takes the stop signal and a timeout.** `sync.js` has the
+only primitives: `Flag` (a level you can wait for; waiting for the current
+value returns at once, so nothing is lost between a callback and the loop),
+`Channel` (a queue), `sleep(ms, signal)`, and `select(signal, { arm: (s) =>
+... })` - Go's select: the first arm wins, the losers are aborted. The
+"await with a timeout and an ownership check" the author asked for is
+`select` with a `sleep` arm.
+
+**3. Platform callbacks set a flag or push a channel, nothing else.** A
+socket's `onmessage`, a channel's `onopen`, a transport's state change
+exist only at the boundary; they never write the loop's state.
+
+**4. `await` everywhere above that.** No `.then` chains, no hand-rolled `new
+Promise` where `sync.js` has the primitive, no callback that awaits (a
+lifecycle in disguise). A call that is deliberately not awaited is written
+`void f()`, Dart's `unawaited()`; a bare one is a build error.
+
+**5. A paint after an await re-checks first.** JS is one thread but every
+`await` is a yield; by the time it returns another flow may own the card.
+So after an await, a `render…()` / sheet / status call needs an `if (...)
+return` (`publisher !== pub`, `tv !== t`), an `if` block, or
+`signal.throwIfAborted()` before it - or a reasoned disable directive on
+that line. This is Dart's `use_build_context_synchronously`.
+
+**6. Pure decisions, replayed from real logs**, for everything that is not a
+lifecycle: view models, packet handlers, chart windows, the UI chrome (the
+layout below). The decision takes the one state object and plain inputs
+and never touches the DOM, timers, storage or the network.
+
+The tests, all in `test/`, all in `./test.sh`:
+
+| test | enforces |
+|---|---|
+| `batray_house_rules.test.js` | rules 1-4 by reading the source: each link class has one `run(signal)`, the `task !== null` guard, the abort, the catch that lets the stop signal through; every `sleep` / `select` / `.wait` / `.next` carries the signal; boundary callbacks never write `state.live/error/path/retryIn`; ratchets for `.then(`, async callbacks and `new Promise(` per shell file, each exception listed with a ceiling and a reason; every `*-logic.js` free of `document`, `window`, `navigator`, storage, `fetch`, sockets, workers and timers |
+| `batray_lint.test.js` | ESLint, every rule an error, any message fails: the recommended set plus the runtime-safety rules; the type-aware rules through `tsconfig.json` (`no-floating-promises` = rule 4, `no-misused-promises`, `await-thenable`, `unbound-method`, `return-await`, sort without a comparator); our own `test/lint/ui_after_await.mjs` = rule 5; house rules (no `confirm` / `alert` / `prompt`, no `document.write`). A rule switched off has its reason in the `OFF` table; a disabled line says why (`-- <why>`) and a stale directive fails. `test/lint/fixtures/` proves each rule still bites |
+| `batray_typecheck.test.js` | `tsc --checkJs` over the same tsconfig: a missing property, a wrong arity, an impossible comparison are hard failures; DOM-typing noise has a per-file ceiling that may only go down |
+| `batray_presence.test.js`, `batray_link.test.js`, `batray_conn.test.js`, `batray_cast.test.js`, `batray_wake.test.js`, ... | rule 6: the loops and decisions replayed over fakes with the exact sequences from the uploaded logs (dates in the test names) |
+| `batray_no_sql_delete.test.js` | no SQL `DELETE` / `VACUUM` in the sources: a day is freed by unlinking its file |
+| `batray_i18n.test.js` | EN and TH have the same keys, types and arities |
+| `test/browser/*.mjs` | the real page in headless Chrome over fake Bluetooth, a fake relay and real OPFS / SQLite / uPlot / WebCodecs: the I/O shells are covered here, not by unit tests |
+
+Rounds still to come, one per release with a phone test between: the TV
+upload chain and the BLE connect flow as loops, then the app shell's
+handlers.
+
 ## Code layout: functional core, imperative shell
 
 Every flow with state follows one rule, decided 2026-09-20 after flaky state
