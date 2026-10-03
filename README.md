@@ -51,6 +51,12 @@ PWA manifest + icons, an emoji favicon, and a status bar with the privacy note +
 
 ## House rules (BatRay, and the rule for every app from 2026-09-20 on)
 
+These rules and their tests were added by the author gradually, from 2026-09-20
+on, as each one was learned the hard way; BatRay follows all of them, the older
+apps in this repo and the sibling repos (gnss, hyperterminal, at) only partly
+or not yet. Read an older app against the date of its last change, not against
+this list.
+
 - A lifecycle (a socket, a stream, a Bluetooth link) is one `async run(signal)`
   loop: the state is in the lines of the function, there is one writer, every
   wait takes the stop signal and a timeout (`sync.js`: `Flag`, `Channel`,

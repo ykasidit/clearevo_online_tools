@@ -11,7 +11,10 @@ Part of [ClearEvo online tools](../../README.md). Battery data stays on the devi
 ## House rules, and the tests that enforce them
 
 Decided by the author over 2026-09-20 to 2026-10-01, after flaky state had
-bitten reconnect, presence, Cast and the live link in turn. The habit comes
+bitten reconnect, presence, Cast and the live link in turn. They were added
+gradually, one per lesson, so BatRay follows all of them while the older
+apps in this repo and the sibling tool repos were written before them and
+reflect them only partly or not yet. The habit comes
 from Linux kernel drivers, Go and Rust: a loop with the state in its lines,
 not a machine with the state in a table. Every rule below has a test that
 fails the build (`./build.sh` runs `./test.sh` first; `-Werror`, nothing is
