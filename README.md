@@ -49,29 +49,15 @@ Windows XP theme (xp.css window + title bar), A-/A+ font-size buttons top-right,
 PWA manifest + icons, an emoji favicon, and a status bar with the privacy note +
 "verify" link. See the app READMEs for details.
 
-## House rules (BatRay, and the rule for every app from 2026-09-20 on)
+## House rules
 
-These rules and their tests were added by the author gradually, from 2026-09-20
-on, as each one was learned the hard way; BatRay follows all of them, the older
-apps in this repo and the sibling repos (gnss, hyperterminal, at) only partly
-or not yet. Read an older app against the date of its last change, not against
-this list.
-
-- A lifecycle (a socket, a stream, a Bluetooth link) is one `async run(signal)`
-  loop: the state is in the lines of the function, there is one writer, every
-  wait takes the stop signal and a timeout (`sync.js`: `Flag`, `Channel`,
-  `sleep`, `select`), platform callbacks only set a flag or push a channel.
-- `await` everywhere: no `.then` chains, no hand-rolled promises, no callback
-  that awaits; a deliberately un-awaited call is written `void f()`. A paint
-  after an await re-checks ownership first.
-- Everything else is a pure decision over one plain state object per flow
-  (`<flow>-logic.js`), replayed in a node test from a real log; `<flow>.js` is
-  the I/O.
-- All of it is enforced by tests that fail the build (`./build.sh` runs
-  `./test.sh` first, every lint rule an error): a house-rules source sweep with
-  listed exceptions, ESLint with the type-aware rules plus our own
-  paint-after-await rule, `tsc --checkJs`, the replay tests, the headless-Chrome
-  suites. See [BatRay's README](public/batray/README.md#house-rules-and-the-tests-that-enforce-them).
+The author adds coding rules gradually, one per lesson learned, and each
+rule ships with a test that fails the build. The newest app follows all of
+them; older apps were written before them and reflect them only partly or
+not yet. The rules themselves (one loop per lifecycle, `await` everywhere,
+pure decisions replayed from real logs, the lint and type gates) are written
+up where they apply: see each app's own README under `public/<app>/README.md`,
+starting with [BatRay's](public/batray/README.md#house-rules-and-the-tests-that-enforce-them).
 
 ## Copyright & license
 
