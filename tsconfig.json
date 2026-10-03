@@ -5,6 +5,6 @@
     "lib": ["es2022", "dom", "dom.iterable", "webworker"],
     "strict": false, "noImplicitAny": false, "skipLibCheck": true, "types": []
   },
-  "include": ["public/batray/*.js", "test/types/*.d.ts"],
-  "exclude": ["public/batray/mp4-muxer.js", "public/batray/uplot.js", "public/batray/sqlite3.js", "public/batray/qrcode.js", "public/batray/sw.js"]
+  "include": ["public/batray/*.js", "public/dicom/*.js", "test/types/*.d.ts"],
+  "exclude": ["public/batray/mp4-muxer.js", "public/batray/uplot.js", "public/batray/sqlite3.js", "public/batray/qrcode.js", "public/batray/sw.js", "public/dicom/dicomParser.min.js", "public/dicom/lossless-min.js", "public/dicom/openjpegwasm_decode.js"]
 }

@@ -19,6 +19,8 @@ the build; the newest app follows all of them, older apps only partly or not yet
 
 ## Build / test / deploy
 
+The static-analysis and house-rule checks are one file each under `test/common/`; a tool opts in with symlinks named `test/<tool>_<check>.test.js` and its parameters in `test/rules/<tool>.mjs`.
+
 - `./build.sh` - content-hash build of every `public/<app>/` into `dist/<app>/` (runs `./test.sh` first).
 - `./test.sh` - `node --test` over `test/`.
 - `./test/browser/run.sh` - headless-Chrome suites driving the real pages.

@@ -1,4 +1,4 @@
-// BatRay by ClearEvo.com - lint fixture: what batray/ui-after-await must and must not flag (not shipped)
+// BatRay by ClearEvo.com - lint fixture: what house/ui-after-await must and must not flag (not shipped)
 // Copyright (C) 2026 Kasidit Yusuf
 //
 // This program is free software; you can redistribute it and/or modify it
@@ -26,7 +26,7 @@ export async function theWait() { const r = await openSheet('x'); return r; }   
 export async function toasts() { await io(); toast('done'); }                          // ok: a toast reports the result
 export async function sayWhy() {
   await io();
-  // eslint-disable-next-line batray/ui-after-await -- fixture: the reason goes here
+  // eslint-disable-next-line house/ui-after-await -- fixture: the reason goes here
   renderCard();
 }
 export function sync() { io(); renderCard(); }                                         // not async: never flagged here

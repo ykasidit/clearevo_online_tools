@@ -216,6 +216,25 @@ await sleep(800);
 await clickBtn('bInvert'); await sleep(150);
 check('invert: toggles without error', true);
 
+// ---------- PNG as…: the page's own name dialog (never the browser prompt box) ----------
+await evalJs(`window.__cap = null`);
+await clickBtn('bCaptureAs'); await sleep(200);
+check('save as: the name dialog opens with a default name', await evalJs(`document.getElementById('pngDlg').style.display === 'flex' && document.getElementById('pngName').value.length > 0`));
+await evalJs(`document.getElementById('pngName').value = 'my shot'`);
+await clickBtn('pngOk'); await sleep(400);
+check('save as: Save closes the dialog and saves the PNG', await evalJs(`document.getElementById('pngDlg').style.display === 'none' && !!window.__cap`));
+await clickBtn('bCaptureAs'); await sleep(100);
+await evalJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`); await sleep(100);
+check('save as: Escape closes the dialog', await evalJs(`document.getElementById('pngDlg').style.display === 'none'`));
+
+// ---------- the open lifecycle: a second open supersedes the first, only the last CD's series are listed ----------
+await injectAndDrop(['ct1.dcm', 'ct2.dcm', 'ct3.dcm', 'ct4.dcm', 'ct5.dcm']);
+await injectAndDrop(['us_clip.dcm']);
+for (let i = 0; i < 60; i++) { if (await evalJs(`!document.getElementById('slice').disabled && document.querySelectorAll('.ser').length > 0`)) break; await sleep(100); }
+await sleep(500);
+const sers = await evalJs(`[...document.querySelectorAll('.ser')].map((e) => e.textContent)`);
+check('open: the last drop wins - only its series are listed, the stack is browsable', sers.length === 1 && sers[0].includes('US') && (await text('sliceLbl')).endsWith('/8'), JSON.stringify(sers));
+
 console.log('\n==== SUMMARY ====');
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? '  -- ' + r.detail : ''}`);
 console.log(`${results.filter((r) => r.ok).length}/${results.length} passed`);

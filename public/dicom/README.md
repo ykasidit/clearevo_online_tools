@@ -8,6 +8,13 @@ Live: **https://www.clearevo.com/dicom/**
 
 Part of [ClearEvo online tools](../../README.md) - runs 100% in your browser, nothing uploaded.
 
+## How the code is organised (1.8.0, 2026-10-03)
+
+- `index.html` is markup and styles only; the shell is `app.js` (DOM, files, decode, paint), the decisions are in `logic.js` (pure, unit-tested in `test/fun.test.js` and `test/dicom.test.js`), the strings in `i18n.js` (EN + Thai, parity-tested), and `sync.js` is a link to BatRay's wait primitives (`sleep` with a stop signal).
+- **Opening a CD is one lifecycle**: `openAny` aborts the open in progress and runs `openRun` under one `AbortController`; every await in the chain (archive index, DICOMDIR or header scan, first stack, series previews, preview retries) is followed by a signal check, so a slow first CD never paints its series over the second one, and the slice cache is emptied at each open (CDs name their files alike). Cine is a loop over `sleep(frameTime, signal)`; Stop aborts it. Before 1.8 three generation counters and a `setInterval` guarded the same things from four places.
+- The same house rules as BatRay, enforced by the shared tests (`test/dicom_lint.test.js`, `dicom_typecheck`, `dicom_house_rules`, `dicom_i18n` are symlinks into `test/common/`, parameters in `test/rules/dicom.mjs`): every lint rule an error, zero type findings, a bare call of an async function is written `void f()`, a paint after an await re-checks state first, no `prompt()` / `confirm()` / `alert()` (the PNG name is asked in a dialog of the page), nothing read off the CD becomes markup (series labels and the source badge are built from DOM nodes), logic modules touch no browser API.
+- Browser scenarios: `test/browser/clinician.mjs` (28, incl. the Save-as dialog and "the last open wins").
+
 ## Copyright & license
 
 Copyright (C) 2026 Kasidit Yusuf.

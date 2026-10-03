@@ -217,7 +217,7 @@ export function makeLut(slope, intercept, wc, ww, invert) {
   const lo = wc - w / 2, hi = wc + w / 2;
   return (v) => {
     const m = v * slope + intercept;
-    let y = m <= lo ? 0 : m >= hi ? 255 : Math.round(((m - lo) / w) * 255);
+    const y = m <= lo ? 0 : m >= hi ? 255 : Math.round(((m - lo) / w) * 255);
     return invert ? 255 - y : y;
   };
 }
@@ -348,4 +348,34 @@ export function evictKeysByBytes(keys, indexOf, curIdx, sizeOf, budget) {
 export function prefetchDepth(deviceMemGb) {
   const g = deviceMemGb || 4;
   return g >= 8 ? 50 : g >= 4 ? 24 : 12;
+}
+
+// ---- archive sniffing (the first 264 bytes) ----
+// Only ZIP and plain TAR keep index-first streaming; the others are named so the shell can say why they are refused.
+export function sniffArchive(b) {
+  const is = (sig, at = 0) => sig.every((c, i) => b[at + i] === c);
+  if (is([0x50, 0x4b, 0x03, 0x04]) || is([0x50, 0x4b, 0x05, 0x06])) return 'zip';     // 'PK..'
+  if (is([0x75, 0x73, 0x74, 0x61, 0x72], 257)) return 'tar';                          // 'ustar'
+  if (is([0x1f, 0x8b])) return 'gz';
+  if (is([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c])) return '7z';
+  if (is([0x52, 0x61, 0x72, 0x21])) return 'rar';
+  return 'unknown';
+}
+// one dropped file with one of these names is opened as an archive (gz/7z/rar then get the refusal above)
+export const ARCHIVE_NAME_RE = /\.(zip|tar|tgz|gz|7z|rar)$/i;
+export function isArchiveName(name) { return ARCHIVE_NAME_RE.test(name); }
+
+// ---- small viewer decisions the shell used to compute inline ----
+export function cineNext(idx, n) { return idx + 1 >= n ? 0 : idx + 1; }
+export function clampZoom(z) { return Math.max(0.2, Math.min(12, z)); }
+// W/L drag: left-right = window width (never below 1), up-down = level; the gain grows with the current width so
+// a narrow window stays fine-grained and a wide one moves fast (the PACS convention)
+export function wlDrag(wc, ww, dx, dy) { return { ww: Math.max(1, ww + dx * (ww / 200 + 1)), wc: wc + dy * (ww / 400 + 0.5) }; }
+// browse drag: accumulate the dominant axis and emit whole steps, keeping the remainder for the next move
+export function browseSteps(acc, delta, step) {
+  acc += delta;
+  let steps = 0;
+  while (acc >= step) { acc -= step; steps++; }
+  while (acc <= -step) { acc += step; steps--; }
+  return { acc, steps };
 }

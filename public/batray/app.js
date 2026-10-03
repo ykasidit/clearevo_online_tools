@@ -312,7 +312,7 @@ function renderPackBar() {
     const I = d && d.current !== null ? (d.current > 0.05 ? `+${d.current.toFixed(1)} A` : d.current < -0.05 ? `−${Math.abs(d.current).toFixed(1)} A` : '0 A') : '';
     const cst = p.remote || p.demo ? (p.connected ? (d ? 'live' : 'waiting') : 'offline') : packChipState(p.cs, p.connected, !!d);
     const st = cst === 'live' ? '' : cst === 'waiting' ? ` <span class="pst">${T.packWaiting}</span>` : ` <span class="pst off">${cst === 'connecting' ? T.packConnecting : T.packOffline}</span>`;
-    return `<button class="pchip${p === active ? ' on' : ''}${p.connected ? '' : ' off'}" data-pack="${p.id}" title="${p.label}"><span class="pn">${p.demo ? 'DEMO' : p.label}</span>${soc ? ` <span class="ps">${soc}</span>` : ''}${I ? ` <span class="pi">${I}</span>` : ''}${st}</button>`;
+    return `<button class="pchip${p === active ? ' on' : ''}${p.connected ? '' : ' off'}" data-pack="${esc(p.id)}" title="${esc(p.label)}"><span class="pn">${p.demo ? 'DEMO' : esc(p.label)}</span>${soc ? ` <span class="ps">${soc}</span>` : ''}${I ? ` <span class="pi">${I}</span>` : ''}${st}</button>`;
   });
   const add = viewMode ? '' : `<button class="pchip add" id="addPack" title="${T.addPackTitle}">${T.addPack}</button>`;
   bar.innerHTML = chips.join('') + add;
@@ -384,7 +384,7 @@ async function syncKeepAwake() {
   } else if (!want && wakeS.videoOn) {
     wakeS.videoOn = false; keepVideo.pause(); log('keep-awake video stopped');
   }
-  // eslint-disable-next-line batray/ui-after-await -- wakeS is the one wake state; this paints it as it stands after the play() attempt
+  // eslint-disable-next-line house/ui-after-await -- wakeS is the one wake state; this paints it as it stands after the play() attempt
   $('wakeVideo').hidden = !wakeS.videoOn;
 }
 function scheduleWakeRetry() {
@@ -647,7 +647,7 @@ async function corruptDb(e, where, rows) {
     } catch (e3) { log(`history: rows for the new ${day}.sqlite failed: ${e3.message}`); }
   }
   try { histS.days = await hist.days(); } catch { histS.days = histS.days.filter((x) => x.day !== day); }
-  // eslint-disable-next-line batray/ui-after-await -- paints histS as it stands; corruptDb is the only writer of today's counters while it runs
+  // eslint-disable-next-line house/ui-after-await -- paints histS as it stands; corruptDb is the only writer of today's counters while it runs
   renderStorage(); if (active) renderTrend(active);
 }
 async function maintainHistory() {
@@ -658,7 +658,7 @@ async function maintainHistory() {
     histS.days = await hist.days();
     if (d.delete.length) { const e2 = await hist.estimate(); histS.usage = e2.usage; histS.quota = e2.quota; }
   } catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); /* else the store logged it */ }
-  // eslint-disable-next-line batray/ui-after-await -- paints histS as it stands after maintenance (single writer)
+  // eslint-disable-next-line house/ui-after-await -- paints histS as it stands after maintenance (single writer)
   renderHistNote();
 }
 /** Start: today's counters come from its database, so ids continue exactly where the last session stopped. */
@@ -738,7 +738,7 @@ async function flushLog() {
   try {
     const r = await hist.logAppend(plan.file, text);
     flushDone(logS, plan.file, r.bytes, text.length);
-    // eslint-disable-next-line batray/ui-after-await -- paints the file list just read; flushLog is single-flight (logFlushing)
+    // eslint-disable-next-line house/ui-after-await -- paints the file list just read; flushLog is single-flight (logFlushing)
     if (plan.roll) { logS.files = await hist.logList(); for (const f of logRetention(logS.files, logS.filesMax)) { await hist.logRemove(f.name); } logS.files = await hist.logList(); renderLogNote(); }
   } catch (e) { logS.pending = []; logS.pendBytes = 0; if (!logS.failedOnce) { logS.failedOnce = true; console.warn('debug log write failed', e); } }
   finally { logFlushing = false; }
@@ -751,7 +751,7 @@ async function initLogStore() {
   try { logS.files = await hist.logList(); } catch { logS.files = []; }
   const sum = logSummary(logS.files);
   log(`debug log: ${logS.on ? 'kept on this device' : 'not kept (opted out)'}, ${sum.files} files, ${Math.round(sum.bytes / 1024)} KB, session ${logS.sid}`);
-  // eslint-disable-next-line batray/ui-after-await -- start-up paint of the list just read
+  // eslint-disable-next-line house/ui-after-await -- start-up paint of the list just read
   renderLogNote(); renderDebugButtons();
 }
 function setLogKeep(on) {
@@ -782,7 +782,7 @@ async function downloadLogs() {
 async function clearLogs() {
   logS.pending = []; logS.pendBytes = 0; logS.file = null; logS.fileBytes = 0; logS.sessionBytes = 0;
   try { const r = await hist.logClear(); logS.files = []; log(`debug log: deleted (${r.removed} files)`); } catch (e) { log(`debug log: delete failed: ${e.message}`); }
-  // eslint-disable-next-line batray/ui-after-await -- paints the emptied list
+  // eslint-disable-next-line house/ui-after-await -- paints the emptied list
   toast(T.logCleared, 5000); renderLogNote();
 }
 // ---- memory line + the last-run record (owner ask 2026-09-23): every 15 s the tab's heap use goes to the card, to
@@ -808,7 +808,7 @@ function renderMemory(m) {
 }
 async function memMeasure() {
   if (!memPrecise() || typeof performance.measureUserAgentSpecificMemory !== 'function') return;
-  // eslint-disable-next-line batray/ui-after-await -- paints the measurement just taken
+  // eslint-disable-next-line house/ui-after-await -- paints the measurement just taken
   try { const r = await performance.measureUserAgentSpecificMemory(); memMeasured = { bytes: r.bytes, breakdown: r.breakdown, at: Date.now() }; renderMemory(memModel()); }
   catch (e) { log(`mem: measure failed: ${e.message}`); }
 }
@@ -906,7 +906,7 @@ async function openBrowse(type) {
   browseS.type = type; await refreshBrowse();
   log(`browse: ${type} (${browseS.items.length} items)`);
   await openSheet('browse');
-  // eslint-disable-next-line batray/ui-after-await -- the sheet has closed; the Storage box shows what is stored now
+  // eslint-disable-next-line house/ui-after-await -- the sheet has closed; the Storage box shows what is stored now
   renderStorage();
 }
 async function browseDelete(id) {
@@ -915,7 +915,7 @@ async function browseDelete(id) {
   else if (t === 'set') { try { localStorage.removeItem(id); } catch { /* */ } }
   else { if (id === logS.file) { logS.pending = []; logS.pendBytes = 0; logS.file = null; logS.fileBytes = 0; } await hist.logRemove(id); }
   log(`browse: deleted ${t} ${id}`);
-  // eslint-disable-next-line batray/ui-after-await -- updateSheet() re-checks that the open sheet is still the browse sheet
+  // eslint-disable-next-line house/ui-after-await -- updateSheet() re-checks that the open sheet is still the browse sheet
   await refreshBrowse(); updateSheet('browse'); renderStorage();
   if (t === 'hist' && active) renderTrend(active);
 }
@@ -970,7 +970,7 @@ async function drawHistory(p, force = false) {
     const q = await hist.query({ p: p.label, from, to, stepMs, days: daysFor(p, from, to) });
     histMem.series = { s: seriesFromBuckets(q.parts), energy: q.energy, from, to }; histMem.drawAt = Date.now();
     if (q.first !== null) { histS.spanFirst = q.first; histS.spanLast = q.last; }
-    // eslint-disable-next-line batray/ui-after-await -- drawHistory is single-flight (histMem.drawing); a range change meanwhile sets histMem.redraw and is drawn right after
+    // eslint-disable-next-line house/ui-after-await -- drawHistory is single-flight (histMem.drawing); a range change meanwhile sets histMem.redraw and is drawn right after
     paintHistory();
   } catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); /* else the store logged it */ }
   finally { histMem.drawing = false; }
@@ -1188,7 +1188,7 @@ async function runAttempt(p) {
   if (p.cs.origin !== 'chooser') p.device = await freshHandle(p.device);
   showAttempt(p);
   if (!p.attemptTicker) p.attemptTicker = setInterval(() => connAct(p, 'connect-tick'), 1000);
-  // eslint-disable-next-line batray/ui-after-await -- the attempt that just started owns the button until it ends (conn-logic runs one at a time)
+  // eslint-disable-next-line house/ui-after-await -- the attempt that just started owns the button until it ends (conn-logic runs one at a time)
   $('connectBig').disabled = true;
   const t0 = Date.now(), attempt = p.cs.attempt;
   try {
@@ -1204,7 +1204,7 @@ async function runAttempt(p) {
       if (p.isActive) refreshCard();
     }
   } finally {
-    // eslint-disable-next-line batray/ui-after-await -- the attempt has ended, whatever happened meanwhile: the button is free again
+    // eslint-disable-next-line house/ui-after-await -- the attempt has ended, whatever happened meanwhile: the button is free again
     $('connectBig').disabled = false;
     if (p.attemptTicker) { clearInterval(p.attemptTicker); p.attemptTicker = null; }
   }
@@ -1217,7 +1217,7 @@ async function runChooser(p, fresh) {
       await Promise.race([gone, new Promise((res) => { setTimeout(res, 2000); })]);
     }
   } catch { /* nothing to drop */ }
-  // eslint-disable-next-line batray/ui-after-await -- the chooser is opening now, whatever the old handle's disconnect did
+  // eslint-disable-next-line house/ui-after-await -- the chooser is opening now, whatever the old handle's disconnect did
   setStatus(() => T.choosing);
   try {
     const device = await p.bms.requestDevice();
@@ -1832,7 +1832,7 @@ async function castToTv(opts = {}) {
     if (d.action === 'tap-again') { endFlow('done', d.why === 'discovery' ? T.tvCastTimeout : T.tvCastTapAgain); return; }
     if (d.action === 'request') {
       phase('picking', T.tvCastPick); const mine = castRequestStarted(castS, Date.now()); renderCastButtons();
-      // eslint-disable-next-line batray/ui-after-await -- castS is the one cast state; the buttons follow it after the request ends, whatever happened meanwhile
+      // eslint-disable-next-line house/ui-after-await -- castS is the one cast state; the buttons follow it after the request ends, whatever happened meanwhile
     try { await ctx.requestSession(); } finally { castRequestEnded(castS, mine); renderCastButtons(); }
     }
     const sess = ctx.getCurrentSession();
@@ -2085,7 +2085,7 @@ async function uploadLog(btn) {
   xhr.open('POST', '/batray/api/log'); xhr.setRequestHeader('Content-Type', 'text/plain; charset=utf-8'); xhr.send(bytes);
   log(`log upload: started, ${bytes.length} B`);
   // the sheet resolves on Cancel (or a tap outside / Back, which cancels too), or when the app closes it on completion
-  // eslint-disable-next-line batray/ui-after-await -- the sheet is this upload's own progress dialog; Cancel on it aborts this xhr
+  // eslint-disable-next-line house/ui-after-await -- the sheet is this upload's own progress dialog; Cancel on it aborts this xhr
   void openSheet('uploading').then((r) => { if (!finished && r !== 'done') { log(`log upload: cancelled by the user (${uploadS.loaded} of ${uploadS.total} B sent)`); xhr.abort(); } });
   const r = await done;
   uploadS.xhr = null;

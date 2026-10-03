@@ -20,7 +20,7 @@
 // `tv !== t`, `uiS.sheet.kind !== ...`), `signal.throwIfAborted()`, or `own()`. A call that is the awaited expression
 // itself (`await openSheet(...)`) is the wait, not a paint after it. Where a paint after an await is correct without a
 // re-check (the function is single-flight by construction, or the paint reports the awaited result itself) the line
-// carries `// eslint-disable-next-line batray/ui-after-await -- <why>`; the lint test fails on a directive without a
+// carries `// eslint-disable-next-line house/ui-after-await -- <why>`; the lint test fails on a directive without a
 // reason or one that is no longer needed.
 // toast() is not in the list: a toast reports the awaited result ("restored", "copied"), it paints no state.
 // $() counts only as a write target (`$('x').hidden = ...`, `$('x').click()`), not as a read in a condition.
@@ -28,8 +28,11 @@
 export const UI_CALLEE = /^(\$|render[A-Z]\w*|refreshCard|paint[A-Z]\w*|scheduleDraw|openSheet|updateSheet|closeSheet|castHint|setStatus|applyLang|showQr|unloadPreview)$/;
 
 export const uiAfterAwait = {
-  meta: { type: 'problem', docs: { description: 'a UI call after an await needs an ownership / state re-check first' }, schema: [] },
+  meta: { type: 'problem', docs: { description: 'a UI call after an await needs an ownership / state re-check first' }, schema: [{ type: 'object', properties: { extra: { type: 'array', items: { type: 'string' } } }, additionalProperties: false }] },
   create(ctx) {
+    // a tool lists its own paint functions in test/rules/<tool>.mjs (uiExtra); the shared names cover BatRay's
+    const extra = (ctx.options[0] && ctx.options[0].extra) || [];
+    const isUi = (name) => UI_CALLEE.test(name) || extra.includes(name);
     const stack = [];
     const ifSeq = new WeakMap();                                          // IfStatement -> the await count when its test ran
     const enter = (node) => stack.push(node.async ? { dirty: false, seq: 0 } : null);
@@ -53,7 +56,7 @@ export const uiAfterAwait = {
       CallExpression(node) {
         const t = top(); if (!t || !t.dirty) return;
         const c = node.callee; const name = c.type === 'Identifier' ? c.name : null;
-        if (!name || !UI_CALLEE.test(name)) return;
+        if (!name || !isUi(name)) return;
         if (node.parent.type === 'AwaitExpression') return;                 // the wait itself, not a paint after it
         if (name === '$') {
           const m = node.parent; if (m.type !== 'MemberExpression' || m.object !== node) return;

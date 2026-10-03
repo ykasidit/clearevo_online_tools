@@ -1,6 +1,6 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "lib": ["es2022", "dom", "dom.iterable"], "types": [] },
-  "include": ["test/*.test.js", "test/browser/*.mjs", "test/lint/*.mjs", "test/lint/fixtures/*.js", "test/types/*.d.ts", "public/batray/*.js"],
-  "exclude": ["public/batray/mp4-muxer.js", "public/batray/uplot.js", "public/batray/sqlite3.js", "public/batray/qrcode.js", "public/batray/sw.js"]
+  "include": ["test/*.test.js", "test/browser/*.mjs", "test/lint/*.mjs", "test/lint/fixtures/*.js", "test/common/*.js", "test/common/*.mjs", "test/rules/*.mjs", "test/types/*.d.ts", "public/batray/*.js", "public/dicom/*.js"],
+  "exclude": ["public/batray/mp4-muxer.js", "public/batray/uplot.js", "public/batray/sqlite3.js", "public/batray/qrcode.js", "public/batray/sw.js", "public/dicom/dicomParser.min.js", "public/dicom/lossless-min.js", "public/dicom/openjpegwasm_decode.js"]
 }
