@@ -2,66 +2,27 @@
 
 Free, privacy-respecting tools that run **100% in your browser**. No upload is the
 default: your files and readings stay on your device. The few features that need a
-server say so clearly where you turn them on (BatRay's Share live and Show on TV,
-its Upload debug log), and each app's status bar carries a privacy note with a
-"verify" link so you can check for yourself.
+server say so clearly where you turn them on, and each app's status bar carries a
+privacy note with a "verify" link so you can check for yourself.
 Live at **https://www.clearevo.com/tools/**
 
 Copyright (C) 2026 Kasidit Yusuf. Free software under the **GNU GPL v2** (see [`LICENSE`](LICENSE)).
-Every first-party source file (each `index.html` head comment and every `.js` we wrote) carries the GPL notice, so the licence ships with the code to every browser. Vendored third-party files (xp.css, dicomParser, OpenJPEG, ffmpeg.wasm, gdal3, qrcode) keep their own licences and headers.
+Every first-party source file carries the GPL notice, so the licence ships with the
+code to every browser. Vendored third-party files keep their own licences and headers.
 
-## Structure - one app per subdirectory
+## Where things are
 
-Each tool is a self-contained app under `public/<app>/`, with its own `index.html`
-(inline UI), a pure, tested `logic.js`, a `manifest.json` + icons (PWA-pinnable), and
-a per-app `README.md` carrying the copyright/licence notice:
-
-| App | Path | What it is |
-|-----|------|-----------|
-| 🩻 ClearEvo.com DICOM Viewer | [`public/dicom`](public/dicom) | Open/stream a DICOM CT/MRI scan CD in the browser |
-| 🔋 BatRay by ClearEvo.com | [`public/batray`](public/batray) | JK BMS battery monitor over Web Bluetooth, share live, alerts |
-| 🔢 ClearEvo.com Hex Editor | [`public/hex`](public/hex) | Hex view/edit + hex/text/number/bit search |
-| 🌍 ClearEvo.com GIS Converter | [`public/geo`](public/geo) | GDAL `ogr2ogr` (WebAssembly) format converter |
-| 🔳 ClearEvo.com QR Code Generator | [`public/qr`](public/qr) | Static QR that never expires, 12 languages |
-| 🎵 ClearEvo.com Audio Converter | [`public/audio`](public/audio) | ffmpeg.wasm audio extract/convert |
-| 🩺 ClearEvo.com Doctor | [`public/doctor`](public/doctor) | Emacs `M-x doctor` (ELIZA) |
-| 🧮 ClearEvo.com Calc | [`public/calc`](public/calc) | Emacs `M-x calc` RPN calculator |
-| 🔍 ClearEvo.com iSearch | [`public/isearch`](public/isearch) | Emacs incremental search |
-
-Sibling repos (their own build pipelines, deployed alongside these under the same
-site) hold the remaining ClearEvo online tools: [`web_gnss`](https://github.com/ykasidit/web_gnss)
-→ /gnss/, [`hyperterminal`](https://github.com/ykasidit/hyperterminal) → /hyperterminal/,
-[`web_at`](https://github.com/ykasidit/web_at) → /at/.
+One app per directory under `public/`, each with its own `README.md`: what it does,
+how it is built and tested, its privacy notes, and the coding rules it follows. The
+author adds those rules gradually, one per lesson learned, each with a test that fails
+the build; the newest app follows all of them, older apps only partly or not yet.
 
 ## Build / test / deploy
 
-- `./build.sh` - content-hash build of every `public/<app>/` into `dist/<app>/`.
-- `./test.sh` - `node --test` over `test/` (pure-logic + streaming integration tests).
-- `./test/browser/run.sh` - headless-Chrome CDP harness driving the REAL pages with
-  real input: per-tool load smoke, and a 24-scenario DICOM viewer clinician suite
-  (measure landing under zoom/pan/rotate/flip/hi-DPI, cine, capture-with-overlay,
-  screenshot-verified). `BASE=https://www.clearevo.com ./test/browser/run.sh` runs
-  it against the deployed site. Needs Chrome + node >= 22 + python3/pydicom/numpy.
-  `clinician_real.mjs` runs the same scenarios on the real SCDS demo CD zip
-  (fetched same-origin from the live R2 demo).
-- The whole site (these apps + the sibling tools + the Jekyll blog) is assembled and
-  deployed to Cloudflare by `../ykasidit.github.io/deploy.sh`.
-
-## Design standard (every app)
-
-Windows XP theme (xp.css window + title bar), A-/A+ font-size buttons top-right,
-PWA manifest + icons, an emoji favicon, and a status bar with the privacy note +
-"verify" link. No upload by default; a feature that needs one is opt-in and says
-what leaves the device, where it goes and for how long. See the app READMEs for
-details.
-
-## House rules
-
-The author adds coding rules gradually, one per lesson learned, and each
-rule ships with a test that fails the build. The newest app follows all of
-them; older apps were written before them and reflect them only partly or
-not yet. The rules are written up where they apply: each app's own README
-under `public/<app>/README.md`.
+- `./build.sh` - content-hash build of every `public/<app>/` into `dist/<app>/` (runs `./test.sh` first).
+- `./test.sh` - `node --test` over `test/`.
+- `./test/browser/run.sh` - headless-Chrome suites driving the real pages.
+- The whole site is assembled and deployed to Cloudflare by `../ykasidit.github.io/deploy.sh`.
 
 ## Copyright & license
 
@@ -72,6 +33,3 @@ terms of the **GNU General Public License, version 2**, as published by the Free
 Software Foundation - see [`LICENSE`](LICENSE). It is distributed in the hope that it
 will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-
-The MRI/CT CD Viewer's demo scans are the author's own CT/MRI, anonymized, and likewise
-released under GPL v2 (see [`public/dicom/README.md`](public/dicom)).
