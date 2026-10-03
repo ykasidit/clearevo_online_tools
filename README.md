@@ -1,6 +1,10 @@
 # ClearEvo online tools
 
-Free, privacy-respecting tools that run **100% in your browser** - nothing is uploaded.
+Free, privacy-respecting tools that run **100% in your browser**. No upload is the
+default: your files and readings stay on your device. The few features that need a
+server say so clearly where you turn them on (BatRay's Share live and Show on TV,
+its Upload debug log), and each app's status bar carries a privacy note with a
+"verify" link so you can check for yourself.
 Live at **https://www.clearevo.com/tools/**
 
 Copyright (C) 2026 Kasidit Yusuf. Free software under the **GNU GPL v2** (see [`LICENSE`](LICENSE)).
@@ -47,17 +51,17 @@ site) hold the remaining ClearEvo online tools: [`web_gnss`](https://github.com/
 
 Windows XP theme (xp.css window + title bar), A-/A+ font-size buttons top-right,
 PWA manifest + icons, an emoji favicon, and a status bar with the privacy note +
-"verify" link. See the app READMEs for details.
+"verify" link. No upload by default; a feature that needs one is opt-in and says
+what leaves the device, where it goes and for how long. See the app READMEs for
+details.
 
 ## House rules
 
 The author adds coding rules gradually, one per lesson learned, and each
 rule ships with a test that fails the build. The newest app follows all of
 them; older apps were written before them and reflect them only partly or
-not yet. The rules themselves (one loop per lifecycle, `await` everywhere,
-pure decisions replayed from real logs, the lint and type gates) are written
-up where they apply: see each app's own README under `public/<app>/README.md`,
-starting with [BatRay's](public/batray/README.md#house-rules-and-the-tests-that-enforce-them).
+not yet. The rules are written up where they apply: each app's own README
+under `public/<app>/README.md`.
 
 ## Copyright & license
 
