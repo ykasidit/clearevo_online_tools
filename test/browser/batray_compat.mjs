@@ -123,6 +123,16 @@ for (const [w, h] of [[500, 900], [1440, 900]]) {
   const box = await evalJs(`(() => { const b = (id) => document.getElementById(id).getBBox(); const r = b('updR'), l = b('updL'), u = b('updated'), hit = (a, c) => a.right > c.left && a.left < c.right && a.bottom > c.top && a.top < c.bottom, parts = [...document.querySelectorAll('#gBatt > rect')].map((e) => e.getBoundingClientRect()), lines = ['updR', 'updL'].map((i) => document.getElementById(i).getBoundingClientRect()); return { r: [r.x, r.y, r.width], l: [l.x, l.y, l.width], u: [u.x, u.y], overlapBatt: lines.some((a) => parts.some((c) => hit(a, c))) }; })()`);
   check(`${w}px: the two lines stack under "updated" and stay clear of the battery`, box.r[1] > box.u[1] && box.l[1] > box.r[1] && !box.overlapBatt, box);
 }
+// a phone's monospace font can be wider (owner's screenshot 2026-10-05: the reader line ran into the battery's side):
+// force one and the lines must be squeezed to end before the battery body
+await send('Emulation.setDeviceMetricsOverride', { width: 500, height: 900, deviceScaleFactor: 1, mobile: true }); await sleep(700);
+await evalJs(`(() => { const st = document.createElement('style'); st.id = 'wide'; st.textContent = '#flow.portrait #updR, #flow.portrait #updL { font-size: 12px !important; }'; document.head.appendChild(st); document.querySelector('#packBar [data-pack]:not([data-pack="r-far"])').click(); return 1; })()`);
+await sleep(1500);
+const wide = await evalJs(`(() => { const body = document.querySelectorAll('#gBatt > rect')[1].getBoundingClientRect(); const r = document.getElementById('updR'); const rr = r.getBoundingClientRect(); return { right: rr.right, battLeft: body.left, x: +r.getAttribute('x'), tl: r.getAttribute('textLength'), text: r.textContent }; })()`);
+check('a wider phone font: the reader line is squeezed (textLength) and ends before the battery, starting at x 2', wide.tl !== null && wide.right <= wide.battLeft && wide.x === 2, wide);
+await evalJs(`document.getElementById('wide').remove(); 1`); await sleep(1500);
+const norm = await evalJs(`document.getElementById('updR').getAttribute('textLength')`);
+check('...and with the room it needs, no squeeze', norm === null, norm);
 await send('Emulation.clearDeviceMetricsOverride');
 
 const thrown = events.filter((e) => e.method === 'Runtime.exceptionThrown').map((e) => e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text);

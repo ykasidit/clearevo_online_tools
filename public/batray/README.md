@@ -135,6 +135,14 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.70 (2026-10-05): the time lines under "updated" stay clear of the battery on phones
+
+The owner's phone screenshot showed `reader 16:20:53.596` running into the battery's side: Android's monospace font
+is wider than the one the layout was checked with, and the battery body starts at x 110 (not 120). On phones the
+corner text now starts at x 2, and `fitCorner()` squeezes a stamp line longer than `FLOW.portrait.updMax` (103
+units, ending 3 units before the stroke) with `textLength`. The browser test forces a 12 px font and checks the
+line ends before the battery body. The how-to (EN/TH) now says to turn off Chrome's auto-update on the reader phone.
+
 ## 0.9.69 (2026-10-05): the browser gate is a warning; a quicker re-ask when the BMS ignores the first one
 
 Owner, after the Sony ran fine on Chrome 96 following a factory reset: the gate warns instead of refusing. The

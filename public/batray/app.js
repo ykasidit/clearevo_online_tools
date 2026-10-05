@@ -37,7 +37,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.69';
+export const APP_VERSION = '0.9.70';
 
 /** @returns {any} */
 const $ = (id) => document.getElementById(id);
@@ -433,13 +433,14 @@ const FLOW = {
   // battery group: nub 0..12, body 10..160 (120 wide), centre y 85 in group coordinates
   landscape: { vb: '0 0 640 200', batt: 'translate(36,10)', sys: 'translate(448,45)', line: 'M166 95 H444',
     out: 'M262 81 L276 95 L262 109 M312 81 L326 95 L312 109 M362 81 L376 95 L362 109', in: 'M278 81 L264 95 L278 109 M328 81 L314 95 L328 109 M378 81 L364 95 L378 109',
-    power: [320, 72], amps: [320, 132], eta: [320, 168], upd: [170, 14] },   // 'updated' clear of the battery nub
+    power: [320, 72], amps: [320, 132], eta: [320, 168], upd: [170, 14], updMax: 260 },   // 'updated' clear of the battery nub
   portrait: { vb: '0 0 340 508', batt: 'translate(110,14)', sys: 'translate(90,376)', line: 'M170 206 V236 M170 330 V370',   // gap behind the text block
     // two chevrons, above and below the text block, so no arrow crosses a number
     out: 'M156 214 L170 228 L184 214 M156 343 L170 357 L184 343', in: 'M156 228 L170 214 L184 228 M156 357 L170 343 L184 357',
-    power: [170, 262], amps: [170, 290], eta: [170, 316], upd: [6, 14] },
+    power: [170, 262], amps: [170, 290], eta: [170, 316], upd: [2, 14], updMax: 103 },   // the battery body starts at x 110 (stroke edge 108): the stamps end at 105
 };
 let flowMode = '';
+let updMax = 260;                                                   // room for the corner text, per layout (FLOW.updMax)
 function layoutFlow() {
   const card = $('flowCard'), full = card.classList.contains('full') || document.fullscreenElement === card;
   const w = full ? window.innerWidth : card.clientWidth, h = full ? window.innerHeight : 0;
@@ -453,6 +454,7 @@ function layoutFlow() {
   $('fArrOut').firstElementChild.setAttribute('d', L.out); $('fArrIn').firstElementChild.setAttribute('d', L.in);
   const step = mode === 'portrait' ? 14 : 12;                       // the stamp lines sit under 'updated', one per line, smaller
   for (const [id, xy] of [['fPower', L.power], ['fAmps', L.amps], ['fEta', L.eta], ['updated', L.upd], ['updR', [L.upd[0], L.upd[1] + step]], ['updL', [L.upd[0], L.upd[1] + 2 * step]]]) { $(id).setAttribute('x', xy[0]); $(id).setAttribute('y', xy[1]); }
+  updMax = L.updMax; for (const id of ['updR', 'updL']) fitCorner($(id), true);
 }
 layoutFlow();
 window.addEventListener('resize', layoutFlow);
@@ -1141,6 +1143,16 @@ document.addEventListener('visibilitychange', () => {
   if (publisher) publisher.nudge();
 });
 
+// The stamp lines under "updated" must end before the battery body: a phone's monospace font can be wider than the one the layout was
+// measured with (owner's screenshot 2026-10-05: the stamp ran into the battery's side), so a line longer than the room
+// is squeezed to fit (textLength), never drawn over the picture. 'updated' itself sits above the body.
+function fitCorner(el, force = false) {
+  const text = el.textContent;
+  if (!force && el.dataset.fit === text) return;
+  el.dataset.fit = text;
+  el.removeAttribute('textLength'); el.removeAttribute('lengthAdjust');
+  if (text && el.getComputedTextLength() > updMax) { el.setAttribute('textLength', String(updMax)); el.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
+}
 function tickAge() {
   if ($('trendCard').hidden) renderTrendWait(active);       // the bar moves every second, not only per reading
   const a = ageLabel(active && active.lastFrameAt ? Math.round((Date.now() - active.lastFrameAt) / 1000) : null, T);
@@ -1148,6 +1160,7 @@ function tickAge() {
   els.updated.setAttribute('fill', a.stale ? '#ffd24a' : '#6f8aa6');
   const lines = active ? stampLines({ readerAt: active.readerAt, localAt: active.localAt, viewer: !!active.remote }, T) : [];
   $('updR').textContent = lines[0] || ''; $('updL').textContent = lines[1] || '';
+  fitCorner($('updR')); fitCorner($('updL'));
 }
 setInterval(tickAge, 1000);
 
