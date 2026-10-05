@@ -135,6 +135,25 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.68 (2026-10-05): a browser gate on Connect and on opening a link; the reading's time under "updated"
+
+The reader of the owner's 2026-10-05 log was a Sony on Chrome 96: no synchronous OPFS access handles there, so no
+stored history or log, and the lock-out message blamed a worker. Now `compat-logic.js` (pure) decides per role:
+the reader needs a Chromium browser with Web Bluetooth at 108+ (the vendored sqlite3 calls `sah.getSize()`
+synchronously; 102-107 returned promises), the viewer Chromium 108+, Firefox 114+ (module workers) or Safari /
+iOS 16.4+ (CompressionStream), and both need the APIs probed on the page (secure context, WebSocket, SubtleCrypto,
+Worker, OPFS, compression streams). The Connect tap (`startConnect`, `startKnown`) and the live view's start
+(`startView`) ask `compatGate(role)`; a refusal logs `compat: <role> <browser> <version> (<engine>) on <os>:
+BLOCKED - <why>` and opens the 'compat' sheet: why, the steps for the detected platform (Android when the user
+agent says nothing), the browser / OS / minimum / missing rows, and a button to the store or download page
+(`updateHelp`). The Connect buttons stay enabled without Web Bluetooth so the tap can say what to use instead.
+The verdict is logged at every start too.
+
+Under "updated" in the picture's corner, `stampLines()` (view-logic.js) gives the reading's time as
+`reader HH:MM:SS.mmm` and, on a viewer's pack, the arrival time as `local  HH:MM:SS.mmm` (9 px, one per line).
+Tests: `batray_compat.test.js`, browser `batray_compat.mjs` (Chrome 96, Firefox reader, old and current Firefox
+viewer, the store links, the stamps at 500 and 1440 px clear of the battery).
+
 ## 0.9.66 (2026-10-05): default lines battery % and current; a 7-day chart no longer re-queried every 10 s
 
 The owner's 7-day window lagged. Two causes: every received history file re-queried and redrew the chart (a

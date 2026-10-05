@@ -15,7 +15,8 @@
 import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castSettle, castProgress, castButtons, castStateUi, castTapAllowed, castTvUpdate, CAST_FLOW_TIMEOUT_MS, CAST_TV_WAIT_MS } from './cast-logic.js';
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
-import { trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
+import { stampLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
+import { detectBrowser, compatCheck, updateHelp, compatLogLine } from './compat-logic.js';
 import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
@@ -36,7 +37,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.67';
+export const APP_VERSION = '0.9.68';
 
 /** @returns {any} */
 const $ = (id) => document.getElementById(id);
@@ -213,6 +214,7 @@ class Pack {
    *  message, so an hour-old last picture says "1 h ago", never "just now" (owner, 2026-10-01) */
   take(d, rowT = null, remoteRow = null, at = Date.now()) {
     this.data = d; this.lastFrameAt = at;
+    this.readerAt = rowT || at; this.localAt = Date.now();         // the reader's clock for the reading, this device's clock on arrival
     this.iEma.push(d.current, this.lastFrameAt);
     return recordRow(this, d, rowT || this.lastFrameAt, remoteRow);   // a viewer gets the reader's stored row itself (remoteRow), so its file is a byte copy
   }
@@ -449,7 +451,8 @@ function layoutFlow() {
   $('gBatt').setAttribute('transform', L.batt); $('gSys').setAttribute('transform', L.sys);
   $('fLine').setAttribute('d', L.line); $('fDash').setAttribute('d', L.line);
   $('fArrOut').firstElementChild.setAttribute('d', L.out); $('fArrIn').firstElementChild.setAttribute('d', L.in);
-  for (const [id, xy] of [['fPower', L.power], ['fAmps', L.amps], ['fEta', L.eta], ['updated', L.upd]]) { $(id).setAttribute('x', xy[0]); $(id).setAttribute('y', xy[1]); }
+  const step = mode === 'portrait' ? 14 : 12;                       // the stamp lines sit under 'updated', one per line, smaller
+  for (const [id, xy] of [['fPower', L.power], ['fAmps', L.amps], ['fEta', L.eta], ['updated', L.upd], ['updR', [L.upd[0], L.upd[1] + step]], ['updL', [L.upd[0], L.upd[1] + 2 * step]]]) { $(id).setAttribute('x', xy[0]); $(id).setAttribute('y', xy[1]); }
 }
 layoutFlow();
 window.addEventListener('resize', layoutFlow);
@@ -1137,6 +1140,8 @@ function tickAge() {
   const a = ageLabel(active && active.lastFrameAt ? Math.round((Date.now() - active.lastFrameAt) / 1000) : null, T);
   els.updated.textContent = a.text;
   els.updated.setAttribute('fill', a.stale ? '#ffd24a' : '#6f8aa6');
+  const lines = active ? stampLines({ readerAt: active.readerAt, localAt: active.localAt, viewer: !!active.remote }, T) : [];
+  $('updR').textContent = lines[0] || ''; $('updL').textContent = lines[1] || '';
 }
 setInterval(tickAge, 1000);
 
@@ -1268,8 +1273,34 @@ if (navigator.bluetooth && navigator.bluetooth.addEventListener) {
     else for (const p of packs.values()) if (!p.remote && !p.demo) connAct(p, 'adapter-available');
   });
 }
+// ---- the browser gate (owner ask 2026-10-05, after a reader on Chrome 96 ran with no stored history or log and died
+// unseen): at a connect tap (reader) and before the live view opens (viewer), a browser that cannot do the job is
+// told why and where to update for its platform. compat-logic.js decides; this probes the page and shows the sheet. ----
+function compatFeatures() {
+  return {
+    secure: !!window.isSecureContext, bluetooth: !!(navigator.bluetooth && typeof navigator.bluetooth.requestDevice === 'function'),
+    websocket: typeof WebSocket === 'function', subtle: !!(window.crypto && crypto.subtle), worker: typeof Worker === 'function',
+    opfs: !!(navigator.storage && typeof navigator.storage.getDirectory === 'function'),
+    compression: typeof CompressionStream === 'function' && typeof DecompressionStream === 'function',
+  };
+}
+const browserInfo = detectBrowser({ ua: navigator.userAgent, uaPlatform: navigator.userAgentData ? navigator.userAgentData.platform : '', brave: !!navigator.brave, touchPoints: navigator.maxTouchPoints || 0 });
+let compatS = null;                                                  // the failed check the 'compat' sheet explains
+function compatGate(role) {
+  const check = compatCheck(role, browserInfo, compatFeatures());
+  if (check.ok) return true;
+  compatS = { role, browser: browserInfo, check, help: updateHelp(browserInfo, check) };
+  log(compatLogLine(role, browserInfo, check));
+  void openCompat();
+  return false;
+}
+async function openCompat() {
+  const a = await openSheet('compat');
+  if (a === 'update' && compatS && compatS.help.url) { log(`compat: opening ${compatS.help.url}`); window.open(compatS.help.url, '_blank', 'noopener'); }
+}
 // Connect a BMS: into `p` (reconnect of a known pack) or a new pack (+ Add BMS).
 function startConnect(p) {
+  if (!compatGate('reader')) return;
   const fresh = !p;
   if (fresh) p = new Pack(`bt-${++packSeq}`, `BMS ${packs.size + 1 - (packs.size && [...packs.values()].some((x) => x.demo) ? 1 : 0)}`);
   connAct(p, 'tap-connect', { fresh });
@@ -1297,6 +1328,7 @@ async function renderKnown() {
   return k;
 }
 async function startKnown() {
+  if (!compatGate('reader')) return;
   const b = $('connectKnown'); if (!b.dataset.id || !navigator.bluetooth) return;
   let dev = null; try { dev = (await navigator.bluetooth.getDevices()).find((d) => d.id === b.dataset.id) || null; } catch { /* below */ }
   if (!dev) { log('known device: not in getDevices any more, opening the chooser'); b.hidden = true; startConnect(null); return; }
@@ -1581,6 +1613,7 @@ function startView() {
   $('titleText').textContent = `BatRay by ClearEvo.com v${APP_VERSION} · ${T.viewTitle}`;
   for (const el of [els.disconnect, $('autoRe').parentElement, els.share, $('tsep')]) el.hidden = true;
   els.empty.hidden = true;
+  if (!compatGate('viewer')) { setStatus(() => T.compatViewBlocked, 'bad'); return; }
   setStatus(() => T.viewWaiting);
   viewer = new Viewer({
     room: viewMode.room, keyB64: viewMode.key, log,
@@ -1970,7 +2003,7 @@ if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
   shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
-  uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake, rxHistFile,
+  uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake, rxHistFile, compatState: () => compatS, browserInfo: () => browserInfo, packData: () => (active ? active.data : null),
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
 
@@ -1980,7 +2013,7 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 let sheetResolve = null, suppressPop = 0;
 function sheetCtx() {
   const p = active;
-  return { d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, cast: castSheetCtx(), browse: browseS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
+  return { compat: compatS, d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, cast: castSheetCtx(), browse: browseS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
 function openSheet(kind) {
@@ -2156,10 +2189,9 @@ setInterval(() => {
 }, 60000);
 $('langBtn').addEventListener('click', async () => { const code = await openSheet('lang'); if (code && I18N[code]) { try { localStorage.setItem('batray_lang', code); } catch {} log(`language: ${code}`); applyLang(code); } });
 
-if (!navigator.bluetooth && !viewMode) {
-  setStatus(() => T.noWebBt, 'bad');
-  for (const id of ['connectBig', 'connectAgain']) $(id).disabled = true;
-}
+// The Connect buttons stay enabled without Web Bluetooth: a tap opens the compat sheet saying why and what to use
+// (owner, 2026-10-05) - a disabled button explained nothing.
+if (!navigator.bluetooth && !viewMode) setStatus(() => T.noWebBt, 'bad');
 applyLang(detectLang());
 // Alerts (thresholds -> Chrome notifications; ntfy and the relay watchdog stay off behind NTFY_ENABLED).
 // Started after the language is set so the first render has strings.
@@ -2172,5 +2204,6 @@ alerts = initAlerts({
   },
 });
 void initHistory().then(initLogStore);
+log(compatLogLine(viewMode ? 'viewer' : 'reader', browserInfo, compatCheck(viewMode ? 'viewer' : 'reader', browserInfo, compatFeatures())));
 if (viewMode) startView();
 else if (new URLSearchParams(location.search).has('demo')) runDemo();

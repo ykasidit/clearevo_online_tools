@@ -108,6 +108,19 @@ export function cellsStat(d, T) {
 
 /** "updated just now" / "N s ago"; amber once a reading is older than STALE_AGE_S. */
 export const STALE_AGE_S = 15;
+/** "14:32:13.096": local wall-clock time, milliseconds zero-filled to three digits (owner ask 2026-10-05). */
+export function clockMs(ms) {
+  const d = new Date(ms); const p = (n, w = 2) => String(n).padStart(w, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+/** The small lines under "updated": when the reader took the reading (its own clock) and, on a viewer, when it arrived
+ *  here (this device's clock) - one per line. On the reader both are the same moment, so it shows one line. */
+export function stampLines({ readerAt, localAt, viewer }, T) {
+  if (!readerAt) return [];
+  const out = [T.stampReader(clockMs(readerAt))];
+  if (viewer && localAt) out.push(T.stampLocal(clockMs(localAt)));
+  return out;
+}
 export function ageLabel(ageS, T) {
   if (ageS === null || ageS === undefined) return { text: T.noData, stale: false };
   return { text: ageS < 2 ? T.justNow : T.agoS(ageS), stale: ageS > STALE_AGE_S };

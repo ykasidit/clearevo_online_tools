@@ -8,6 +8,7 @@
 #   batray_tv.mjs   - Show on TV: real encode, stubbed relay, ffmpeg decodes the stream
 #   batray_ui.mjs   - UI_GUIDELINES.md on the real page: 48 px targets, sheets, Back, tabs, low power
 #   batray_log.mjs  - the debug log header, error capture and Upload log
+#   batray_compat.mjs - the browser gate (old Chrome / Firefox reader / old Firefox viewer) and the time lines under "updated"
 #   clinician.mjs - 24-scenario DICOM viewer suite (measure landing under
 #                   zoom/pan/rotate/flip/hi-DPI, wheel/keys/slider, cine,
 #                   multi-frame US, tags, capture-with-overlay)
@@ -44,6 +45,7 @@ node batray_freeze.mjs || rc=1
 node batray_history.mjs || rc=1
 node batray_tv.mjs || rc=1
 node batray_ui.mjs || rc=1
+node batray_compat.mjs || rc=1
 node batray_log.mjs || rc=1      # last: it throws deliberate errors that Chrome replays to the next Runtime.enable
 node probe.mjs
 node repro.mjs

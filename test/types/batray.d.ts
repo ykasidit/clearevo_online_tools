@@ -5,6 +5,7 @@ interface Navigator {
   bluetooth: any;
   connection: any;
   userAgentData: any;
+  brave: any;
   deviceMemory: number;
   getBattery(): Promise<any>;
 }
