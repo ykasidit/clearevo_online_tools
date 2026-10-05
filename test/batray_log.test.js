@@ -57,7 +57,7 @@ test('the last-run record is the tombstone: a start after an unclean end says so
   assert.equal(LASTRUN_KEY, 'batray_lastrun');
   const t0 = Date.UTC(2026, 8, 23, 1, 0, 0);
   const rec = lastRunRecord({ sid: 'abc123', now: t0, mem: { used: 50e6, limit: 2000e6, total: 60e6 }, rows: 28800, state: 'connected, sharing', file: 'log-x-abc123.txt' });
-  assert.deepEqual(rec, { sid: 'abc123', at: t0, mem: { used: 50e6, limit: 2000e6 }, rows: 28800, state: 'connected, sharing', file: 'log-x-abc123.txt', clean: false });
+  assert.deepEqual(rec, { sid: 'abc123', at: t0, mem: { used: 50e6, limit: 2000e6 }, rows: 28800, state: 'connected, sharing', file: 'log-x-abc123.txt', clean: false, browser: '' });
   const r = lastRunReport(rec, t0 + 7 * 60000, { wasDiscarded: true, navType: 'reload' });
   assert.equal(r.length, 3);
   assert.match(r[0], /^previous session abc123 ENDED WITHOUT A CLEAN EXIT .* last seen 2026-09-23T01:00:00.000Z \(7 min before this start\)$/);
@@ -66,4 +66,11 @@ test('the last-run record is the tombstone: a start after an unclean end says so
   const clean = lastRunReport(lastRunRecord({ sid: 'zzz', now: t0, mem: null, rows: 0, state: 'idle', file: null, clean: true }), t0 + 60000, {});
   assert.deepEqual(clean, ['previous session zzz ended cleanly at 2026-09-23T01:00:00.000Z (1 min before this start)', '  this start: navigate']);
   assert.equal(lastRunReport(null, t0), null); assert.equal(lastRunReport('junk', t0), null);
+  // the reader of 2026-10-05: Chrome 96 on a freshly reset phone, the tab gone with the screen off - an update would say so
+  const upd = lastRunReport(lastRunRecord({ sid: 's1', now: t0, mem: null, rows: 0, state: 'reader', file: null, browser: 'chrome 96' }), t0 + 4 * 60000, { browser: 'chrome 141' });
+  assert.ok(upd.some((l) => l === '  the browser changed since: chrome 96 -> chrome 141 - an update closes the browser and every tab in it, the likely end of that session'), upd.join('\n'));
+  const same = lastRunReport(lastRunRecord({ sid: 's1', now: t0, mem: null, rows: 0, state: 'reader', file: null, browser: 'chrome 96' }), t0 + 60000, { browser: 'chrome 96' });
+  assert.ok(!same.some((l) => /browser changed/.test(l)));
+  const old = lastRunReport({ sid: 's0', at: t0, clean: true }, t0 + 60000, { browser: 'chrome 141' });
+  assert.ok(!old.some((l) => /browser changed/.test(l)), 'a record from before 0.9.69 has no browser: nothing to compare');
 });

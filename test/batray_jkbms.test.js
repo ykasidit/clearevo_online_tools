@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import {
   buildCommand, decodeCellInfo, decodeDeviceInfo, decodeSettings, errorLabels, feedFrames, swMajor, JkBms,
   isStale, STALE_MS, queuedAfterGap, linkGone, nudgeDecision, NUDGE_MS, HANDSHAKE_WAIT_MS,
-  startupAskDecision } from '../public/batray/jkbms.js';
+  startupAskDecision, STARTUP_QUICK_MS, STARTUP_QUICK_ASKS } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
@@ -465,12 +465,26 @@ test('startupAskDecision: replay of the m-00 log 2026-09-25 01:19 - AT chatter m
   let lastRx = asked, nudged = asked; const sent = [];
   for (let now = t(49.7); now <= t(61); now += 100) {
     while (rx.length && rx[0] <= now) lastRx = rx.shift();
-    if (startupAskDecision(null, nudged, now)) { sent.push(Math.round((now - asked) / 100) / 10); nudged = now; }
+    if (startupAskDecision(null, nudged, now, NUDGE_MS, { asks: sent.length })) { sent.push(Math.round((now - asked) / 100) / 10); nudged = now; }
     assert.equal(nudgeDecision(lastRx, t(49.533), nudged, now) && now < t(56.4), false, 'the silence nudge (what 0.9.41 did) would have waited for the chatter to end: ' + now);
   }
-  assert.deepEqual(sent, [3, 6, 9], 'three more asks, 3 s apart from the ask, chatter or not');
+  assert.deepEqual(sent, [1, 2, 3, 6, 9], 'never served (no settings frame): three quick asks 1 s apart, then every 3 s, chatter or not');
   assert.equal(startupAskDecision(t(56), t(55), t(58.5)), false, 'once cell info flows the startup asks stop');
   assert.equal(startupAskDecision(null, null, t(58.5)), false, 'nothing asked yet: nothing to repeat');
+});
+
+test('startupAskDecision: replay of the n11 log 2026-10-05 07:36 - an unserved ask is repeated after 1 s, a served one is not', () => {
+  const t = (s) => Date.parse('2026-10-05T07:36:00Z') + s * 1000;
+  const asked = t(52.714);                                                  // handshake: device info in 159 ms, asking (0x96); only the echo came
+  assert.equal(startupAskDecision(null, asked, t(53.5), NUDGE_MS, { asks: 0 }), false, 'not before 1 s');
+  assert.equal(startupAskDecision(null, asked, t(53.714), NUDGE_MS, { asks: 0 }), true, '1 s after an unserved ask: ask again (0.9.68 waited 3.8 s; first reading at +4.8 s)');
+  // the ask that worked: settings 0x01 at +0.18 s, first cell info at +0.75 s - no second ask in between (a beep)
+  const ask2 = t(56.551), settingsAt = t(56.735);
+  assert.equal(startupAskDecision(null, ask2, t(57.3), NUDGE_MS, { settingsAt, asks: 1 }), false, 'served: the stream is starting, wait the full 3 s');
+  assert.equal(startupAskDecision(null, ask2, t(59.6), NUDGE_MS, { settingsAt, asks: 1 }), true, 'served but no cell info for 3 s: ask again');
+  assert.equal(startupAskDecision(null, ask2, t(57.6), NUDGE_MS, { settingsAt: t(50), asks: 1 }), true, 'a settings frame from before the ask does not count');
+  assert.equal(startupAskDecision(null, asked, t(54), NUDGE_MS, { asks: STARTUP_QUICK_ASKS }), false, 'after the quick asks: every 3 s');
+  assert.equal(STARTUP_QUICK_MS, 1000);
 });
 
 test('handshake: 0x97 first, 0x96 only after the device-info answer (JK app order)', async () => {

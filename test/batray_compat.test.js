@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectBrowser, detectPlatform, compatCheck, updateHelp, compatLogLine, fmtVersion, MIN, NEED } from '../public/batray/compat-logic.js';
+import { detectBrowser, detectPlatform, compatCheck, updateHelp, compatLogLine, fmtVersion, MIN, NEED, canTryAnyway } from '../public/batray/compat-logic.js';
 import { sheetModel } from '../public/batray/ui-logic.js';
 import { clockMs, stampLines } from '../public/batray/view-logic.js';
 import { I18N } from '../public/batray/i18n.js';
@@ -105,16 +105,22 @@ test('the compat sheet says why, what to do and offers the store or download pag
   const check = compatCheck('reader', sony, ALL);
   for (const [lang, T] of Object.entries(I18N)) {
     const m = sheetModel('compat', { compat: { role: 'reader', browser: sony, check, help: updateHelp(sony, check) } }, T);
-    assert.equal(m.title, T.compatTitle(true), lang);
-    assert.ok(m.lead.includes('96') && m.lead.includes('108') && m.lead.includes(T.compatSteps.playStore), `${lang}: ${m.lead}`);
-    assert.deepEqual(m.actions.map((a) => a.id), ['update', 'ok']); assert.equal(m.actions[0].label, T.compatOpenStore);
+    assert.equal(m.title, T.compatTitle(true, true), lang);
+    assert.ok(m.lead.includes('96') && m.lead.includes('108') && m.lead.includes(T.compatSteps.playStore) && m.lead.includes(T.compatMayWork), `${lang}: ${m.lead}`);
+    assert.deepEqual(m.actions.map((a) => a.id), ['anyway', 'update', 'cancel'], 'a warning: try anyway, update, or cancel');
+    assert.equal(m.actions[0].label, T.compatAnyway(true)); assert.ok(m.actions[0].primary); assert.equal(m.actions[1].label, T.compatOpenStore);
     assert.ok(m.rows.some(([k, val]) => k === T.shBrowser && val === 'Chrome 96') && m.rows.some(([k, val]) => k === T.shDevice && val === 'Android'), JSON.stringify(m.rows));
     for (const key of ['playStore', 'iosUpdate', 'chromeos', 'deskChrome', 'deskChromium', 'deskBrave', 'deskOpera', 'deskEdge', 'deskFirefox', 'deskSafari', 'useChromeAndroid', 'useChromeDesktop', 'iphoneReader']) assert.ok(T.compatSteps[key], `${lang} ${key}`);
   }
   const iph = detectBrowser({ ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1' });
-  const ci = compatCheck('reader', iph, noBt);
+  const ci = compatCheck('reader', iph, noBt), check0 = check;
   const mi = sheetModel('compat', { compat: { role: 'reader', browser: iph, check: ci, help: updateHelp(iph, ci) } }, I18N.en);
-  assert.deepEqual(mi.actions.map((a) => a.id), ['ok'], 'no store to send an iPhone to: Close only');
+  assert.deepEqual(mi.actions.map((a) => a.id), ['ok'], 'no store to send an iPhone to, and no Bluetooth to try with: Close only');
+  assert.equal(mi.title, I18N.en.compatTitle(true, false));
+  assert.ok(!canTryAnyway(ci) && canTryAnyway(check0) && !canTryAnyway({ ok: true, why: null }), 'anyway: never without Web Bluetooth, never when nothing failed');
+  const ff = detectBrowser({ ua: 'Mozilla/5.0 (Android 12; Mobile; rv:110.0) Gecko/110.0 Firefox/110.0' }), cf = compatCheck('viewer', ff, ALL);
+  const mf = sheetModel('compat', { compat: { role: 'viewer', browser: ff, check: cf, help: updateHelp(ff, cf) } }, I18N.th);
+  assert.deepEqual(mf.actions.map((a) => `${a.id}:${a.label}`), [`anyway:${I18N.th.compatAnyway(false)}`, `update:${I18N.th.compatOpenStore}`, `cancel:${I18N.th.cancel}`]);
   assert.ok(mi.lead.includes(I18N.en.compatSteps.iphoneReader));
   assert.deepEqual(sheetModel('compat', {}, I18N.en).actions, [], 'no check, nothing to say');
 });

@@ -16,7 +16,7 @@
 // 2026-09-20): `uiState()` is the one object; these functions decide what a
 // tab tap, a tile tap, a sheet choice or the Back button does, and build the
 // plain-language sheet contents from a reading. No DOM, no history API here.
-import { fmtVersion, OS_LABEL } from './compat-logic.js';
+import { fmtVersion, OS_LABEL, canTryAnyway } from './compat-logic.js';
 import { fmt, flowModel, etaModel, chipList, socClass } from './view-logic.js';
 
 export const TABS = ['now', 'history', 'more'];
@@ -142,16 +142,18 @@ export function sheetModel(kind, ctx, T) {
       const c = ctx.compat; if (!c) break;
       const name = T.compatName[c.browser.name] || T.compatName.unknown;
       const list = (ks) => ks.map((k) => T.compatFeature[k] || k).join(', ');
-      m.title = T.compatTitle(c.role === 'reader'); m.tone = 'act';
+      const anyway = canTryAnyway(c.check), reader = c.role === 'reader';
+      m.title = T.compatTitle(reader, anyway); m.tone = 'act';
       const why = c.check.why === 'no-bluetooth' ? T.compatNoBt(name)
         : c.check.why === 'too-old' ? T.compatTooOld(name, fmtVersion(c.check.tooOld.have), fmtVersion(c.check.tooOld.min))
           : T.compatMissing(list(c.check.missing));
-      m.lead = `${why} ${T.compatSteps[c.help.steps] || ''}`.trim();
+      m.lead = `${why} ${T.compatSteps[c.help.steps] || ''}${anyway ? ' ' + T.compatMayWork : ''}`.trim();
       m.rows.push([T.shBrowser, `${name} ${fmtVersion(c.browser.version)}`], [T.shDevice, `${OS_LABEL[c.browser.os] || c.browser.os}${c.browser.osKnown ? '' : ' ?'}`]);
       if (c.check.tooOld) m.rows.push([T.shNeeds, `${name === T.compatName.unknown ? '' : name + ' '}${fmtVersion(c.check.tooOld.min)}+`]);
       if (c.check.missing.length && c.check.why !== 'missing') m.rows.push([T.shMissing, list(c.check.missing)]);
-      if (c.help.url) m.actions.push({ id: 'update', label: c.help.link === 'store' ? T.compatOpenStore : T.compatOpenSite, primary: true });
-      m.actions.push({ id: 'ok', label: T.close, primary: !c.help.url });
+      if (anyway) m.actions.push({ id: 'anyway', label: T.compatAnyway(reader), primary: true });
+      if (c.help.url) m.actions.push({ id: 'update', label: c.help.link === 'store' ? T.compatOpenStore : T.compatOpenSite, primary: !anyway });
+      m.actions.push(anyway ? { id: 'cancel', label: T.cancel, primary: false } : { id: 'ok', label: T.close, primary: !c.help.url });
       break;
     }
     case 'resetSettings':

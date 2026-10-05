@@ -37,6 +37,10 @@ const NEW_FF = 'Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/1
 const VIEW = `${BASE}/batray/?view=AbCdEfGhIjKlMnOpQrStUv&test#k=AbCdEfGhIjKlMnOpQrStUv`;
 // window.open is recorded, not followed: the store page must not load inside the test
 await send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.__opened = []; window.open = (u) => { window.__opened.push(String(u)); return null; };' });
+// this headless Chromium has no Web Bluetooth: a chooser that never answers stands in for it, except under a Firefox user agent
+await send('Page.addScriptToEvaluateOnNewDocument', { source: 'if (!/Firefox/.test(navigator.userAgent)) navigator.bluetooth = { requestDevice: () => new Promise(() => {}), getAvailability: async () => true, getDevices: async () => [] };' });
+const sheetNow = () => evalJs(`({ sheet: window.__batrayTest.uiState().sheet, title: document.getElementById('sheetTitle').textContent, lead: document.getElementById('sheetLead').textContent, stat: document.getElementById('stat') ? document.getElementById('stat').textContent : '', acts: [...document.querySelectorAll('#sheetActs [data-act]')].map((b) => b.dataset.act + ':' + b.textContent), shown: !document.getElementById('sheet').hidden })`);
+const act = async (which) => { await evalJs(`document.querySelector('#sheetActs [data-act="${which}"]').click(); 1`); await sleep(400); };
 const asUa = (userAgent) => send('Emulation.setUserAgentOverride', { userAgent, platform: /Android/.test(userAgent) ? 'Linux armv8l' : '' });
 const logSince = (re) => evalJs(`window.__batrayTest.logLines().filter((l) => ${re}.test(l))`);
 
@@ -44,31 +48,47 @@ const logSince = (re) => evalJs(`window.__batrayTest.logLines().filter((l) => ${
 await asUa(SONY);
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(500);
-let st = await evalJs(`({ sheet: window.__batrayTest.uiState().sheet, title: document.getElementById('sheetTitle').textContent, lead: document.getElementById('sheetLead').textContent, acts: [...document.querySelectorAll('#sheetActs [data-act]')].map((b) => b.dataset.act + ':' + b.textContent), shown: !document.getElementById('sheet').hidden })`);
-check('Chrome 96 + Connect: the compat sheet, saying version 96, needing 108, with the Play Store steps', st.shown && st.sheet && st.sheet.kind === 'compat' && st.title === 'This browser cannot be the reader' && /96/.test(st.lead) && /108/.test(st.lead) && /Play Store/.test(st.lead) && st.acts.join('|') === 'update:Open the Play Store|ok:Close', st);
+let st = await sheetNow();
+check('Chrome 96 + Connect: a warning sheet, saying version 96, needing 108, the Play Store steps, and that it may still work', st.shown && st.sheet && st.sheet.kind === 'compat' && st.title === 'This browser may not work as the reader' && /96/.test(st.lead) && /108/.test(st.lead) && /Play Store/.test(st.lead) && /You can still try/.test(st.lead) && st.acts.join('|') === 'anyway:Connect anyway|update:Open the Play Store|cancel:Cancel', st);
 let logs = await logSince('/compat: reader|conn: tap-connect|chooser/');
 check('the log names the verdict, and no connect step ran', logs.some((l) => /compat: reader chrome 96 \(chromium\) on android: BLOCKED - version 96 < 108/.test(l)) && !logs.some((l) => /conn: tap-connect|chooser/.test(l)), logs);
-await evalJs(`document.querySelector('#sheetActs [data-act="update"]').click(); 1`); await sleep(300);
+await act('update');
 const opened = await evalJs('window.__opened');
 check('"Open the Play Store" opens Chrome\'s store page', opened.length === 1 && opened[0] === 'https://play.google.com/store/apps/details?id=com.android.chrome', opened);
+await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(500); await act('cancel');
+logs = await logSince('/compat: reader|conn: tap-connect/');
+check('Cancel: nothing connects, the log says the user stopped', logs.some((l) => /compat: reader stopped \(update\)/.test(l)) && logs.some((l) => /compat: reader stopped \(cancel\)/.test(l)) && !logs.some((l) => /conn: tap-connect/.test(l)), logs);
+await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(500); await act('anyway');
+logs = await logSince('/compat: reader|conn: tap-connect/');
+check('"Connect anyway" goes on to the connect flow', logs.some((l) => /compat: reader going on anyway/.test(l)) && logs.some((l) => /conn: tap-connect/.test(l)), logs);
+const blocked = (await logSince('/compat: reader .*BLOCKED/')).length;
+await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(500);
+st = await sheetNow();
+check('asked once per page load: the next tap does not ask again', (await logSince('/compat: reader .*BLOCKED/')).length === blocked && !(st.sheet && st.sheet.kind === 'compat'), st);
 
 // ---- 1b. a current Firefox as the reader: no Web Bluetooth there, the tap says to use Chrome or Edge ----
 await asUa(NEW_FF);
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(500);
-st = await evalJs(`({ sheet: window.__batrayTest.uiState().sheet, lead: document.getElementById('sheetLead').textContent, acts: [...document.querySelectorAll('#sheetActs [data-act]')].map((b) => b.dataset.act) })`);
-check('Firefox 131 + Connect: the sheet says it cannot reach Bluetooth, use Chrome or Edge, can still watch', st.sheet && st.sheet.kind === 'compat' && /cannot reach Bluetooth/.test(st.lead) && /Chrome or Edge/.test(st.lead) && st.acts.join('|') === 'update|ok', st);
-await evalJs(`document.querySelector('#sheetActs [data-act="ok"]').click(); 1`); await sleep(300);
+st = await sheetNow();
+check('Firefox 131 + Connect: no "anyway" without Web Bluetooth - the sheet says use Chrome or Edge, can still watch', st.sheet && st.sheet.kind === 'compat' && st.title === 'This browser cannot be the reader' && /cannot reach Bluetooth/.test(st.lead) && /Chrome or Edge/.test(st.lead) && st.acts.map((a) => a.split(':')[0]).join('|') === 'update|ok', st);
+await act('ok');
 
 // ---- 2. an old Firefox opening a share link: the live view does not start, its socket never opens ----
 await asUa(OLD_FF);
 await send('Page.navigate', { url: VIEW }); await sleep(2500);
-st = await evalJs(`({ sheet: window.__batrayTest.uiState().sheet, title: document.getElementById('sheetTitle').textContent, lead: document.getElementById('sheetLead').textContent, stat: document.getElementById('stat') ? document.getElementById('stat').textContent : '', acts: [...document.querySelectorAll('#sheetActs [data-act]')].map((b) => b.dataset.act) })`);
-check('Firefox 110 + a share link: the viewer sheet (needs 114) and the status says the view did not start', st.sheet && st.sheet.kind === 'compat' && st.title === 'This browser cannot open the live view' && /110/.test(st.lead) && /114/.test(st.lead) && st.acts.join('|') === 'update|ok', st);
+st = await sheetNow();
+check('Firefox 110 + a share link: the viewer warning (needs 114), Open anyway / store / Cancel', st.sheet && st.sheet.kind === 'compat' && st.title === 'This browser may not run the live view' && /110/.test(st.lead) && /114/.test(st.lead) && st.acts.map((a) => a.split(':')[0]).join('|') === 'anyway|update|cancel', st);
 logs = await logSince('/compat: viewer|signal: socket/');
-check('the viewer verdict is logged at start and no signalling socket was opened', logs.some((l) => /compat: viewer firefox 110 \(gecko\) on android: BLOCKED - version 110 < 114/.test(l)) && !logs.some((l) => /signal: socket/.test(l)), logs);
-await evalJs(`document.querySelector('#sheetActs [data-act="update"]').click(); 1`); await sleep(300);
+check('the viewer verdict is logged at start and no signalling socket opens while the sheet is up', logs.some((l) => /compat: viewer firefox 110 \(gecko\) on android: BLOCKED - version 110 < 114/.test(l)) && !logs.some((l) => /signal: socket/.test(l)), logs);
+await act('update');
 check('its update button opens Firefox\'s store page', (await evalJs('window.__opened')).join() === 'https://play.google.com/store/apps/details?id=org.mozilla.firefox', await evalJs('window.__opened'));
+st = await sheetNow();
+check('...and the view stays off: the status says so', !st.sheet && /live view not started/.test(st.stat), st);
+await send('Page.navigate', { url: VIEW.replace('&test', '&test&anyway') }); await sleep(2500);
+await act('anyway');
+st = await sheetNow(); logs = await logSince('/compat: viewer/');
+check('"Open anyway" starts the live view', !st.sheet && !/live view not started/.test(st.stat) && /live view/.test(st.stat) && logs.some((l) => /compat: viewer going on anyway/.test(l)), { st, logs });
 
 // ---- 3. a current Firefox as a viewer passes (it cannot be a reader: no Web Bluetooth there, the unit test covers it) ----
 await asUa(NEW_FF);
@@ -78,13 +98,10 @@ check('Firefox 131 as a viewer: ok, no sheet', !st.sheet && st.logs.length === 1
 
 // ---- 4. this Chromium as a reader passes the gate: the tap goes on to the connect flow ----
 await send('Emulation.setUserAgentOverride', { userAgent: '' });
-// this headless Chromium has no Web Bluetooth: a chooser that never answers stands in for it
-const fakeBt = await send('Page.addScriptToEvaluateOnNewDocument', { source: 'navigator.bluetooth = { requestDevice: () => new Promise(() => {}), getAvailability: async () => true, getDevices: async () => [] };' });
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(800);
 logs = await logSince('/compat: reader|conn: tap-connect/');
 check('a current Chromium: the start line says ok and the tap reaches the connect flow', logs.some((l) => /compat: reader chrom\w+ \d+ \(chromium\) on \w+: ok/.test(l)) && logs.some((l) => /conn: tap-connect/.test(l)), logs);
-await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: fakeBt.identifier });
 
 // ---- 5. the time under "updated": the reader's line with three-digit milliseconds; a viewer pack adds the arrival time ----
 await send('Page.navigate', { url: `${BASE}/batray/?test&demo` }); await sleep(4000);

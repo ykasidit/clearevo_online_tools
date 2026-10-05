@@ -16,7 +16,7 @@ import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfter
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
 import { stampLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
-import { detectBrowser, compatCheck, updateHelp, compatLogLine } from './compat-logic.js';
+import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fmtVersion } from './compat-logic.js';
 import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
@@ -37,7 +37,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.68';
+export const APP_VERSION = '0.9.69';
 
 /** @returns {any} */
 const $ = (id) => document.getElementById(id);
@@ -320,7 +320,7 @@ function renderPackBar() {
   const add = viewMode ? '' : `<button class="pchip add" id="addPack" title="${T.addPackTitle}">${T.addPack}</button>`;
   bar.innerHTML = chips.join('') + add;
   bar.querySelectorAll('.pchip[data-pack]').forEach((b) => b.addEventListener('click', () => { const p = packs.get(b.dataset.pack); if (p) { log(`ui: pack chip ${p.label}`); setActive(p); } }));
-  const a = $('addPack'); if (a) a.addEventListener('click', () => startConnect(null));
+  const a = $('addPack'); if (a) a.addEventListener('click', () => { void startConnect(null); });
 }
 
 // ---- language (EN / ไทย): static text via data-i18n, live text re-rendered ----
@@ -831,9 +831,15 @@ async function memMeasure() {
   try { const r = await performance.measureUserAgentSpecificMemory(); memMeasured = { bytes: r.bytes, breakdown: r.breakdown, at: Date.now() }; renderMemory(memModel()); }
   catch (e) { log(`mem: measure failed: ${e.message}`); }
 }
+/** "chrome 96": the browser and its version for the last-run record (a change between runs = an update). Read from
+ *  navigator here because the start-up report runs before the gate's browserInfo exists. */
+function browserTag() {
+  const b = detectBrowser({ ua: navigator.userAgent, uaPlatform: navigator.userAgentData ? navigator.userAgentData.platform : '', brave: !!navigator.brave });
+  return `${b.name} ${fmtVersion(b.version)}`;
+}
 function writeLastRun(clean) {
   const m = memModel();
-  try { localStorage.setItem(LASTRUN_KEY, JSON.stringify(lastRunRecord({ sid: logS.sid, now: Date.now(), mem: m, rows: pendingRows(), state: appState(), file: logS.file, clean }))); } catch { /* no storage */ }
+  try { localStorage.setItem(LASTRUN_KEY, JSON.stringify(lastRunRecord({ sid: logS.sid, now: Date.now(), mem: m, rows: pendingRows(), state: appState(), file: logS.file, clean, browser: browserTag() }))); } catch { /* no storage */ }
   return m;
 }
 function memTick() {
@@ -850,7 +856,7 @@ window.addEventListener('pagehide', () => { if (!(window.__batrayTest && window.
 function logLastRun() {
   let prev = null; try { prev = JSON.parse(localStorage.getItem(LASTRUN_KEY) || 'null'); } catch { /* no record */ }
   const nav = performance.getEntriesByType ? (performance.getEntriesByType('navigation')[0] || {}).type : '';
-  const report = lastRunReport(prev, Date.now(), { wasDiscarded: !!document.wasDiscarded, navType: nav });
+  const report = lastRunReport(prev, Date.now(), { wasDiscarded: !!document.wasDiscarded, navType: nav, browser: browserTag() });
   if (report) for (const line of report) log(line);
   else log(`first start on this device (this start: ${nav || 'navigate'})`);
   writeLastRun(false);
@@ -1286,26 +1292,28 @@ function compatFeatures() {
 }
 const browserInfo = detectBrowser({ ua: navigator.userAgent, uaPlatform: navigator.userAgentData ? navigator.userAgentData.platform : '', brave: !!navigator.brave, touchPoints: navigator.maxTouchPoints || 0 });
 let compatS = null;                                                  // the failed check the 'compat' sheet explains
-function compatGate(role) {
+const compatAccepted = new Set();                                    // roles the user chose to try anyway, this page load
+/** true = go on: the check passed, or the user tapped "Connect anyway" / "Open anyway" (asked once per role per load). */
+async function compatGate(role) {
   const check = compatCheck(role, browserInfo, compatFeatures());
-  if (check.ok) return true;
+  if (check.ok || compatAccepted.has(role)) return true;
   compatS = { role, browser: browserInfo, check, help: updateHelp(browserInfo, check) };
   log(compatLogLine(role, browserInfo, check));
-  void openCompat();
-  return false;
-}
-async function openCompat() {
   const a = await openSheet('compat');
-  if (a === 'update' && compatS && compatS.help.url) { log(`compat: opening ${compatS.help.url}`); window.open(compatS.help.url, '_blank', 'noopener'); }
+  if (a === 'update' && compatS.help.url) { log(`compat: opening ${compatS.help.url}`); window.open(compatS.help.url, '_blank', 'noopener'); }
+  const go = a === 'anyway' && canTryAnyway(check);
+  log(`compat: ${role} ${go ? 'going on anyway (the user chose to)' : `stopped (${a || 'closed'})`}`);
+  if (go) compatAccepted.add(role);
+  return go;
 }
 // Connect a BMS: into `p` (reconnect of a known pack) or a new pack (+ Add BMS).
-function startConnect(p) {
-  if (!compatGate('reader')) return;
+async function startConnect(p) {
+  if (!(await compatGate('reader'))) return;
   const fresh = !p;
   if (fresh) p = new Pack(`bt-${++packSeq}`, `BMS ${packs.size + 1 - (packs.size && [...packs.values()].some((x) => x.demo) ? 1 : 0)}`);
   connAct(p, 'tap-connect', { fresh });
 }
-$('connectBig').addEventListener('click', () => startConnect(null));
+$('connectBig').addEventListener('click', () => { void startConnect(null); });
 // The remembered BMS (owner ask 2026-09-21): Chrome gives a page no Bluetooth address, only a per-site id and the
 // name, so that pair is kept (localStorage + devices.ndjson in the history store) and, while getDevices() still lists
 // the id as permitted, a green "Connect to NAME" button connects without the chooser.
@@ -1328,10 +1336,10 @@ async function renderKnown() {
   return k;
 }
 async function startKnown() {
-  if (!compatGate('reader')) return;
+  if (!(await compatGate('reader'))) return;
   const b = $('connectKnown'); if (!b.dataset.id || !navigator.bluetooth) return;
   let dev = null; try { dev = (await navigator.bluetooth.getDevices()).find((d) => d.id === b.dataset.id) || null; } catch { /* below */ }
-  if (!dev) { log('known device: not in getDevices any more, opening the chooser'); b.hidden = true; startConnect(null); return; }
+  if (!dev) { log('known device: not in getDevices any more, opening the chooser'); b.hidden = true; await startConnect(null); return; }
   const dup = [...packs.values()].find((x) => x.device && x.device.id === dev.id);
   if (dup) { setActive(dup); connAct(dup, 'known'); return; }
   const p = new Pack(`bt-${dev.id}`, dev.name || 'BMS');
@@ -1341,7 +1349,7 @@ async function startKnown() {
 }
 $('connectKnown').addEventListener('click', () => { startKnown().catch((e) => log(`known device: ${e.message}`)); });
 if (!viewMode && navigator.bluetooth) renderKnown().catch(() => {});
-$('connectAgain').addEventListener('click', () => startConnect(active && !active.remote && !active.demo ? active : null));
+$('connectAgain').addEventListener('click', () => { void startConnect(active && !active.remote && !active.demo ? active : null); });
 els.disconnect.dataset.title = els.disconnect.title;
 els.disconnect.addEventListener('click', () => {
   const p = active && active.bms && !active.demo ? active : null;
@@ -1351,7 +1359,7 @@ els.disconnect.addEventListener('click', () => {
     p.plog('connect: cancelled from the toolbar');
     connAct(p, 'cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); toast(T.cancelled, 4000); return;
   }
-  startConnect(p);                                                  // idle: the same button connects (a known pack, or the chooser for a new one)
+  void startConnect(p);                                             // idle: the same button connects (a known pack, or the chooser for a new one)
 });
 $('reNow').addEventListener('click', () => { const p = active; if (!p || p.remote) return; p.plog('reconnect: user tapped Reconnect now'); connAct(p, 'reconnect-now'); });
 $('cancelRe').addEventListener('click', () => { const p = active; if (!p || p.remote) return; p.plog('reconnect: cancelled by user'); connAct(p, 'cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); });
@@ -1607,13 +1615,16 @@ async function storeReceived(file) {
   histS.days = await hist.days();
   if (active) renderTrend(active); else renderHistNote();                // throttled: a transfer of 100 files is not 100 chart queries
 }
-function startView() {
+async function startView() {
   document.body.classList.add('view'); $('tabs').hidden = false; renderTabs();
   $('keepAwakeRow').hidden = true;                                   // a viewer never plays the keep-awake video
   $('titleText').textContent = `BatRay by ClearEvo.com v${APP_VERSION} · ${T.viewTitle}`;
   for (const el of [els.disconnect, $('autoRe').parentElement, els.share, $('tsep')]) el.hidden = true;
   els.empty.hidden = true;
-  if (!compatGate('viewer')) { setStatus(() => T.compatViewBlocked, 'bad'); return; }
+  if (!(await compatGate('viewer'))) {
+    // eslint-disable-next-line house/ui-after-await -- the gate's sheet was the wait; nothing else runs the view before this answer
+    setStatus(() => T.compatViewBlocked, 'bad'); return;
+  }
   setStatus(() => T.viewWaiting);
   viewer = new Viewer({
     room: viewMode.room, keyB64: viewMode.key, log,
@@ -2205,5 +2216,5 @@ alerts = initAlerts({
 });
 void initHistory().then(initLogStore);
 log(compatLogLine(viewMode ? 'viewer' : 'reader', browserInfo, compatCheck(viewMode ? 'viewer' : 'reader', browserInfo, compatFeatures())));
-if (viewMode) startView();
+if (viewMode) void startView();
 else if (new URLSearchParams(location.search).has('demo')) runDemo();

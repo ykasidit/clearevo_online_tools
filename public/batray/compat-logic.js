@@ -12,7 +12,7 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 //
-// Owner ask 2026-10-05, after the reader on a Sony with Chrome 96 ran without stored history or log and died unseen:
+// Owner ask 2026-10-05 (made a warning with "connect anyway" the same day), after the reader on a Sony with Chrome 96 ran without stored history or log and died unseen:
 // "gate at connect button press, don't work on older than min required Chrome or Edge or derivatives for the APIs we
 // need, a dialog why and where to update for the detected platform, Android if unknown - separately for reader and
 // viewer". The shell gathers the plain inputs (user agent, feature flags); everything here is a decision on them.
@@ -87,6 +87,10 @@ export function compatCheck(role, b, f) {
   const why = noBt ? 'no-bluetooth' : tooOld ? 'too-old' : missing.length ? 'missing' : null;
   return { ok: why === null, why, missing, tooOld, role };
 }
+
+/** A warning, not a wall (owner, 2026-10-05: the Sony on Chrome 96 ran fine after a factory reset): the user may go on
+ *  anyway - except a reader without Web Bluetooth, which has nothing to connect with. */
+export function canTryAnyway(check) { return !check.ok && check.why !== 'no-bluetooth'; }
 
 const PLAY = (id) => `https://play.google.com/store/apps/details?id=${id}`;
 const PLAY_ID = { chrome: 'com.android.chrome', edge: 'com.microsoft.emmx', firefox: 'org.mozilla.firefox', samsung: 'com.sec.android.app.sbrowser', opera: 'com.opera.browser', brave: 'com.brave.browser' };

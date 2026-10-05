@@ -76,11 +76,13 @@ export function debugButtons(on) { return { disabled: !on }; }
 // app writes one itself every MEM_LOG_MS into localStorage and marks it clean on pagehide. The next start reads it
 // and puts what it says at the top of the new log; the previous session's stored log file is the rest of the story.
 export const LASTRUN_KEY = 'batray_lastrun';
-export function lastRunRecord({ sid, now, mem, rows, state, file, clean = false }) {
-  return { sid, at: now, mem: mem ? { used: mem.used, limit: mem.limit } : null, rows: rows || 0, state: state || '', file: file || null, clean: !!clean };
+export function lastRunRecord({ sid, now, mem, rows, state, file, clean = false, browser = '' }) {
+  return { sid, at: now, mem: mem ? { used: mem.used, limit: mem.limit } : null, rows: rows || 0, state: state || '', file: file || null, clean: !!clean, browser: browser || '' };
 }
 /** Lines for the top of a new log about the previous run: null when there was none. */
-export function lastRunReport(prev, now, { wasDiscarded = false, navType = '' } = {}) {
+// `browser` = "chrome 96" (name and version, 0.9.69): a Play Store update of Chrome stops it - the open tab goes with it
+// and comes back only when someone opens Chrome - so an unclean end plus a changed version is named as the likely cause.
+export function lastRunReport(prev, now, { wasDiscarded = false, navType = '', browser = '' } = {}) {
   if (!prev || typeof prev !== 'object' || typeof prev.at !== 'number') return null;
   const ago = Math.max(0, Math.round((now - prev.at) / 60000));
   const when = `${new Date(prev.at).toISOString()} (${ago} min before this start)`;
@@ -90,6 +92,7 @@ export function lastRunReport(prev, now, { wasDiscarded = false, navType = '' } 
     lines.push(`previous session ${prev.sid || '?'} ENDED WITHOUT A CLEAN EXIT (a crash, an "Aw, Snap", a killed tab, or a lost power): last seen ${when}`);
     lines.push(`  last known: state ${prev.state || '?'}; memory ${prev.mem ? `${Math.round(prev.mem.used / 1048576)} MB of ${Math.round(prev.mem.limit / 1048576)} MB` : 'unknown'}; ${prev.rows} rows in memory${prev.file ? `; its log file: ${prev.file} (Browse in the History card)` : ''}`);
   }
+  if (prev.browser && browser && prev.browser !== browser) lines.push(`  the browser changed since: ${prev.browser} -> ${browser}${prev.clean ? '' : ' - an update closes the browser and every tab in it, the likely end of that session'}`);
   lines.push(`  this start: ${navType || 'navigate'}${wasDiscarded ? '; Chrome had DISCARDED the tab (memory pressure) and this is its reload' : ''}`);
   return lines;
 }

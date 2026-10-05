@@ -426,6 +426,12 @@ export function queuedAfterGap(lastRxAt, now = Date.now(), limitMs = STALE_MS) {
 // app's order is 0x97, wait for the answer, then 0x96 - see connect().
 export const NUDGE_MS = 3000;
 export const HANDSHAKE_WAIT_MS = 1500;
+// 0.9.69 (owner's n11 log 2026-10-05 07:36, JK_B1A24S15P fw 11.38: "values took time to show"): the handshake's 0x96
+// got only the 20 B command echo, the re-ask 3 s later started the stream (0x01 at +0.18 s, first 0x02 at +0.75 s),
+// first reading 4.8 s after connect. An ask the BMS has not served (no settings frame since) is repeated after
+// STARTUP_QUICK_MS, up to STARTUP_QUICK_ASKS times, then every NUDGE_MS; a served one waits the full NUDGE_MS.
+export const STARTUP_QUICK_MS = 1000;
+export const STARTUP_QUICK_ASKS = 3;
 
 /** Send a nudge command now? Quiet for NUDGE_MS since the last frame (or since
  *  connect when nothing has arrived yet) and since the previous nudge. */
@@ -439,9 +445,10 @@ export function nudgeDecision(lastRxAt, connectedAt, nudgedAt, now = Date.now(),
  *  "AT\r\n" chatter for seconds (each one bumped lastRxAt, so the silence nudge came only at +7 s and +10 s,
  *  which it ignored, then dropped the link), while the 0.9.31 poll at +3 s had always started its stream. So
  *  until cell info flows: ask again every NUDGE_MS after the previous ask, whatever else arrives. */
-export function startupAskDecision(firstCellAt, askedAt, now = Date.now(), everyMs = NUDGE_MS) {
+export function startupAskDecision(firstCellAt, askedAt, now = Date.now(), everyMs = NUDGE_MS, { settingsAt = null, asks = 0 } = {}) {
   if (firstCellAt || !askedAt) return false;
-  return now - askedAt >= everyMs;
+  const served = settingsAt !== null && settingsAt >= askedAt;      // the settings frame came: the stream is starting, no second ask (a beep)
+  return now - askedAt >= (!served && asks < STARTUP_QUICK_ASKS ? STARTUP_QUICK_MS : everyMs);
 }
 
 export class JkBms extends EventTarget {
@@ -451,7 +458,7 @@ export class JkBms extends EventTarget {
     this.char = null;
     this.buf = new Uint8Array(0);
     this.nudgeTimer = null;
-    this.nudgeCheckMs = 1000;
+    this.nudgeCheckMs = 250;                                         // the quick startup re-ask is 1 s
     this.nudgedAt = null;
     this.connectedAt = null;
     this._infoWaiters = [];
@@ -617,14 +624,15 @@ export class JkBms extends EventTarget {
     this._stopNudge();
     this.nudgedAt = null;
     this.connectedAt = Date.now();
-    this.firstCellAt = null; this._rxOtherAll = 0; this._rxOtherAt = null;
+    this.firstCellAt = null; this.settingsAt = null; this._rxOtherAll = 0; this._rxOtherAt = null;
     this.nudgeTimer = setInterval(() => {
       if (!this.connected) return;
       const now = Date.now();
-      if (startupAskDecision(this.firstCellAt, this.nudgedAt, now)) {          // no cell info yet: every 3 s after the ask
+      if (startupAskDecision(this.firstCellAt, this.nudgedAt, now, NUDGE_MS, { settingsAt: this.settingsAt, asks: this._asks || 0 })) {   // no cell info yet
+        const after = ((now - this.nudgedAt) / 1000).toFixed(1), served = this.settingsAt !== null && this.settingsAt >= this.nudgedAt;
         this.nudgedAt = now; this._asks = (this._asks || 0) + 1;
         const other = this._rxOtherAll ? `, ${this._rxOtherAll} non-frame notifications so far, last ${((now - this._rxOtherAt) / 1000).toFixed(1)} s ago` : '';
-        this._log(`startup: no cell info ${Math.round(NUDGE_MS / 1000)} s after the ask${other}, asking again (0x96, ask ${this._asks + 1})`);
+        this._log(`startup: no cell info ${after} s after the ask (${served ? 'settings came' : 'not served'})${other}, asking again (0x96, ask ${this._asks + 1})`);
         this._write(buildCommand(CMD_CELL_INFO)).catch((e) => this._log(`startup ask failed: ${e.message}`));
         return;
       }
@@ -679,7 +687,7 @@ export class JkBms extends EventTarget {
         for (const w of this._infoWaiters.splice(0)) w();
         break;
       case FRAME_SETTINGS:
-        this.settings = decodeSettings(frame);
+        this.settings = decodeSettings(frame); this.settingsAt = Date.now();
         this._emit('settings', this.settings);
         break;
       case FRAME_CELL_INFO: {

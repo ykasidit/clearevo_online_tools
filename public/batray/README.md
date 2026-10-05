@@ -135,6 +135,25 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.69 (2026-10-05): the browser gate is a warning; a quicker re-ask when the BMS ignores the first one
+
+Owner, after the Sony ran fine on Chrome 96 following a factory reset: the gate warns instead of refusing. The
+'compat' sheet now offers **Connect anyway** / **Open anyway** (primary), the store or download page, and Cancel;
+the choice is logged (`compat: reader going on anyway` / `stopped (cancel)`) and asked once per role per page load
+(`compatAccepted`). The one hard stop stays: a reader without Web Bluetooth (`canTryAnyway`), which has nothing to
+connect with - Close and the link only. `startConnect` / `startView` await the gate.
+
+The n11 reader log (07:36, JK_B1A24S15P fw 11.38, "values took time to show"): the handshake's 0x96 got only the
+20 B command echo, and the re-ask came 3.8 s later; that one started the stream at once (0x01 at +0.18 s, first
+0x02 at +0.75 s), first reading 4.8 s after connect. `startupAskDecision` now repeats an ask the BMS has not served
+(no settings frame since the ask) after `STARTUP_QUICK_MS` = 1 s, up to `STARTUP_QUICK_ASKS` = 3, then every 3 s
+as before; an ask that was served (settings came) waits the full 3 s, so no second settings read and no extra beep.
+The check runs every 250 ms. Replays of both the n11 and the m-00 logs in `batray_jkbms.test.js`. Unverified on the
+pack until the next log: look for `startup: no cell info 1.0 s after the ask (not served)`.
+
+The last-run record carries the browser and its version; a start after an unclean end whose version differs says
+`the browser changed since: chrome 96 -> chrome N - an update closes the browser and every tab in it`.
+
 ## 0.9.68 (2026-10-05): a browser gate on Connect and on opening a link; the reading's time under "updated"
 
 The reader of the owner's 2026-10-05 log was a Sony on Chrome 96: no synchronous OPFS access handles there, so no
