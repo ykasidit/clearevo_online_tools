@@ -135,6 +135,14 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.66 (2026-10-05): default lines battery % and current; a 7-day chart no longer re-queried every 10 s
+
+The owner's 7-day window lagged. Two causes: every received history file re-queried and redrew the chart (a
+transfer is 100+ files), and every 10-second flush forced a full re-query whatever the window - on 7 days that is
+370k rows bucketed into 12-minute averages, redrawn to the same picture. Now a received file only asks for the
+throttled draw, and the refresh interval is at least half a bucket (`trendRefreshMs`: 1 h stays 10 s, 24 h 54 s,
+7 d about 6 min). The default lines are battery % and current; the others are a tap away.
+
 ## 0.9.65 (2026-10-05): history files from the reader were never stored on a viewer
 
 The owner's viewer log of 2026-10-04 (viewer 0.9.64, reader 0.9.60): the reader answered every request, 108

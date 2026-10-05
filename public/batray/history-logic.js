@@ -45,7 +45,7 @@ export const PARAMS = {
 };
 export const PARAM_KEYS = Object.keys(PARAMS);
 export const BUCKET_COLS = PARAM_KEYS.map((k) => PARAMS[k].col);
-export const DEFAULT_PARAMS = ['soc', 'v', 'w', 'tm'];      // battery %, voltage, power, MOSFET temperature (owner 2026-10-02: power over current, as the consumer apps chart it)
+export const DEFAULT_PARAMS = ['soc', 'i'];                 // battery % and current (owner 2026-10-05: two lines draw fast on a 7-day window; the rest are a tap away)
 export const MAX_PARAMS = 4;
 /** The saved selection (localStorage JSON), or the default when it is missing, malformed, or names nothing known. */
 export function parseParams(raw) {
@@ -80,7 +80,10 @@ export function paramChips(series, params, idx = null) {
 }
 export const CHART_MAX_POINTS = 800;            // buckets per chart window (a phone screen is narrower than that)
 export const RANGES = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 24 * 3600e3, '7d': 7 * 86400e3, all: 0 };
-export const TREND_REFRESH_MS = 10000;          // a live chart is re-queried this often (right after the flush)
+export const TREND_REFRESH_MS = 10000;          // a live chart is re-queried this often (right after the flush) ...
+/** ... but never more often than half a bucket: a 7-day window has 12-minute buckets, so re-querying 370k rows every
+ *  10 s only drew the same picture again and made the chart lag (owner, 2026-10-05). */
+export function trendRefreshMs(stepMs) { return Math.max(TREND_REFRESH_MS, Math.round((stepMs || 0) / 2)); }
 // Every store call has a deadline (owner rule 2026-09-24: "no block forever"): a stuck worker or a stuck
 // OPFS handle must never freeze the page. The store rejects at the deadline, logs it, and after
 // STUCK_RESTART timeouts in a row restarts the worker.

@@ -17,7 +17,7 @@
 // assembly, chart windows and buckets, and the store-call statistics.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, DEFAULT_PARAMS, MAX_PARAMS, corruptDecision, isCorruptError, historyState, dayKey, dayStartMs, daysInRange, rowDue, rowFromReading, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, bucketsFromRows, energyFromRows, opTimeoutMs, statsState, statsAdd, stuckDecision, statsLine, statsReset, HEADROOM_BYTES, HIST_REQ_MS, GAP_REQ_MS, GAP_ASKS_MAX, MIN_ROW_MS, RANGES, XFER_CHUNK, OP_TIMEOUT_MS, STUCK_RESTART } from '../public/batray/history-logic.js';
+import { trendRefreshMs, TREND_REFRESH_MS, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, DEFAULT_PARAMS, MAX_PARAMS, corruptDecision, isCorruptError, historyState, dayKey, dayStartMs, daysInRange, rowDue, rowFromReading, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, bucketsFromRows, energyFromRows, opTimeoutMs, statsState, statsAdd, stuckDecision, statsLine, statsReset, HEADROOM_BYTES, HIST_REQ_MS, GAP_REQ_MS, GAP_ASKS_MAX, MIN_ROW_MS, RANGES, XFER_CHUNK, OP_TIMEOUT_MS, STUCK_RESTART } from '../public/batray/history-logic.js';
 import { decodeCellInfo } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -170,16 +170,17 @@ test('a corrupt day: today is renewed (deleted, a new live file), a past day is 
   assert.equal(isCorruptError(null), false);
 });
 
-test('chart lines (owner ask 2026-10-02): default battery % / voltage / current / MOSFET temp, up to four, never none; saved selection parsed; chip values at the cursor or the newest', () => {
-  assert.deepEqual(DEFAULT_PARAMS, ['soc', 'v', 'w', 'tm']); assert.equal(MAX_PARAMS, 4);
+test('chart lines (owner asks 2026-10-02 / 2026-10-05): default battery % and current, up to four, never none; saved selection parsed; chip values at the cursor or the newest', () => {
+  assert.deepEqual(DEFAULT_PARAMS, ['soc', 'i']); assert.equal(MAX_PARAMS, 4);
   assert.deepEqual(historyState().params, DEFAULT_PARAMS);
   assert.deepEqual(parseParams(null), DEFAULT_PARAMS); assert.deepEqual(parseParams('garbage'), DEFAULT_PARAMS); assert.deepEqual(parseParams('["nope"]'), DEFAULT_PARAMS);
   assert.deepEqual(parseParams('["w","tm","w","soc","v","i","ah"]'), ['w', 'tm', 'soc', 'v'], 'duplicates dropped, cut to four, order kept');
   let sel = DEFAULT_PARAMS.slice();
-  assert.deepEqual(paramTap(sel, 'i'), { action: 'full', params: sel });
-  let d = paramTap(sel, 'tm'); assert.deepEqual(d, { action: 'off', params: ['soc', 'v', 'w'] }); sel = d.params;
-  d = paramTap(sel, 'i'); assert.deepEqual(d, { action: 'on', params: ['soc', 'v', 'w', 'i'] }); sel = d.params;
-  for (const k of ['soc', 'v', 'w']) sel = paramTap(sel, k).params;
+  let d = paramTap(sel, 'v'); assert.deepEqual(d, { action: 'on', params: ['soc', 'i', 'v'] }); sel = d.params;
+  d = paramTap(sel, 'w'); assert.deepEqual(d, { action: 'on', params: ['soc', 'i', 'v', 'w'] }); sel = d.params;
+  assert.deepEqual(paramTap(sel, 'tm'), { action: 'full', params: sel });
+  d = paramTap(sel, 'w'); assert.deepEqual(d, { action: 'off', params: ['soc', 'i', 'v'] }); sel = d.params;
+  for (const k of ['soc', 'v']) sel = paramTap(sel, k).params;
   assert.deepEqual(paramTap(sel, 'i'), { action: 'last', params: ['i'] });
   assert.deepEqual(paramTap(sel, 'bogus'), { action: 'ignore', params: ['i'] });
   for (const k of PARAM_KEYS) assert.ok(PARAMS[k].col && PARAMS[k].unit !== undefined && /^#[0-9a-f]{6}$/.test(PARAMS[k].color), k);
@@ -191,4 +192,11 @@ test('chart lines (owner ask 2026-10-02): default battery % / voltage / current 
   const at0 = paramChips(series, ['soc'], 0);
   assert.deepEqual([at0.find((c) => c.key === 'v').text, at0.find((c) => c.key === 'tm').text], ['52.12 V', '30.0 °C']);
   assert.equal(paramChips(null, ['soc'], null).find((c) => c.key === 'soc').text, '', 'no series yet');
+});
+
+test('a live chart is re-queried every 10 s on a short window and no more than every half bucket on a long one (owner, 2026-10-05: 7 d lagged)', () => {
+  assert.equal(trendRefreshMs(4500), TREND_REFRESH_MS);         // 1 h: 4.5 s buckets -> 10 s
+  assert.equal(trendRefreshMs(108000), 54000);                   // 24 h: 108 s buckets -> 54 s
+  assert.equal(trendRefreshMs(756000), 378000);                  // 7 d: 12.6 min buckets -> 6.3 min
+  assert.equal(trendRefreshMs(undefined), TREND_REFRESH_MS);
 });

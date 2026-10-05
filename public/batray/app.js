@@ -27,7 +27,7 @@ import { parseShare, envelope, suggestChannelName, parseSavedShare } from './liv
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
 import { Flag } from './sync.js';
-import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, TREND_REFRESH_MS } from './history-logic.js';
+import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
@@ -36,7 +36,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.65';
+export const APP_VERSION = '0.9.66';
 
 /** @returns {any} */
 const $ = (id) => document.getElementById(id);
@@ -602,7 +602,7 @@ async function flushHistory() {
       }
     }
   } finally { histFlushing = false; }
-  if (active && !$('trendCard').hidden) scheduleDraw(true);
+  if (active && !$('trendCard').hidden) scheduleDraw(false);   // the throttle decides (half a bucket at least): a 7-day window is not re-queried every 10 s
 }
 setInterval(flushHistory, HISTORY_FLUSH_MS);
 // Leaving the page (a reload, a navigation, the back/forward cache): everything here is synchronous, because the
@@ -977,14 +977,14 @@ function scheduleDraw(force) { if (!trendRaf) trendRaf = requestAnimationFrame((
 async function drawHistory(p, force = false) {
   const now = Date.now();
   if (histMem.drawing) { histMem.redraw = histMem.redraw || force; return; }
-  if (!force && histMem.series && now - histMem.drawAt < TREND_REFRESH_MS) return;
+  if (!force && histMem.series && now - histMem.drawAt < trendRefreshMs(histMem.series.stepMs)) return;
   histMem.drawing = true;
   try {
     const first = histS.days[0] ? dayStartMs(histS.days[0].day) : null;
     const { from, to } = chartRange(histS.range, now, first);
     const stepMs = bucketStep(from, to);
     const q = await hist.query({ p: p.label, from, to, stepMs, days: daysFor(p, from, to) });
-    histMem.series = { s: seriesFromBuckets(q.parts), energy: q.energy, from, to }; histMem.drawAt = Date.now();
+    histMem.series = { s: seriesFromBuckets(q.parts), energy: q.energy, from, to, stepMs }; histMem.drawAt = Date.now();
     if (q.first !== null) { histS.spanFirst = q.first; histS.spanLast = q.last; }
     // eslint-disable-next-line house/ui-after-await -- drawHistory is single-flight (histMem.drawing); a range change meanwhile sets histMem.redraw and is drawn right after
     paintHistory();
@@ -1573,8 +1573,7 @@ async function storeReceived(file) {
   }
   log(`history: got ${file.day} ids ${rows[0].id}..${rows[rows.length - 1].id}: ${r.inserted} new, ${r.ignored} already here${note}`);
   histS.days = await hist.days();
-  histMem.series = null;
-  if (active) renderTrend(active); else renderHistNote();
+  if (active) renderTrend(active); else renderHistNote();                // throttled: a transfer of 100 files is not 100 chart queries
 }
 function startView() {
   document.body.classList.add('view'); $('tabs').hidden = false; renderTabs();
