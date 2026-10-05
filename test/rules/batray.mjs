@@ -104,6 +104,12 @@ export default {
         const src = h.strip(h.read('app.js'));
         assert.ok(h.count(src, /publisher !== pub/g) >= 2); assert.ok(h.count(src, /tv !== t\b/g) >= 2);
       });
+      test('a hist-file envelope reaches rxChunk as its payload and only an assembled file reaches the store (viewer log 2026-10-04)', () => {
+        const src = h.strip(h.read('app.js'));
+        assert.ok(/if \(env\.k === 'hist-file'\) \{ rxHistFile\(env\); return; \}/.test(src));
+        const fn = src.slice(src.indexOf('function rxHistFile('), src.indexOf('async function storeReceived('));
+        assert.ok(/const c = env\.v \|\| \{\};/.test(fn) && /rxChunk\(histS, c\)/.test(fn) && /r\.action === 'file'\) storeReceived\(r\.file\)/.test(fn) && /r\.action === 'drop'/.test(fn), fn.slice(0, 400));
+      });
       test('the wake lock request is announced to the state before the await (one in flight)', () => {
         const src = h.strip(h.read('app.js'));
         const i = src.indexOf('navigator.wakeLock.request('); assert.ok(i > 0);

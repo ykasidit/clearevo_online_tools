@@ -26,6 +26,7 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope, suggestChannelName, parseSavedShare } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
+import { Flag } from './sync.js';
 import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, TREND_REFRESH_MS } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
@@ -35,7 +36,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.64';
+export const APP_VERSION = '0.9.65';
 
 /** @returns {any} */
 const $ = (id) => document.getElementById(id);
@@ -533,7 +534,7 @@ function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 // from bucket queries and logs what happened. ----
 const histS = historyState();
 const hist = new HistoryStore({ log });
-hist.onBackend = (name) => { histS.backend = name; renderStorage(); };   // memory-only after a locked pool: the Storage box says so
+hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') void explainLockOut(); };   // memory-only after a locked pool: the Storage box says so
 const histMem = { pending: new Map(), plot: null, plotParams: '', cursorIdx: null, series: null, drawAt: 0, drawing: false, redraw: false, spanAt: 0, demoId: 0 };
 const utf8 = new TextEncoder();
 function pendingRows() { let n = 0; for (const l of histMem.pending.values()) n += l.length; return n; }
@@ -662,8 +663,23 @@ async function maintainHistory() {
   renderHistNote();
 }
 /** Start: today's counters come from its database, so ids continue exactly where the last session stopped. */
+// The page whose worker holds the SQLite pool also holds a Web Lock for as long as it lives, so a page that cannot
+// take the pool can tell the two cases apart: another BatRay tab on this device (close it, reload), or a worker
+// killed mid-write whose files Chrome has not released yet (reload later). 2026-10-04 viewer log: 40 tries, memory.
+const HIST_LOCK = 'batray-history';
+async function holdHistoryLock() {
+  if (!navigator.locks) return;
+  try { await navigator.locks.request(HIST_LOCK, { mode: 'exclusive', ifAvailable: true }, (lock) => (lock ? new Flag().wait(true) : null)); } catch { /* lock API refused: nothing to hold */ }
+}
+async function explainLockOut() {
+  let other = false;
+  try { const q = navigator.locks ? await navigator.locks.query() : null; other = !!(q && q.held && q.held.some((l) => l.name === HIST_LOCK)); } catch { /* unknown */ }
+  log(other ? 'history: another BatRay tab on this device holds the history store - close it, then reload this page' : 'history: no other BatRay tab holds the store - a worker ended mid-write keeps its files until Chrome releases them; reload later');
+  if (other) toast(T.histOtherTab, 12000);
+}
 async function initHistory() {
   histS.backend = await hist.ready;
+  if (histS.backend === 'opfs') void holdHistoryLock(); else if (histS.backend === 'memory') void explainLockOut();
   const now = Date.now(), today = dayKey(now);
   histS.day = today;
   try {
@@ -1532,6 +1548,15 @@ async function requestHistory() {
   }
   if (viewer.request(have)) log(`history: asked the reader (this device has ${have.length} days; today complete to id ${histS.contig}, highest ${histS.todayRows}${histS.gap ? ', a hole' : ''})`);
 }
+// one hist-file chunk from the reader: the payload is env.v; rxChunk assembles the file and only a complete one is
+// stored (0.9.65: the 2026-10-04 viewer log showed every chunk handed to the store as the assembly's result object)
+function rxHistFile(env) {
+  const c = env.v || {};
+  if (c.n === 0) log(`history: receiving ${c.day} after id ${c.after} (${c.rows} rows, ${c.bytes} B) in ${c.of} chunks`);
+  const r = rxChunk(histS, c);
+  if (r.action === 'file') storeReceived(r.file).catch((e) => log(`history: storing ${r.file.day} failed: ${e.message}`));
+  else if (r.action === 'drop') log(`history: ${c.day} ${r.why} - voided, the next request fetches it again`);
+}
 async function storeReceived(file) {
   const rows = JSON.parse(new TextDecoder().decode(await gunzipBytes(unb64(file.b64))));
   if (!Array.isArray(rows) || !rows.length || !rows.every((r) => r && typeof r.t === 'number' && typeof r.id === 'number' && r.p)) throw new Error('not a row file');
@@ -1581,12 +1606,7 @@ function startView() {
         for (const x of env.v) { const p = packs.get(x.id) || addPack(new Pack(x.id, x.name, { remote: true })); p.name = x.name; if (x.demo && !p.demo) p.demo = { stop() {} }; p.remoteLive = viewer.state.live && x.connected; }
         renderPackBar(); return;
       }
-      if (env.k === 'hist-file') {
-        if (env.v && env.v.n === 0) log(`history: receiving ${env.v.day} after id ${env.v.after} (${env.v.rows} rows, ${env.v.bytes} B) in ${env.v.of} chunks`);
-        const file = rxChunk(histS, env);
-        if (file) storeReceived(file).catch((e) => log(`history: storing ${file.day} failed: ${e.message}`));
-        return;
-      }
+      if (env.k === 'hist-file') { rxHistFile(env); return; }
       let p = packs.get(env.p.id);
       if (!p) { p = addPack(new Pack(env.p.id, env.p.name, { remote: true })); }
       // a frozen tab gets the whole queue on resume (the 2026-09-22 log: 20 s of replay): a reading older than
@@ -1951,7 +1971,7 @@ if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
   shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
-  uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake,
+  uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake, rxHistFile,
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
 

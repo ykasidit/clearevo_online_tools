@@ -159,6 +159,26 @@ check('a row file from the reader is stored as that day with the reader\'s ids',
 const badRx = await evalJs(`window.__batrayTest.storeReceived({ day: '2026-09-11', after: 0, b64: btoa('not gzip') }).then(() => 'stored', (e) => 'refused: ' + e.message)`);
 const noIds = await evalJs(`(async () => { const T = window.__batrayTest; const gz = await T.gzipBytes(new TextEncoder().encode(JSON.stringify([{ t: 1, p: 'x' }]))); let b = ''; for (const x of gz) b += String.fromCharCode(x); return T.storeReceived({ day: '2026-09-11', after: 0, b64: btoa(b) }).then(() => 'stored', (e) => 'refused: ' + e.message); })()`);
 check('a broken file and a file of rows without ids are refused, never stored', /^refused/.test(badRx) && /^refused: not a row file/.test(noIds) && !(await evalJs('window.__batrayTest.histList()')).some((d) => d.day === '2026-09-11'), { badRx, noIds });
+// ---- 6b. the same file arriving as hist-file envelopes through the viewer's handler (0.9.65: the 2026-10-04 log showed
+// every chunk handed to the store unassembled, "storing undefined failed") ----
+const viaChunks = await evalJs(`(async () => {
+  const T = window.__batrayTest; const before = T.logLines().length;
+  const rows = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, t: Date.parse('2026-09-09T00:00:00Z') + i * 60000, p: 'n11', soc: 44, v: 52, w: -90 }));
+  const gz = await T.gzipBytes(new TextEncoder().encode(JSON.stringify(rows)));
+  let b = ''; for (const x of gz) b += String.fromCharCode(x);
+  const b64 = btoa(b); const size = Math.ceil(b64.length / 3); const parts = [b64.slice(0, size), b64.slice(size, 2 * size), b64.slice(2 * size)];
+  const env = (n, extra = {}) => ({ k: 'hist-file', p: { id: '*', name: '*' }, t: Date.now(), v: { day: '2026-09-09', after: 0, n, of: 3, b64: parts[n], rows: rows.length, bytes: gz.length, ...extra } });
+  T.rxHistFile(env(0)); T.rxHistFile(env(1)); T.rxHistFile(env(2));
+  await new Promise((r) => setTimeout(r, 1500));
+  const l = await T.histList(); const d = l.find((x) => x.day === '2026-09-09');
+  // out of order: chunk 2 of a new file first -> voided, nothing stored
+  T.rxHistFile({ ...env(2), v: { ...env(2).v, day: '2026-09-08' } });
+  await new Promise((r) => setTimeout(r, 300));
+  const l2 = await T.histList();
+  return { d, logs: T.logLines().slice(before).filter((x) => /history: (receiving|got|2026-09-08)/.test(x)), stray: l2.some((x) => x.day === '2026-09-08') };
+})()`);
+check('a row file arriving as three hist-file envelopes is assembled and stored; a chunk out of order voids its file', viaChunks.d && viaChunks.d.rows === 200 && viaChunks.d.maxId === 200 && viaChunks.logs.some((x) => /receiving 2026-09-09 after id 0 \(200 rows/.test(x)) && viaChunks.logs.some((x) => /got 2026-09-09 ids 1\.\.200: 200 new/.test(x)) && viaChunks.logs.some((x) => /2026-09-08 chunk 2 of 3 out of order - voided/.test(x)) && !viaChunks.stray, JSON.stringify(viaChunks).slice(0, 600));
+
 const gap = await evalJs(`(async () => {
   const T = window.__batrayTest; const hs = T.histState(); const before = T.logLines().length;
   const row = { id: hs.contig + 5, t: Date.now(), p: 'rem', soc: 40, v: 52, w: 10 };
@@ -188,8 +208,8 @@ check('old NDJSON day files are left alone at start: one log line says they are 
 
 // ---- 8. reload: ids continue from the database, the chart draws at once from bucket queries, 7 d reads the past days ----
 h = await hist();
-check('after a reload today\'s counters come from its database: rows, next id, complete prefix', h.backend === 'opfs' && h.todayRows === 124 && h.nextId === 129 && h.contig === 123 && h.days.length === 4, h);
-check('the start line says what is stored', ll.some((l) => /history: opfs, 4 days, \d+ KB, oldest 2026-09-01, today 124 rows \(highest id 128, complete to 123\)/.test(l)), ll.filter((l) => /history: opfs/.test(l)));
+check('after a reload today\'s counters come from its database: rows, next id, complete prefix', h.backend === 'opfs' && h.todayRows === 124 && h.nextId === 129 && h.contig === 123 && h.days.length === 5, h);
+check('the start line says what is stored', ll.some((l) => /history: opfs, 5 days, \d+ KB, oldest 2026-09-01, today 124 rows \(highest id 128, complete to 123\)/.test(l)), ll.filter((l) => /history: opfs/.test(l)));
 const known = await evalJs(`({ shown: !document.getElementById('connectKnown').hidden, txt: document.getElementById('connectKnown').textContent })`);
 check('the remembered BMS shows as a green "Connect to n11" button after a reload', known.shown && known.txt === 'Connect to n11', known);
 await evalJs(`document.getElementById('connectKnown').click(); 1`); await sleep(1500); await notify(AIO_32S_DEV); await notify(OWNER_32S_CELL); await sleep(1200);
@@ -220,7 +240,7 @@ check('the memory line counts queued readings, not a table in memory', /· \d+ r
 
 // ---- 9. Browse deletes one day; Delete through a sheet empties the store, never confirm() ----
 const del = await evalJs(`(async () => { const T = window.__batrayTest; T.openBrowse('hist'); await new Promise((r) => { setTimeout(r, 400); }); await T.browseDelete('2026-09-10'); await new Promise((r) => { setTimeout(r, 300); }); history.back(); await new Promise((r) => { setTimeout(r, 300); }); return (await T.histList()).map((d) => d.day); })()`);
-check('Browse deletes one day database on its own', del.length === 3 && !del.includes('2026-09-10'), del);
+check('Browse deletes one day database on its own', del.length === 4 && !del.includes('2026-09-10'), del);
 await evalJs(`window.__confirms = 0; window.confirm = () => { window.__confirms++; return true; }; document.getElementById('histClear').click(); 1`); await sleep(400);
 const sheet = await evalJs(`({ open: !document.getElementById('sheet').hidden, text: document.getElementById('sheet').textContent.replace(/\\s+/g, ' ').slice(0, 160), buttons: [...document.querySelectorAll('#sheet button')].map((b) => b.textContent.trim()) })`);
 check('Delete stored history opens a sheet with Cancel / Delete and the size', sheet.open && sheet.buttons.includes('Delete') && sheet.buttons.includes('Cancel') && /\d+ days?, \d+ KB/.test(sheet.text), sheet);

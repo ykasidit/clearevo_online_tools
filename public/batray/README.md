@@ -135,6 +135,20 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.65 (2026-10-05): history files from the reader were never stored on a viewer
+
+The owner's viewer log of 2026-10-04 (viewer 0.9.64, reader 0.9.60): the reader answered every request, 108
+files of 2000 rows in 40 s, and every chunk logged `storing undefined failed: ... atob`. The viewer's envelope
+handler passed the whole envelope to `rxChunk` (the payload is `env.v`) and then passed `rxChunk`'s result object
+to the store as if it were the file. Only the two direct tests of `rxChunk` and `storeReceived` existed; the
+wiring between them had never run in a test. Now `rxHistFile(env)` is the one entry, the browser suite feeds a
+file through it as three envelopes (and one out of order), and a house-rule test locks the wiring.
+
+The same log: the SQLite pool stayed busy for 40 tries ("another worker still holds its files") and the session
+ran memory-only. The page whose worker holds the pool now also holds a Web Lock (`batray-history`, released when
+the page goes), so a page that cannot take the pool queries the locks and says which it is: another BatRay tab on
+this device (log line + toast: close it, reload) or a worker that ended mid-write (reload later).
+
 ## 0.9.61: choose the History lines (owner ask 2026-10-02)
 
 "Make the history selectable, up to four at a time; default battery %,
