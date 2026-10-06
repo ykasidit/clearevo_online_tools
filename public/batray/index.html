@@ -151,6 +151,7 @@ body.demo #demoBadge{display:block}
 .readerOff{margin:8px 12px 0;padding:10px 12px;border:1px solid #6b4d1e;border-radius:8px;background:#22190a;color:#ffd99a;font:13px/1.45 'Segoe UI',Tahoma,sans-serif;cursor:pointer}
 .readerOff b{color:#ffe9a8}
 .readerOff .more{color:#9fc6e8;text-decoration:underline}
+#phoneWarn{cursor:default}#phoneWarn.low{border-color:#b33;background:#2a0f0f;color:#ffb3b3;font-weight:600}
 .chname{font:600 18px 'Segoe UI',Tahoma,sans-serif;color:#eaf4ff;text-align:center;letter-spacing:.3px}
 #viewName{margin:2px 0 8px;color:#8fe3ff;font-size:20px}#viewName[hidden]{display:none}
 .qrpanel .chname{color:#123}
@@ -315,6 +316,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
     <div class="panel">
       <div id="viewName" class="chname" data-tab="now" hidden></div>
       <div id="readerOff" class="readerOff" data-tab="now" role="button" tabindex="0" hidden></div>
+      <div id="phoneWarn" class="readerOff" data-tab="now" role="status" hidden></div>
       <details class="card" id="sharePanel" data-tab="more" hidden open>
         <summary><span data-i18n="shareH">Share live</span> <span class="note" data-i18n="shareSetupNote">a name for the viewers, and whether to keep the earlier link</span></summary>
         <div class="tvpanel">

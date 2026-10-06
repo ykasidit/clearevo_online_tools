@@ -12,6 +12,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p.startswith('/batray/'):
             if p == '/batray/' or p.endswith('/index.html'):
                 self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+                self.send_header('Permissions-Policy', 'geolocation=()')
             if p == '/batray/' or p.endswith('/index.html') or p.endswith('.js'):
                 self.send_header('Cross-Origin-Embedder-Policy', 'credentialless')
         super().end_headers()

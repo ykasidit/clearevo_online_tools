@@ -15,6 +15,7 @@
 // Read by test/common/*.test.js through the batray_*.test.js symlinks. Ceilings are ratchets: a file may only get
 // better; to lower one, convert the code, never widen the number without a reason next to it.
 import assert from 'node:assert/strict';
+import { readdirSync } from 'node:fs';
 
 export default {
   name: 'BatRay', dir: 'public/batray',
@@ -73,6 +74,16 @@ export default {
     sync: 'sync.js',
     // BatRay-specific gates: the lifecycle loops in live.js, the boundary callbacks, the identity re-checks
     custom(test, h) {
+      test('no location: no first-party BatRay file reads a position (owner 2026-10-06: "drop all location stuff"; the site also sends Permissions-Policy geolocation=())', () => {
+        const dir = new URL('../../public/batray/', import.meta.url);
+        const files = readdirSync(dir).filter((f) => /\.(js|html)$/.test(f) && !['mp4-muxer.js', 'uplot.js', 'sqlite3.js', 'qrcode.js'].includes(f));
+        assert.ok(files.includes('app.js') && files.includes('index.html'), files.join(' '));
+        for (const f of files) {
+          const src = h.strip(h.read(f));
+          assert.ok(!/navigator\.geolocation|getCurrentPosition|watchPosition|['"]geolocation['"]/.test(src), `${f}: reads a position`);
+          assert.ok(!/location-logic/.test(src), `${f}: imports the removed location module`);
+        }
+      });
       test('lifecycle loops: each link class has exactly one run(signal), start() refuses a second loop, stop() aborts it', () => {
         const src = h.strip(h.read('live.js'));
         const classes = src.split(/^export class /m).slice(1);

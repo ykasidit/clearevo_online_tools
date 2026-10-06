@@ -1,4 +1,4 @@
-// BatRay by ClearEvo.com - tests (batray_location.mjs): location parked (none taken); history greyed out when nothing can be kept
+// BatRay by ClearEvo.com - tests (batray_histoff.mjs): no location, ever; history greyed out when nothing can be kept
 // Copyright (C) 2026 Kasidit Yusuf
 //
 // This program is free software; you can redistribute it and/or modify it
@@ -12,9 +12,9 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 //
-// Owner asks 2026-10-06: (1) location in the reader's status (0.9.74), then "remove the location thing for now" (0.9.79):
-// this checks that none is taken even with Chrome allowing it; (2) "without SQLite file storage, drop and grey out with
-// the reason instead of risking the RAM limit". The position is emulated over CDP and the permission granted; the share runs over a fake
+// Owner asks 2026-10-06: (1) "drop all location stuff" (0.9.80, after 0.9.74-0.9.79 had it): this checks that none is
+// taken even with Chrome allowing it, and that the browser itself refuses it; (2) "without SQLite file storage, drop and
+// grey out with the reason instead of risking the RAM limit". The position is emulated over CDP and the permission granted; the share runs over a fake
 // relay socket and its status envelopes are decrypted with the link key. The memory-only store is forced with the
 // store's own lock-out (what a stuck pool does on a phone).
 const PORT = +(process.env.PORT || 8077), CDP = +(process.env.CDP || 9333);
@@ -48,21 +48,22 @@ const decryptStatus = `(async () => {
   return out;
 })()`;
 
-// ---- 1. location PARKED (owner 2026-10-06, 0.9.79: "remove the location thing for now, it is not used yet"): even with
-// Chrome allowing it and an old '1' stored from 0.9.74-0.9.78, no checkbox, no position read, none in the status ----
+// ---- 1. NO LOCATION (owner 2026-10-06, 0.9.80: "drop all location stuff ... coherent and trustable"): even with Chrome
+// allowing it to this origin and an old setting left from 0.9.74-0.9.78, nothing asks, the browser refuses, nothing is sent
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(1500);
 await evalJs(`localStorage.setItem('batray_location', '1'); localStorage.removeItem(window.__batrayTest.tabKey('share_last')); 1`);
 await send('Page.addScriptToEvaluateOnNewDocument', { source: `window.__geoCalls = 0; if (navigator.geolocation) { const g = navigator.geolocation; for (const m of ['getCurrentPosition', 'watchPosition']) { const f = g[m].bind(g); g[m] = (...a) => { window.__geoCalls++; return f(...a); }; } }` });
 await send('Page.navigate', { url: `${BASE}/batray/?test&n=1` }); await sleep(3000);
-let st = await evalJs(`({ box: !!document.getElementById('locKeep'), calls: window.__geoCalls, hook: typeof window.__batrayTest.locState })`);
-check('no location checkbox anywhere, and the position is never asked for (an old "on" is ignored)', !st.box && st.calls === 0 && st.hook === 'undefined', st);
+let st = await evalJs(`(async () => ({ box: !!document.getElementById('locKeep'), calls: window.__geoCalls, oldSetting: localStorage.getItem('batray_location'), header: (await fetch('/batray/', { method: 'HEAD' })).headers.get('permissions-policy'), allowed: document.featurePolicy ? document.featurePolicy.allowsFeature('geolocation') : null }))()`);
+check('the page is served with Permissions-Policy geolocation=() and Chrome reports location as not allowed for it', st.header === 'geolocation=()' && st.allowed === false, st);
+check('no location control, no position ever asked for, the old 0.9.74-0.9.78 setting removed', !st.box && st.calls === 0 && st.oldSetting === null, st);
 await evalJs(`document.getElementById('share').click(); 1`); await sleep(300);
 await evalJs(`document.getElementById('shareGo').click(); 1`); await sleep(2000);
 const sent = await evalJs(decryptStatus);
-check('the status sent to viewers carries no position, and starting a share asks for none', sent.length >= 1 && sent.every((x) => x.loc === null) && (await evalJs('window.__geoCalls')) === 0, sent.map((x) => x.loc));
-check('the log has no location lines', (await logs('/location:/')).length === 0, await logs('/location:/'));
+check('the statuses sent to viewers have no location field at all, and starting a share asks for none', sent.length >= 1 && sent.every((x) => !('loc' in x)) && (await evalJs('window.__geoCalls')) === 0, sent.map((x) => Object.keys(x)));
+check('the log has no location lines', (await logs('/location|loc=/')).length === 0, await logs('/location|loc=/'));
 const setup = await evalJs(`(() => { window.__batrayTest.statusTick('tick'); return window.__batrayTest.statusState().last.setup; })()`);
-check('the checklist has no location row (13 rows)', setup && setup.total === 13 && !setup.missing.includes('location') && !(setup.off || []).includes('location'), setup);
+check('the checklist has no location row (13 rows)', setup && setup.total === 13, setup);
 
 // ---- 3. no file storage: nothing kept, the card greyed with the reason ----
 await send('Page.navigate', { url: `${BASE}/batray/?test&n=3` }); await sleep(2500);
@@ -92,5 +93,5 @@ await send('Emulation.setUserAgentOverride', { userAgent: '' });
 const thrown = events.filter((e) => e.method === 'Runtime.exceptionThrown').map((e) => e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text);
 check('no page exceptions', thrown.length === 0, thrown);
 ws.close();
-console.log(fails ? 'BATRAY LOCATION TEST FAILED' : 'batray location test ok');
+console.log(fails ? 'BATRAY HISTOFF TEST FAILED' : 'batray histoff test ok');
 process.exit(fails ? 1 : 0);

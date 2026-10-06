@@ -135,6 +135,31 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.80 (2026-10-06): no location at all; the reader phone's charger
+
+- **Location removed** (owner: "drop all location stuff - more coherent and trustable; we can do it when we have a map
+  to show it"): `location-logic.js`, its test, the status `loc` field, the reader-sheet row and the strings are gone;
+  the 0.9.74-0.9.78 setting `batray_location` is deleted at start. The site sends `Permissions-Policy: geolocation=()`
+  on /batray/ (deploy.sh, site_checks fails without it; the browser-test server sends it too), so Chrome refuses
+  location to the page whatever the code says. Gate in `test/rules/batray.mjs`: no first-party file may name
+  `navigator.geolocation` / `getCurrentPosition` / `watchPosition` or the removed module.
+- **The reader PHONE's battery** (owner: the seahut reader phone went off, its charger was not connected). Chrome and
+  Edge give a page `navigator.getBattery()` (level, charging = a charger connected); the reader already sent both in
+  its status, at once on a charging change. Now: `phonePowerEvent(ps, bat)` in status-logic (`low` at or under
+  `PHONE_LOW_PCT` 20 % while not charging, once per dip; `unplugged`; `plugged`; the first status a viewer sees raises
+  no plug event) -> log line `reader phone: ...` + alert (kind 'reader', the existing "reader online/offline" switch);
+  `#phoneWarn` on a viewer while the reader phone is not charging (red when low; the offline box covers an absent
+  reader); on the reader itself a toast when unplugged and the checklist's charging row follows.
+- **statusLine never throws** on a status from a reader of another version (a missing `sto` / `miss` / `packs` threw
+  inside the viewer's handler, which then reported "could not be decrypted" and dropped the rest of the status).
+
+Tests: `batray_status.test.js` (the seahut replay: charging, unplugged, low once per dip, plugged; first status; a
+partial status); browser `batray_status.mjs` (encrypted statuses through the real viewer handler: no line while
+charging, the line + one alert when unplugged, red + one low alert at 20 %, none again at 18 %, plugged clears it, fits
+at 500 / 1440 px; a reader on a fake battery: unplugged -> toast, status, checklist), `batray_histoff.mjs` (renamed
+from batray_location: the header is served and Chrome reports geolocation not allowed, zero geolocation calls even
+when allowed, no `loc` field in what viewers get, the old setting removed).
+
 ## 0.9.79 (2026-10-06): the bug button is the debug-log switch; location parked
 
 Owner: "I could not enable debug and location before connecting - people who cannot connect could never enable debug

@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { statusSnapshot, statusChanged, statusDue, endReason, offlineModel, statusLine, STATUS_EVERY_MS } from '../public/batray/status-logic.js';
+import { statusSnapshot, statusChanged, statusDue, endReason, offlineModel, statusLine, STATUS_EVERY_MS, phonePowerState, phonePowerEvent, phoneWarn, PHONE_LOW_PCT } from '../public/batray/status-logic.js';
 import { fmtAgo, fmtWhen, offlineLines } from '../public/batray/view-logic.js';
 import { bootReport, lastRunRecord, lastRunReport, uploadBody } from '../public/batray/log-logic.js';
 import { sheetModel } from '../public/batray/ui-logic.js';
@@ -129,4 +129,30 @@ test('the last-run record carries the last status, and the next start logs it', 
 test('upload of a stored file: one without the header line gets it on top (the relay takes only "BatRay v" text)', () => {
   assert.equal(uploadBody({ header: ['BatRay v0.9.71 · x'], ring: '', stored: 'BatRay v0.9.70 · old\n---\nlines' }).body, 'BatRay v0.9.70 · old\n---\nlines');
   assert.equal(uploadBody({ header: ['BatRay v0.9.71 · x'], ring: '', stored: '10:00:00.000  lines' }).body, 'BatRay v0.9.71 · x\n---\n10:00:00.000  lines');
+});
+
+test('reader phone power on a viewer: unplugged, low once per dip, plugged again; the first status raises no plug event (seahut, 2026-10-06)', () => {
+  const ps = phonePowerState(), seq = [];
+  const see = (pct, chg) => { const ev = phonePowerEvent(ps, { pct, chg }); seq.push(ev); return ev; };
+  // the viewer opens while the reader phone charges; someone unplugs it; it runs down over the night
+  see(80, true); see(80, false); see(60, false); see(PHONE_LOW_PCT + 1, false); see(PHONE_LOW_PCT, false); see(15, false); see(15, true); see(16, true);
+  assert.deepEqual(seq, [null, 'unplugged', null, null, 'low', null, 'plugged', null]);
+  // unplugged again and low again: a new dip warns again
+  assert.equal(see(19, false), 'low');
+  // a viewer that opens on a phone already unplugged: no "unplugged" (nothing changed), but low says so, and the line shows
+  const p2 = phonePowerState();
+  assert.equal(phonePowerEvent(p2, { pct: 50, chg: false }), null);
+  assert.equal(phonePowerEvent(phonePowerState(), { pct: 10, chg: false }), 'low');
+  assert.equal(phonePowerEvent(p2, null), null, 'no battery figure (a browser without the API): nothing');
+  assert.deepEqual(phoneWarn({ pct: 50, chg: false }), { pct: 50, low: false });
+  assert.deepEqual(phoneWarn({ pct: 12, chg: false }), { pct: 12, low: true });
+  assert.equal(phoneWarn({ pct: 12, chg: true }), null, 'charging: no line');
+  assert.equal(phoneWarn(null), null);
+});
+
+test('statusLine never throws on a status from a reader of another version (fields missing or null)', () => {
+  for (const s of [{}, { why: 'tick', packs: null, sto: null, miss: null, setup: {} }, { bat: { pct: 5, chg: false }, packs: [{ name: 'n11', conn: true, soc: null, v: null, a: null }] }]) {
+    assert.doesNotThrow(() => statusLine(s), JSON.stringify(s));
+  }
+  assert.match(statusLine({ bat: { pct: 5, chg: false } }), /phone=5% not charging .*storage=\?\/\?MB/);
 });

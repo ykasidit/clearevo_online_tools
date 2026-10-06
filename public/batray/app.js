@@ -17,7 +17,7 @@ import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wak
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
 import { fmtWhen, stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fmtVersion } from './compat-logic.js';
-import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel } from './status-logic.js';
+import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel, phonePowerState, phonePowerEvent, phoneWarn } from './status-logic.js';
 import { parseIntent, intentEvent, resumePlan, resumeLine, RESUME_ON_KEY } from './resume-logic.js';
 import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggleDone, SETUP_DONE_KEY } from './setup-logic.js';
 import { pushDecision, pushState, b64uBytes } from './push-logic.js';
@@ -42,7 +42,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.79';
+export const APP_VERSION = '0.9.80';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -217,7 +217,7 @@ function logHeaderLines() {
 // what the header cannot know synchronously: battery, codec support, adapter state
 async function logEnvAsync() {
   // each probe on its own: one that never settles (getBattery in some builds) must not hold the others
-  void (async () => { try { if (navigator.getBattery) { const b = await navigator.getBattery(); battNow = b; log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => log(`battery: ${Math.round(b.level * 100)}%`)); b.addEventListener('chargingchange', () => { log(`battery: charging=${b.charging}`); statusTick('charging'); }); } } catch (e) { log(`battery: ${e.message}`); } })();
+  void (async () => { try { if (navigator.getBattery) { const b = await navigator.getBattery(); battNow = b; log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => log(`battery: ${Math.round(b.level * 100)}%`)); b.addEventListener('chargingchange', () => { log(`battery: charging=${b.charging}`); statusTick('charging'); onPhoneCharging(b); }); } } catch (e) { log(`battery: ${e.message}`); } })();
   if (typeof VideoEncoder !== 'undefined') {
     const out = [];
     for (const codec of ['avc1.42E01E', 'avc1.4D401F', 'vp09.00.10.08']) { try { const r = await VideoEncoder.isConfigSupported({ codec, width: 1280, height: 720, bitrate: 500000, framerate: 1, ...(codec.startsWith('avc') ? { avc: { format: 'avc' } } : {}) }); out.push(`${codec}=${yn(r.supported)}`); } catch (e) { out.push(`${codec}=err`); } }
@@ -1502,7 +1502,7 @@ function statusNow(why) {
     usage: histS.usage, quota: histS.quota, hist: { backend: histS.backend, days: histS.days.length, rows: histS.todayRows, pend: pendingRows(), fails: (hist.stats.fails || 0) + (hist.stats.timeouts || 0) },
     log: { on: logS.on, files: ls.files, bytes: ls.bytes }, browser: { name: browserInfo.name, version: fmtVersion(browserInfo.version), os: browserInfo.os },
     missing: compatCheck('reader', browserInfo, compatFeatures()).missing, wake: !!wakeS.held, net: { online: navigator.onLine, type: c.type || c.effectiveType || '' },
-    packs: readerPacks(), prev: statusS.prevRun, sharing: !!publisher, setup: checklistSummary(setupCheck()), loc: null,
+    packs: readerPacks(), prev: statusS.prevRun, sharing: !!publisher, setup: checklistSummary(setupCheck()),
   });
 }
 /** Build the status; log it when it changed (or as last words, or every 10 min); send it while sharing when due. */
@@ -1995,8 +1995,9 @@ async function storeReceived(file) {
   histS.days = await hist.days();
   if (active) renderTrend(active); else renderHistNote();                // throttled: a transfer of 100 files is not 100 chart queries
 }
-// The reader phone's location (0.9.74-0.9.78) is parked (owner 2026-10-06: "remove the location thing for now, it is
-// not used yet"): no checkbox, no position is read. location-logic.js and the status / reader-sheet fields stay for later.
+// No location (0.9.80, owner: "drop all location stuff - we can do it when we have a map to show it"): BatRay reads no
+// position, and the site tells Chrome so (Permissions-Policy: geolocation=() on /batray/). The setting 0.9.74-0.9.78 left goes.
+try { localStorage.removeItem('batray_location'); } catch { /* no storage */ }
 
 // ---- the reader as the viewer last heard of it (0.9.71): its status envelope (the room keeps the newest) and the
 // relay's record of how its socket ended. Shown in a box while the reader is away, and in the Reader phone sheet.
@@ -2009,11 +2010,32 @@ function rxReaderStatus(env) {
     readerS.logged = v; readerS.loggedAt = now;
     log(`reader status${env.retained ? ` (kept by the room, ${env.ageS} s old)` : ''}: ${statusLine(v)}`);
   }
+  if (!env.stale) {                                                          // a fresh status: did the reader phone's own power change?
+    const ev = phonePowerEvent(phoneS, v.bat);
+    if (ev) { log(`reader phone: ${ev} (${v.bat.pct} %, ${v.bat.chg ? 'charging' : 'not charging'})`); if (alerts) alerts.notify('reader', T.evPhone[ev], T.evPhoneBody[ev](v.bat.pct)); }
+  }
   renderReaderOff();
+}
+// The reader PHONE's battery (0.9.80, owner 2026-10-06: the seahut reader phone died, its charger was not connected).
+const phoneS = phonePowerState();
+/** Viewer: a line while the reader phone is not charging (the offline box says it when the reader is away). */
+function renderPhoneWarn() {
+  const el = $('phoneWarn'); if (!el) return;
+  const away = !!(viewer && viewer.state.reader === false);
+  const w = viewMode && !away ? phoneWarn(readerS.status && readerS.status.bat) : null;
+  el.hidden = !w; el.classList.toggle('low', !!(w && w.low));
+  el.textContent = w ? T.phoneWarn(w.pct, w.low) : '';
+}
+/** Reader: this phone was unplugged (or plugged in) - say so here too, and the setup sign follows. */
+function onPhoneCharging(b) {
+  if (viewMode) return;
+  if (!b.charging) toast(T.phoneUnpluggedHere(Math.round(b.level * 100)), 12000);
+  setupCheck(); renderSetupWarn();
 }
 function readerModel() { return offlineModel({ status: readerS.status, statusAt: readerS.at, gone: viewer ? viewer.state.gone : null, now: Date.now() }); }
 let readerOffLogged = '';
 function renderReaderOff() {
+  renderPhoneWarn();
   const el = $('readerOff'); if (!el) return;
   $('readerPhone').hidden = !viewMode;
   const away = !!(viewer && viewer.state.reader === false);

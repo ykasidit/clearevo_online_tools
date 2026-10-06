@@ -83,7 +83,7 @@ test('the checklist: each item checked where the page can, manual steps by the p
   const bare = checklistSummary(checklist({}));
   assert.ok(!bare.ok && bare.unknown.includes('charging') && bare.unknown.includes('notify'), 'nothing known is never "ok"');
   assert.deepEqual(checklist({ history: 'memory' }).find((i) => i.id === 'history').state, 'missing');
-  // location parked (owner 2026-10-06, 0.9.79: "remove the location thing for now"): no row, whatever is passed
+  // no location (owner 2026-10-06, 0.9.80: "drop all location stuff"): no row, whatever is passed
   assert.ok(!ITEMS.includes('location') && !checklist({ ...h46, location: true }).some((i) => i.id === 'location'));
   // an 'off' row (a choice the person made) counts ready and raises no sign: the summary keeps that rule for later rows
   const offItems = [{ id: 'a', state: 'ok' }, { id: 'b', state: 'off' }];
@@ -150,37 +150,4 @@ test('the "reader stopped" push: sign up only while sharing with notifications a
   assert.equal(pushState({ sharing: true, permission: 'default', subscribed: false }), false);
   const key = b64uBytes('BPm3-_Yz' + 'A'.repeat(80));
   assert.ok(key instanceof Uint8Array && key[0] === 0x04, 'base64url with - and _, unpadded');
-});
-
-test('location: asked only after a tap, read every 10 min once allowed, rounded, never in a log line', async () => {
-  const { locOn, locDecision, locFix, locState, locLogText, locCoords, LOC_EVERY_MS } = await import('../public/batray/location-logic.js');
-  assert.equal(locOn(null), false, 'off until ticked (owner, 0.9.75)'); assert.equal(locOn('0'), false); assert.equal(locOn('1'), true); assert.equal(locOn('true'), false);
-  const now = 10_000_000;
-  assert.equal(locDecision({ on: false, permission: 'granted', now }).why, 'turned off');
-  assert.equal(locDecision({ on: true, permission: 'prompt', now }).why, 'waits for a tap to ask', 'never a prompt out of the blue');
-  assert.equal(locDecision({ on: true, permission: 'prompt', now, gesture: true }).action, 'ask');
-  assert.equal(locDecision({ on: true, permission: 'denied', now, gesture: true }).action, 'none');
-  assert.equal(locDecision({ on: true, permission: 'none', now }).why, 'this browser has no location');
-  assert.equal(locDecision({ on: true, permission: 'granted', now }).action, 'fetch', 'first fix');
-  assert.equal(locDecision({ on: true, permission: 'granted', lastFixAt: now - 60_000, now }).why, 'fresh');
-  assert.equal(locDecision({ on: true, permission: 'granted', lastFixAt: now - LOC_EVERY_MS, now }).action, 'fetch');
-  assert.equal(locDecision({ on: true, permission: 'granted', lastFixAt: now - 1, now, asking: true }).why, 'a request is open');
-  const fix = locFix({ coords: { latitude: 13.756331234, longitude: 100.501765432, accuracy: 18.6 }, timestamp: now }, now);
-  assert.deepEqual(fix, { lat: 13.75633, lon: 100.50177, acc: 19, at: now });
-  assert.equal(locFix({}, now), null);
-  assert.equal(locLogText(fix), 'fix ±19 m'); assert.ok(!locLogText(fix).includes('13.7'), 'no coordinates in a log line');
-  assert.equal(locCoords(fix), '13.75633, 100.50177');
-  assert.equal(locState({ on: true, permission: 'granted' }), true);
-  assert.equal(locState({ on: false, permission: 'granted' }), 'off', 'off is the person\'s choice, no warning (0.9.76)');
-  assert.equal(locState({ on: true, permission: 'prompt' }), false);
-  assert.equal(locState({ on: true, permission: 'none' }), null);
-  const s = statusSnapshot({ now, loc: fix });
-  assert.deepEqual(s.loc, fix); assert.match(statusLine(s), /loc=fix ±19 m/); assert.ok(!statusLine(s).includes('100.5'), 'the status line (logged) has no coordinates');
-  for (const [lang, T] of Object.entries(I18N)) {
-    const m = sheetModel('reader', { reader: { status: s, live: true, model: null } }, T);
-    const row = m.rows.find(([k]) => k === T.rsLocation);
-    assert.ok(row && row[1].startsWith('13.75633, 100.50177 (±19 '), `${lang}: ${row}`);
-    const off = sheetModel('reader', { reader: { status: statusSnapshot({ now }), live: true, model: null } }, T);
-    assert.ok(!off.rows.some(([k]) => k === T.rsLocation), `${lang}: no location row when the reader sends none (parked since 0.9.79)`);
-  }
 });

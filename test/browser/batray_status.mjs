@@ -34,6 +34,10 @@ const logs = (re) => evalJs(`window.__batrayTest.logLines().filter((l) => ${re}.
 
 // the room: POST /room answers at once; every WebSocket is a fake that opens and records what is sent
 await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+  if (sessionStorage.getItem('fakeBattery')) {                      // a phone battery the test can unplug (0.9.80)
+    const bat = new EventTarget(); bat.level = 0.42; bat.charging = true; window.__bat = bat;
+    navigator.getBattery = async () => bat;
+  }
   const rf = window.fetch.bind(window);
   window.fetch = async (u, i = {}) => {
     const url = String(u);
@@ -169,6 +173,54 @@ check('one bank, one pack: the old id\'s retained slots add no second "n11"', pk
 lines = await logs('/live: an old retained .* of pack "n11" \\(bt-OLDid00000.*ignored - the reader lists only 1 pack/');
 check('...the log says once that an old retained slot was ignored', lines.length === 1, await logs('/live: (pack|an old)/'));
 check('...and that n11 came from the reader\'s list', (await logs('/live: pack "n11" added \\(bt-NEWid00000.*from the reader.s pack list/')).length === 1, await logs('/live: (pack|an old)/'));
+
+// ---- 7. the reader PHONE's battery (0.9.80, owner: the seahut reader phone died, its charger was not connected) ----
+// viewer side: the reader's statuses, as the room delivers them, say charging, then not, then low, then charging again
+const sendStatus = (bat) => evalJs(`(async () => {
+  const L = await import('/batray/live-logic.js');
+  const key = await L.importKey('${KEY}');
+  const sock = window.__wsAll[window.__wsAll.length - 1];
+  const now = Date.now();
+  const v = { why: 'charging', t: now, up: 600, ver: '0.9.80', sid: 'r1d2', vis: true, bat: ${JSON.stringify(bat)}, mem: null, sto: { used: 26, quota: 60000 }, hist: null, log: null, br: 'chrome 141', os: 'android', miss: [], wake: true, sharing: true, net: { on: true, type: 'wifi' }, packs: [], prev: null, setup: null };
+  sock.push({ type: 'status', viewers: 1, live: true });
+  const b = await L.encrypt(key, { k: 'status', p: { id: '*', name: '*' }, t: now, v });
+  let s = ''; for (const x of b) s += String.fromCharCode(x);
+  sock.push({ type: 'd', b: btoa(s) });
+  return 1;
+})()`);
+const warnNow = () => evalJs(`({ shown: !document.getElementById('phoneWarn').hidden, text: document.getElementById('phoneWarn').textContent, low: document.getElementById('phoneWarn').classList.contains('low') })`);
+await sendStatus({ pct: 80, chg: true }); await sleep(600);
+let pw = await warnNow();
+check('viewer: the reader phone charges - no warning line', !pw.shown, pw);
+await sendStatus({ pct: 79, chg: false }); await sleep(600);
+pw = await warnNow();
+check('...unplugged: the line says so (79 %, not charging, plug it in)', pw.shown && /Reader phone: 79 %, not charging/.test(pw.text) && /Plug it in/.test(pw.text) && !pw.low, pw);
+check('...and the viewer is told once: a log line and an alert (no channel on in the test: the alert is logged)', (await logs('/reader phone: unplugged \\(79 %/')).length === 1 && (await logs('/alert.*Reader phone unplugged/')).length === 1, await logs('/reader phone|alert/'));
+await sendStatus({ pct: 20, chg: false }); await sleep(600);
+pw = await warnNow();
+check('...at 20 %: the line turns red, "battery low", and the low alert fires once', pw.shown && pw.low && /battery low/.test(pw.text) && (await logs('/alert.*Reader phone battery low/')).length === 1, pw);
+await sendStatus({ pct: 18, chg: false }); await sleep(400);
+check('...no second low alert in the same dip', (await logs('/alert.*Reader phone battery low/')).length === 1);
+await sendStatus({ pct: 18, chg: true }); await sleep(600);
+pw = await warnNow();
+check('...plugged in again: the line goes, "charging again" is said', !pw.shown && (await logs('/alert.*Reader phone charging again/')).length === 1, pw);
+for (const [w, h] of [[500, 900], [1440, 900]]) {
+  await sendStatus({ pct: 12, chg: false }); await sleep(300);
+  await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: w < 700 }); await sleep(300);
+  const r = await evalJs(`(() => { const b = document.getElementById('phoneWarn').getBoundingClientRect(); return { left: b.left, right: b.right, vw: innerWidth, h: b.height, sw: document.documentElement.scrollWidth }; })()`);
+  check(`${w}px: the reader-phone line fits`, r.h > 10 && r.left >= 0 && r.right <= r.vw && r.sw <= r.vw, r);
+}
+await send('Emulation.clearDeviceMetricsOverride');
+
+// reader side: the phone running the reader is unplugged - it says so itself, and the setup sign shows
+await send('Page.navigate', { url: `${BASE}/batray/?test&power=1` }); await sleep(1500);
+await evalJs(`sessionStorage.setItem('fakeBattery', '1'); 1`);
+await send('Page.navigate', { url: `${BASE}/batray/?test&power=2` }); await sleep(3000);
+await evalJs(`(() => { window.__bat.charging = false; window.__bat.level = 0.37; window.__bat.dispatchEvent(new Event('chargingchange')); return 1; })()`); await sleep(600);
+const rd = await evalJs(`({ toast: document.getElementById('toast').textContent, items: (() => { window.__batrayTest.statusTick('tick'); const st = window.__batrayTest.statusState().last; return st && st.setup ? st.setup.missing : null; })(), bat: window.__batrayTest.statusState().last ? window.__batrayTest.statusState().last.bat : null })`);
+check('reader: unplugged - a toast on this phone ("not charging (37 %)"), the status carries it, the checklist names charging', /This phone is not charging \(37 %\)/.test(rd.toast) && rd.bat && rd.bat.pct === 37 && rd.bat.chg === false && rd.items && rd.items.includes('charging'), rd);
+check('...and its log says so', (await logs('/battery: charging=false/')).length === 1);
+await evalJs(`sessionStorage.removeItem('fakeBattery'); 1`);
 
 const thrown = events.filter((e) => e.method === 'Runtime.exceptionThrown').map((e) => e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text).filter((t) => !/app\.js/.test(t));
 check('no page exceptions', thrown.length === 0, thrown);
