@@ -135,6 +135,33 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.72 (2026-10-06): a reopened reader resumes after a 30 s countdown; the reader setup checklist
+
+- **Resume** (`resume-logic.js`): the intent - what the person last asked for - is kept in localStorage `batray_resume`
+  (`intentEvent`: 'connected' on each GATT connect, 'disconnected' on the toolbar Disconnect, 'share-on' / 'share-off'
+  on a share started / stopped by the person; a drop, a crash or a reload changes nothing). On start `resumePlan()`
+  decides: a reader that was sharing or connected counts down `RESUME_S` = 30 s in the 'resume' sheet (Now / Cancel,
+  a bar), one loop selecting the clock against the sheet's answer (`runResume`); then `doResume()` shares again on
+  the last link (the share setup filled from the saved name and link) and reconnects each remembered BMS that
+  `getDevices()` still lists (`connAct(p, 'known')`, no chooser). Without getDevices (the Chrome flag "Use the new
+  permissions backend for Web Bluetooth" off - both phones today) the share resumes and a toast names the BMS that
+  needs a tap. Notes: `#autoResume` (localStorage `batray_auto_resume`, default on). Browser tests skip it unless
+  `?resumetest[=seconds]`.
+- **Reader setup checklist** (`setup-logic.js`): 12 items - Chrome 108+, Web Bluetooth, the permissions flag
+  (getDevices), the remembered BMS still allowed, notifications, persistent storage, SQLite history, wake lock,
+  charging, resume on, and two Chrome settings the page cannot see (auto-update off, battery Unrestricted) that the
+  person confirms with Done (`batray_setup_done`). Only Chrome and the page (owner: no developer options, no extra
+  apps). Connect (`setupGate`, after the browser gate) shows it when something is missing or not confirmed, with
+  Continue anyway (asked once per page load; skipped in the browser tests unless `?setupgate`); a ⚠ (`#setupWarn`,
+  SVG `<g>` - it has no `.hidden` property, toggle the attribute) follows "updated" while a reader runs with
+  something left, and opens the list with Close, the Chrome version and the flag row; `#setupOpen` in Notes opens it
+  any time. `checklistLine()` goes into the log on every change and on Continue anyway; the status carries the
+  summary, shown in the viewer's Reader phone sheet.
+
+Tests: `batray_resume.test.js`, browser `batray_resume.mjs` (over the freeze test's fake BLE device: Now shares and
+reconnects with no chooser, Cancel, the countdown running out, no getDevices, the checklist with Done and Continue
+anyway, the sign at 500 / 1440 px). UNVERIFIED on a phone: reconnecting without a tap after the flag is turned on.
+
 ## 0.9.71 (2026-10-06): every outage explains itself - reader status, last words, the relay's close record, a boot trail
 
 The h46 reader went offline with the screen off and its tab gone, and nothing anywhere said when or how; two new tabs

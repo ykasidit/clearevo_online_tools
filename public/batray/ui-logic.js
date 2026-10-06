@@ -17,6 +17,8 @@
 // tab tap, a tile tap, a sheet choice or the Back button does, and build the
 // plain-language sheet contents from a reading. No DOM, no history API here.
 import { fmtVersion, OS_LABEL, canTryAnyway } from './compat-logic.js';
+import { RESUME_S } from './resume-logic.js';
+import { checklistSummary } from './setup-logic.js';
 import { fmt, flowModel, etaModel, chipList, socClass, fmtWhen, fmtAgo, offlineLines } from './view-logic.js';
 
 export const TABS = ['now', 'history', 'more'];
@@ -138,6 +140,31 @@ export function sheetModel(kind, ctx, T) {
       m.actions = [{ id: 'close', label: T.close, primary: false }];
       break;
     }
+    case 'resume': {                                     // the 30 s countdown on a reopened reader (0.9.72)
+      const r = ctx.resume; if (!r) break;
+      const p = r.plan, names = (list) => list.map((x) => x.name || x.id).join(', ');
+      const parts = [];
+      if (p.share) parts.push(T.resumeShare);
+      if (p.connect.length) parts.push(T.resumeConnect(names(p.connect)));
+      m.title = T.resumeTitle;
+      m.lead = `${T.resumeIn(r.left)} ${parts.join(' · ')}${p.cannot.length ? ` ${T.resumeCannot(names(p.cannot))}` : ''}`.trim();
+      m.progress = Math.round(((RESUME_S - r.left) / RESUME_S) * 100);
+      m.actions = [{ id: 'now', label: T.resumeNow, primary: true }, { id: 'cancel', label: T.cancel, primary: false }];
+      break;
+    }
+    case 'checklist': {                                  // the reader setup checklist (0.9.72): tap Connect, or the warning sign
+      const c = ctx.setup; if (!c) break;
+      const sum = checklistSummary(c.items);
+      m.title = T.setupTitle;
+      m.lead = `${T.setupLead(sum.ready, sum.total)}${c.mode === 'connect' && !sum.ok ? ` ${T.setupContinueNote}` : ''}`;
+      m.items = c.items.map((i) => ({ id: i.id, kind: 'check', state: i.state, name: T.setupItem[i.id] || i.id, size: T.setupState[i.state], hint: i.state === 'ok' || i.state === 'done' ? '' : (T.setupHow[i.id] || ''), tog: !!i.manual, togLabel: i.state === 'done' ? T.setupUndo : T.setupMark }));
+      const f = c.facts || {};
+      m.rows.push([T.rsBrowser, `${f.browser || '?'}${f.os ? ` · ${OS_LABEL[f.os] || f.os}` : ''}`], [T.setupFlag, f.getDevices ? T.setupFlagOn : T.setupFlagOff], [T.rsVersion, `BatRay ${f.ver || ''}`]);
+      m.actions = c.mode === 'connect'
+        ? [{ id: 'go', label: sum.ok ? T.btConnect : T.setupAnyway, primary: true }, { id: 'cancel', label: T.cancel, primary: false }]
+        : [{ id: 'ok', label: T.close, primary: true }];
+      break;
+    }
     case 'reader': {                                     // the reader phone as the viewer last heard of it (0.9.71)
       const r = ctx.reader || {}, st = r.status, mm = r.model;
       m.title = T.readerSheetTitle;
@@ -157,6 +184,7 @@ export function sheetModel(kind, ctx, T) {
         m.rows.push([T.rsScreen, `${st.vis ? T.rsVisible : T.rsHidden}${st.wake ? ` · ${T.rsWakeHeld}` : ''}`]);
         m.rows.push([T.rsNet, st.net ? `${st.net.on ? T.rsOnline : T.rsOffline}${st.net.type ? ` · ${st.net.type}` : ''}` : T.rsUnknown]);
         m.rows.push([T.rsRunning, st.up !== null ? fmtAgo(st.up * 1000, T) : T.rsUnknown]);
+        if (st.setup) m.rows.push([T.rsSetup, T.rsSetupVal(st.setup.ready, st.setup.total, [...st.setup.missing, ...st.setup.todo].map((k) => T.setupItem[k] || k).join(', '))]);
         if (st.prev) m.rows.push([T.rsPrev, `${st.prev.clean ? T.rsPrevClean : T.rsPrevUnclean}${st.prev.at ? ` · ${fmtWhen(st.prev.at)}` : ''}`]);
         m.rows.push([T.rsVersion, `BatRay ${st.ver}${st.sid ? ` · ${st.sid}` : ''}`]);
       }

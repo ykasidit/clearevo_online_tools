@@ -31,7 +31,7 @@ const mb = (b) => (typeof b === 'number' && b > 0 ? Math.round(b / 1048576) : nu
  *  @param {any} [o] */
 export function statusSnapshot({
   why = 'tick', now, startedAt, ver = '', sid = '', visible = true, batt = null, mem = null, usage = null, quota = null,
-  hist = null, log = null, browser = null, missing = [], wake = false, net = null, packs = [], prev = null, sharing = false,
+  hist = null, log = null, browser = null, missing = [], wake = false, net = null, packs = [], prev = null, sharing = false, setup = null,
 } = {}) {
   return {
     why, t: now, up: startedAt ? Math.max(0, Math.round((now - startedAt) / 1000)) : null, ver, sid, vis: !!visible,
@@ -45,6 +45,7 @@ export function statusSnapshot({
     net: net ? { on: net.online !== false, type: net.type || '' } : null,
     packs: packs.map((p) => ({ name: String(p.name || '').slice(0, 32), conn: !!p.connected, at: p.at || null, soc: p.soc ?? null, v: p.v ?? null, a: p.a ?? null })),
     prev: prev ? { clean: !!prev.clean, at: prev.at || null } : null,
+    setup: setup ? { ready: setup.ready, total: setup.total, missing: [...setup.missing], todo: [...setup.todo] } : null,   // the reader checklist (0.9.72)
   };
 }
 
@@ -111,6 +112,7 @@ export function statusLine(s) {
     `${s.br || '?'}${s.os ? ` ${s.os}` : ''}`, `missing=${s.miss.length ? s.miss.join(',') : 'none'}`,
     `wake=${s.wake ? 'held' : 'no'}`, `share=${s.sharing ? 'on' : 'off'}`,
     `net=${s.net ? `${s.net.on ? 'online' : 'OFFLINE'}${s.net.type ? ' ' + s.net.type : ''}` : '?'}`,
+    `setup=${s.setup ? `${s.setup.ready}/${s.setup.total}${s.setup.missing.length ? ` missing:${s.setup.missing.join(',')}` : ''}${s.setup.todo.length ? ` todo:${s.setup.todo.join(',')}` : ''}` : '?'}`,
     `v${s.ver}`, `sid=${s.sid}`, `packs: ${packs}`,
   ].join(' ');
 }

@@ -18,6 +18,8 @@ import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } fr
 import { stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fmtVersion } from './compat-logic.js';
 import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel } from './status-logic.js';
+import { parseIntent, intentEvent, resumePlan, resumeLine, RESUME_KEY, RESUME_ON_KEY } from './resume-logic.js';
+import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggleDone, SETUP_DONE_KEY } from './setup-logic.js';
 import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
@@ -28,7 +30,7 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope, suggestChannelName, parseSavedShare } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
-import { Flag } from './sync.js';
+import { Flag, Channel, select, sleep } from './sync.js';
 import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
@@ -38,7 +40,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.71';
+export const APP_VERSION = '0.9.72';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -181,6 +183,7 @@ class Pack {
       this.device = e.detail; this.frames = 0;
       this.plog(`gatt connected: ${this.label} id=${String(e.detail.id || '').slice(0, 10)}…`);
       connAct(this, 'gatt-connected');
+      if (!this.demo && e.detail && e.detail.id) intentNote('connected', { id: e.detail.id, name: this.label });
       this.loadThunk = () => T.loading(this.label);
       if (this.isActive) { setStatus(() => T.connectedTo(this.label), 'good'); $('oneApp').hidden = false; $('btNote').hidden = false; }
       // Auto-reconnect no longer waits for an adapter-state probe (which this
@@ -1174,7 +1177,7 @@ function tickAge() {
   els.updated.setAttribute('fill', a.stale ? '#ffd24a' : '#6f8aa6');
   const lines = active ? stampLines({ readerAt: active.readerAt, localAt: active.localAt, viewer: !!active.remote }, T) : [];
   $('updR').textContent = lines[0] || ''; $('updL').textContent = lines[1] || '';
-  if (viewMode) renderReaderOff();
+  if (viewMode) renderReaderOff(); else renderSetupWarn();
   fitCorner($('updR')); fitCorner($('updL'));
 }
 setInterval(tickAge, 1000);
@@ -1348,7 +1351,7 @@ function statusNow(why) {
     usage: histS.usage, quota: histS.quota, hist: { backend: histS.backend, days: histS.days.length, rows: histS.todayRows, pend: pendingRows(), fails: (hist.stats.fails || 0) + (hist.stats.timeouts || 0) },
     log: { on: logS.on, files: ls.files, bytes: ls.bytes }, browser: { name: browserInfo.name, version: fmtVersion(browserInfo.version), os: browserInfo.os },
     missing: compatCheck('reader', browserInfo, compatFeatures()).missing, wake: !!wakeS.held, net: { online: navigator.onLine, type: c.type || c.effectiveType || '' },
-    packs: readerPacks(), prev: statusS.prevRun, sharing: !!publisher,
+    packs: readerPacks(), prev: statusS.prevRun, sharing: !!publisher, setup: checklistSummary(setupCheck()),
   });
 }
 /** Build the status; log it when it changed (or as last words, or every 10 min); send it while sharing when due. */
@@ -1367,9 +1370,130 @@ document.addEventListener('freeze', () => statusTick('freeze'));
 document.addEventListener('resume', () => statusTick('resume'));
 window.addEventListener('pagehide', () => statusTick('pagehide'));
 
+// ---- resume after a reopen (0.9.72, resume-logic.js): the intent is what the person last asked for; a reopened reader
+// counts down RESUME_S, then shares again and reconnects what Chrome still allows without a tap.
+let intentNow = (() => { try { return parseIntent(localStorage.getItem(RESUME_KEY)); } catch { return parseIntent(null); } })();
+function intentNote(ev, inp = {}) {
+  if (viewMode) return;
+  intentNow = intentEvent(intentNow, ev, inp);
+  try { localStorage.setItem(RESUME_KEY, JSON.stringify(intentNow)); } catch { /* no storage */ }
+  log(`resume intent: ${ev}${inp.name ? ` ${inp.name}` : ''} -> share ${intentNow.share ? 'on' : 'off'}, packs ${intentNow.packs.map((x) => x.name || x.id).join(', ') || 'none'}`);
+}
+const resumeOn = () => { try { return localStorage.getItem(RESUME_ON_KEY) !== '0'; } catch { return true; } };
+const resumeS = { plan: null, left: 0 };
+/** A sheet's answer into a channel, so a loop can select on it next to its clock. */
+async function sheetAnswer(ch, kind) { ch.push(await openSheet(kind)); }
+async function startResume() {
+  const q = new URLSearchParams(location.search);
+  if (q.has('test') && !q.has('resumetest')) return;                 // the browser tests drive their own connects
+  const plan = resumePlan({ intent: intentNow, enabled: resumeOn(), viewer: !!viewMode, demo: q.has('demo'), permittedIds: await permittedIds() });
+  if (q.has('test') && +q.get('resumetest') > 0) plan.seconds = +q.get('resumetest');   // a short countdown for the browser test
+  log(resumeLine(plan));
+  if (plan.action === 'countdown') await runResume(plan);
+}
+/** The countdown: one loop, the clock and the sheet's answer selected each second. */
+async function runResume(plan) {
+  resumeS.plan = plan; resumeS.left = plan.seconds;
+  const answer = new Channel();
+  void sheetAnswer(answer, 'resume');
+  const ac = new AbortController();
+  for (;;) {
+    const r = await select(ac.signal, { tick: (sg) => sleep(1000, sg), answer: (sg) => answer.next({ signal: sg }) });
+    if (r.key === 'answer') {
+      if (r.value === 'now') { log('resume: Now tapped'); break; }
+      log(`resume: cancelled (${r.value || 'dismissed'}) - nothing resumed`); resumeS.plan = null; return;
+    }
+    resumeS.left--;
+    if (resumeS.left <= 0) { log('resume: countdown over'); break; }
+    if (uiS.sheet && uiS.sheet.kind === 'resume') updateSheet('resume');
+  }
+  if (uiS.sheet && uiS.sheet.kind === 'resume') closeSheet('go', 'countdown');
+  resumeS.plan = null;
+  await doResume(plan);
+}
+async function doResume(plan) {
+  if (plan.share && !publisher) {
+    const saved = savedShare();
+    let name = ''; try { name = localStorage.getItem('batray_share_name') || ''; } catch { /* no storage */ }
+    $('shareName').value = name; $('shareReuse').checked = !!saved;
+    log(`resume: sharing again${saved ? ` on room ${saved.room}` : ' (no saved link: a new one)'}`);
+    await beginShare();
+  }
+  let devs = []; try { devs = navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function' ? await navigator.bluetooth.getDevices() : []; } catch (e) { log(`resume: getDevices failed: ${e.message}`); }
+  for (const x of plan.connect) {
+    const dev = devs.find((d) => d.id === x.id);
+    if (!dev) { log(`resume: ${x.name || x.id} is no longer allowed by Chrome`); continue; }
+    if ([...packs.values()].some((q) => q.device && q.device.id === dev.id)) continue;
+    const p = new Pack(`bt-${dev.id}`, dev.name || x.name || 'BMS'); p.device = dev; addPack(p); setActive(p);
+    log(`resume: reconnecting ${p.label} without the chooser`);
+    connAct(p, 'known');
+    await sleep(1500);
+  }
+  if (plan.cannot.length) toast(T.resumeTap(plan.cannot.map((x) => x.name || x.id).join(', ')), 15000);
+}
+
+// ---- the reader setup checklist (0.9.72, setup-logic.js): checked on Connect (Continue anyway is always there), and
+// behind the warning sign by "updated" while the reader runs with something missing or not confirmed.
+const setupS = { done: (() => { try { return parseDone(localStorage.getItem(SETUP_DONE_KEY)); } catch { return []; } })(), ack: false, permitted: null, items: null, line: '', mode: 'view' };
+{ const q = new URLSearchParams(location.search); setupS.ack = q.has('test') && !q.has('setupgate'); }   // the browser tests tap Connect without it
+function setupCheck() {
+  const saved = savedDevice();
+  const items = checklist({
+    compatOk: compatCheck('reader', browserInfo, compatFeatures()).ok, bluetooth: !!(navigator.bluetooth && typeof navigator.bluetooth.requestDevice === 'function'),
+    getDevices: !!(navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function'), knownSaved: !!saved,
+    knownPermitted: saved && setupS.permitted !== null ? setupS.permitted.includes(saved.id) : null,
+    notifications: typeof Notification === 'undefined' ? 'none' : Notification.permission, persisted: hist.persistent, history: histS.backend,
+    wakeLock: 'wakeLock' in navigator, charging: battNow ? !!battNow.charging : null, resumeOn: resumeOn(), done: setupS.done,
+  });
+  const line = checklistLine(items);
+  if (line !== setupS.line && !viewMode) { setupS.line = line; log(line); }
+  setupS.items = items;
+  return items;
+}
+async function refreshPermitted() {
+  setupS.permitted = await permittedIds(); setupCheck();
+  // eslint-disable-next-line house/ui-after-await -- the sign reads the state as it is now; showing or hiding it is right whatever happened meanwhile
+  renderSetupWarn();
+}
+async function setupGate() {
+  const items = setupCheck();
+  if (setupS.ack || checklistSummary(items).ok) return true;
+  setupS.mode = 'connect';
+  const a = await openSheet('checklist');
+  setupS.mode = 'view';
+  if (a !== 'go') { log(`setup: connect cancelled at the checklist (${a || 'dismissed'})`); return false; }
+  setupS.ack = true; log(`setup: continue anyway - ${checklistLine(setupCheck())}`);
+  return true;
+}
+function setupToggle(id) {
+  setupS.done = toggleDone(setupS.done, id);
+  try { localStorage.setItem(SETUP_DONE_KEY, JSON.stringify(setupS.done)); } catch { /* no storage */ }
+  log(`setup: ${id} ${setupS.done.includes(id) ? 'confirmed done by the user' : 'marked not done'}`);
+  setupCheck(); updateSheet('checklist'); renderSetupWarn();
+}
+function renderSetupWarn() {
+  const g = $('setupWarn'); if (!g) return;
+  const running = [...packs.values()].some((p) => !p.remote && !p.demo && p.connected) || !!publisher;
+  const show = setupWarn({ items: setupS.items || setupCheck(), reader: !viewMode, running });
+  g.toggleAttribute('hidden', !show);                                // an SVG element has no .hidden property: the attribute itself
+  if (!show) return;
+  const u = els.updated, x = +u.getAttribute('x') || 0, y = +u.getAttribute('y') || 0;
+  let w = 0; try { w = u.getComputedTextLength(); } catch { /* not laid out */ }
+  g.setAttribute('transform', `translate(${Math.round(x + w + 8)},${y})`);
+}
+function openChecklist() { setupS.mode = 'view'; setupCheck(); void openSheet('checklist'); }
+$('setupWarn').addEventListener('click', openChecklist);
+$('setupWarn').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openChecklist(); } });
+$('setupOpen').addEventListener('click', openChecklist);
+(function () {
+  const cb = $('autoResume'); cb.checked = resumeOn();
+  cb.addEventListener('change', () => { try { localStorage.setItem(RESUME_ON_KEY, cb.checked ? '1' : '0'); } catch { /* no storage */ } log(`resume after a reopen: ${cb.checked ? 'on' : 'off'}`); setupCheck(); renderSetupWarn(); });
+})();
+
 // Connect a BMS: into `p` (reconnect of a known pack) or a new pack (+ Add BMS).
 async function startConnect(p) {
   if (!(await compatGate('reader'))) return;
+  if (!(await setupGate())) return;
   const fresh = !p;
   if (fresh) p = new Pack(`bt-${++packSeq}`, `BMS ${packs.size + 1 - (packs.size && [...packs.values()].some((x) => x.demo) ? 1 : 0)}`);
   connAct(p, 'tap-connect', { fresh });
@@ -1384,6 +1508,7 @@ function rememberDevice(device) {
   try { localStorage.setItem('batray_known_dev', JSON.stringify(rec)); } catch {}
   hist.note('devices.ndjson', JSON.stringify(rec)).catch(() => {});
   log(`known device: remembered "${rec.name}"`);
+  void refreshPermitted();                                          // the checklist's 'still allowed' row
 }
 async function permittedIds() {
   if (!navigator.bluetooth || !navigator.bluetooth.getDevices) return null;
@@ -1398,6 +1523,7 @@ async function renderKnown() {
 }
 async function startKnown() {
   if (!(await compatGate('reader'))) return;
+  if (!(await setupGate())) return;
   const b = $('connectKnown'); if (!b.dataset.id || !navigator.bluetooth) return;
   let dev = null; try { dev = (await navigator.bluetooth.getDevices()).find((d) => d.id === b.dataset.id) || null; } catch { /* below */ }
   if (!dev) { log('known device: not in getDevices any more, opening the chooser'); b.hidden = true; await startConnect(null); return; }
@@ -1415,7 +1541,7 @@ els.disconnect.dataset.title = els.disconnect.title;
 els.disconnect.addEventListener('click', () => {
   const p = active && active.bms && !active.demo ? active : null;
   const db = p ? connButton(p.cs, !!p.bms.connected) : { label: 'connect' };
-  if (db.label === 'disconnect') { connAct(p, 'disconnect'); return; }
+  if (db.label === 'disconnect') { if (p.device && p.device.id) intentNote('disconnected', { id: p.device.id, name: p.label }); connAct(p, 'disconnect'); return; }
   if (db.label === 'connecting') {                                  // the busy button is a cancel
     p.plog('connect: cancelled from the toolbar');
     connAct(p, 'cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); toast(T.cancelled, 4000); return;
@@ -1515,6 +1641,7 @@ async function beginShare() {
     if (publisher !== pub) return;                                    // cancelled from the toolbar meanwhile
     try { localStorage.setItem('batray_share_last', JSON.stringify(publisher.credentials)); } catch {}
     const st = shareStarted(shareS, { link: publisher.link, reused: publisher.reused });
+    intentNote('share-on');
     if (st.toastNewLink) toast(T.shareNewLink, 9000);
     renderChannelName();
     showQr(true);
@@ -1590,7 +1717,8 @@ async function stopShare(why = 'chip') {
   if (!publisher) return;
   log(`share: stop (${why})`);
   clearInterval(publisher.snapshotTimer);
-  const pub = publisher; publisher = null; shareStopped(shareS); histS.xfer = null; statusS.sent = null;   // the next share sends its status at once
+  const pub = publisher; publisher = null; shareStopped(shareS); histS.xfer = null; statusS.sent = null;
+  intentNote('share-off');   // the next share sends its status at once
   renderLiveChip(); void syncWake();
   await pub.stop();
   if (!publisher) { showQr(false); renderLiveChip(); }                   // unless a newer share owns the chip and the QR by now
@@ -2123,7 +2251,7 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 let sheetResolve = null, suppressPop = 0;
 function sheetCtx() {
   const p = active;
-  return { reader: viewMode ? { model: readerModel(), status: readerS.status, live: !!(viewer && viewer.state.reader !== false) } : null, compat: compatS, d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, cast: castSheetCtx(), browse: browseS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
+  return { resume: resumeS.plan ? { plan: resumeS.plan, left: resumeS.left } : null, setup: { items: setupS.items || setupCheck(), mode: setupS.mode, facts: { browser: `${browserInfo.name} ${fmtVersion(browserInfo.version)} (${browserInfo.engine})`, os: browserInfo.os, getDevices: !!(navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function'), ver: APP_VERSION } }, reader: viewMode ? { model: readerModel(), status: readerS.status, live: !!(viewer && viewer.state.reader !== false) } : null, compat: compatS, d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, cast: castSheetCtx(), browse: browseS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
 function openSheet(kind) {
@@ -2143,7 +2271,23 @@ function openSheet(kind) {
 function renderSheetProgress(m) { const p = $('sheetProg'); p.hidden = m.progress === undefined; if (!p.hidden) $('sheetBar').style.width = `${m.progress}%`; }
 function renderSheetItems(m) {
   const el = $('sheetItems'); const items = m.items || []; el.hidden = !items.length;
+  if (items.length && items[0].kind === 'check') { renderCheckItems(el, items); return; }
   el.innerHTML = items.map((i) => `<div class="item"><span class="nm">${esc(i.name)}</span><span class="sz">${esc(i.size)}</span>${i.up ? `<button type="button" class="stBtn" data-up="${esc(i.id)}">${esc(T.browseUpload)}</button>` : ''}${i.del ? `<button type="button" class="stBtn danger" data-del="${esc(i.id)}">${esc(T.browseDel)}</button>` : ''}</div>`).join('');
+}
+/** The checklist rows, built as nodes: a mark, the item, its state and how to fix it, and Done for a manual step. */
+function renderCheckItems(el, items) {
+  const MARK = { ok: '✓', done: '✓', missing: '✗', todo: '○', unknown: '?' };
+  el.replaceChildren(...items.map((i) => {
+    const row = document.createElement('div'); row.className = `item ck ck-${i.state}`;
+    const mark = document.createElement('span'); mark.className = 'mk'; mark.textContent = MARK[i.state] || '?';
+    const body = document.createElement('div'); body.className = 'cb';
+    const nm = document.createElement('div'); nm.className = 'cn'; nm.textContent = `${i.name} - ${i.size}`;
+    body.append(nm);
+    if (i.hint) { const h = document.createElement('div'); h.className = 'ch'; h.textContent = i.hint; body.append(h); }
+    row.append(mark, body);
+    if (i.tog) { const b = document.createElement('button'); b.type = 'button'; b.className = 'stBtn'; b.dataset.tog = i.id; b.textContent = i.togLabel; row.append(b); }
+    return row;
+  }));
 }
 /** Refresh the open sheet's text and bar from the state (a progress sheet), without touching history. */
 function updateSheet(kind) {
@@ -2168,7 +2312,8 @@ function closeSheet(result = null, why = 'dismiss') {
   $('sheetActs').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) closeSheet(b.dataset.act, 'action'); });
   $('sheetItems').addEventListener('click', (e) => {
     const b = e.target.closest('[data-del]'); if (b) { browseDelete(b.dataset.del).catch((err) => log(`browse: delete failed: ${err.message}`)); return; }
-    const u = e.target.closest('[data-up]'); if (u) { const f = u.getAttribute('data-up'); log(`browse: upload ${f}`); void uploadLog(null, f); }   // any stored session, not only this one (0.9.71)
+    const u = e.target.closest('[data-up]'); if (u) { const f = u.getAttribute('data-up'); log(`browse: upload ${f}`); void uploadLog(null, f); return; }   // any stored session, not only this one (0.9.71)
+    const g = e.target.closest('[data-tog]'); if (g) setupToggle(g.getAttribute('data-tog'));
   });
   // drag down to dismiss, like a messenger's sheet
   const box = $('sheetBox'); let y0 = null, dy = 0;
@@ -2324,3 +2469,4 @@ if (viewMode) void startView();
 else if (new URLSearchParams(location.search).has('demo')) runDemo();
 statusTick('start');
 bootMark('ready');
+if (!viewMode) { void refreshPermitted(); void startResume(); }
