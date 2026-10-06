@@ -65,6 +65,14 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     return x;
   };
 ` });
+// 0.9.75 (owner 2026-10-06): off until the person ticks it - a first visit keeps nothing and sends no crash report
+await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(1500);
+await evalJs(`localStorage.removeItem('batray_debuglog'); document.cookie = 'batray_debuglog=; Path=/batray/; Max-Age=0'; 1`);
+await send('Page.navigate', { url: `${BASE}/batray/?test&first=1` }); await sleep(2500);
+const fresh = await evalJs(`({ box: document.getElementById('logKeep').checked, on: window.__batrayTest.logState().on, pending: window.__batrayTest.logState().pending, cookie: document.cookie, copy: document.getElementById('copy').disabled })`);
+check('first visit: "keep debug logs" is unticked, nothing queued for a file, the crash-report cookie says 0, Copy log disabled', !fresh.box && !fresh.on && fresh.pending === 0 && /batray_debuglog=0/.test(fresh.cookie) && fresh.copy, fresh);
+await evalJs(`document.getElementById('logKeep').click(); 1`); await sleep(300);
+check('ticking it keeps the log from then on and sets the cookie to 1', (await evalJs(`localStorage.getItem('batray_debuglog') === '1' && /batray_debuglog=1/.test(document.cookie) && window.__batrayTest.logState().on`)));
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 
 const head = await evalJs(`window.__batrayTest.logHeaderLines()`);

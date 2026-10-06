@@ -147,7 +147,7 @@ test('the "reader stopped" push: sign up only while sharing with notifications a
 
 test('location: asked only after a tap, read every 10 min once allowed, rounded, never in a log line', async () => {
   const { locOn, locDecision, locFix, locState, locLogText, locCoords, LOC_EVERY_MS } = await import('../public/batray/location-logic.js');
-  assert.equal(locOn(null), true, 'default on (owner)'); assert.equal(locOn('0'), false);
+  assert.equal(locOn(null), false, 'off until ticked (owner, 0.9.75)'); assert.equal(locOn('0'), false); assert.equal(locOn('1'), true); assert.equal(locOn('true'), false);
   const now = 10_000_000;
   assert.equal(locDecision({ on: false, permission: 'granted', now }).why, 'turned off');
   assert.equal(locDecision({ on: true, permission: 'prompt', now }).why, 'waits for a tap to ask', 'never a prompt out of the blue');

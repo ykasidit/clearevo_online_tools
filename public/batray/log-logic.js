@@ -23,7 +23,9 @@ export const LOG_FILE_MAX = 10 * 1048576;
 export const LOG_FILES_MAX = 10;
 export const LOG_FLUSH_MS = 3000;
 export const LOG_UPLOAD_MAX = 4 * 1048576;        // what the relay accepts (log.rs MAX_LOG_BYTES)
-export const LOG_KEY = 'batray_debuglog';        // localStorage: '0' = the user opted out
+export const LOG_KEY = 'batray_debuglog';        // localStorage: '1' = the person ticked it; off until then (0.9.75)
+/** Owner 2026-10-06: the debug log is kept only after the person ticks the box - consent first, nothing by default. */
+export const logKeepOn = (raw) => raw === '1';
 
 export function logState(on = true, sid = null) {
   return { on: !!on, sid: sid || newSessionId(), file: null, fileBytes: 0, pending: [], pendBytes: 0, files: [], sessionBytes: 0, fileMax: LOG_FILE_MAX, filesMax: LOG_FILES_MAX, backend: 'none' };

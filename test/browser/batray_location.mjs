@@ -48,13 +48,19 @@ const decryptStatus = `(async () => {
   return out;
 })()`;
 
-// ---- 1. location: on by default, read once allowed, into the encrypted status, never into a log line ----
+// ---- 1. location: off by default, read once ticked and allowed, into the encrypted status, never into a log line ----
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(1500);
 await evalJs(`localStorage.removeItem('batray_location'); localStorage.removeItem('batray_share_last'); 1`);
 await send('Page.navigate', { url: `${BASE}/batray/?test&n=1` }); await sleep(3000);
 let st = await evalJs(`({ box: document.getElementById('locKeep').checked, inHistory: !!document.getElementById('locKeep').closest('#trendCard'), afterLog: document.getElementById('logKeep').closest('.check').nextElementSibling.contains(document.getElementById('locKeep')), loc: window.__batrayTest.locState() })`);
-check('the checkbox is on by default, right under "keep debug logs" in the History card', st.box && st.inHistory && st.afterLog, st);
-check('allowed already: the first fix is read at start', st.loc.perm === 'granted' && st.loc.fix && st.loc.fix.lat === 13.75633 && st.loc.fix.lon === 100.50177 && st.loc.fix.acc === 18, st.loc);
+check('the checkbox is OFF by default (consent first, 0.9.75), right under "keep debug logs" in the History card', !st.box && st.inHistory && st.afterLog, st);
+check('...so no fix is read, even with Chrome already allowing it', st.loc.on === false && st.loc.fix === null, st.loc);
+check('...and the log says nothing about a fix', (await logs('/location: fix/')).length === 0);
+await evalJs(`document.getElementById('locKeep').click(); 1`); await sleep(1500);
+st = await evalJs(`({ stored: localStorage.getItem('batray_location'), loc: window.__batrayTest.locState() })`);
+check('ticked: saved as 1, the fix is read (Chrome allows it already)', st.stored === '1' && st.loc.perm === 'granted' && st.loc.fix && st.loc.fix.lat === 13.75633 && st.loc.fix.lon === 100.50177 && st.loc.fix.acc === 18, st);
+await send('Page.navigate', { url: `${BASE}/batray/?test&n=2` }); await sleep(3000);
+check('after a reload the choice holds and a fix is read at start', !!(await evalJs(`document.getElementById('locKeep').checked && window.__batrayTest.locState().fix`)));
 await evalJs(`document.getElementById('share').click(); 1`); await sleep(300);
 await evalJs(`document.getElementById('shareGo').click(); 1`); await sleep(2000);
 let sent = await evalJs(decryptStatus);

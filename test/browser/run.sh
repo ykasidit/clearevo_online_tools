@@ -12,7 +12,7 @@
 #   batray_status.mjs - the reader status and last words, the viewer's offline box and sheet, the boot trail, Browse upload
 #   batray_resume.mjs - a reopened reader resumes after the 30 s countdown (Now / Cancel / run out / no getDevices), the setup checklist and its sign
 #   batray_push.mjs  - the "reader stopped" push: sign-up while sharing (stubbed push service), the real service worker shows it, a stop forgets it
-#   batray_location.mjs - the reader's location in its status (on by default, never in a log line) and the greyed History card when nothing can be kept
+#   batray_location.mjs - the reader's location in its status (off until ticked, never in a log line) and the greyed History card when nothing can be kept
 #   clinician.mjs - 24-scenario DICOM viewer suite (measure landing under
 #                   zoom/pan/rotate/flip/hi-DPI, wheel/keys/slider, cine,
 #                   multi-frame US, tags, capture-with-overlay)

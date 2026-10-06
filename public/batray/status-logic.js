@@ -47,7 +47,7 @@ export function statusSnapshot({
     net: net ? { on: net.online !== false, type: net.type || '' } : null,
     packs: packs.map((p) => ({ name: String(p.name || '').slice(0, 32), conn: !!p.connected, at: p.at || null, soc: p.soc ?? null, v: p.v ?? null, a: p.a ?? null })),
     prev: prev ? { clean: !!prev.clean, at: prev.at || null } : null,
-    loc: loc ? { lat: loc.lat, lon: loc.lon, acc: loc.acc, at: loc.at } : null,   // the person's choice, default on (0.9.74); encrypted to viewers, never in a log line
+    loc: loc ? { lat: loc.lat, lon: loc.lon, acc: loc.acc, at: loc.at } : null,   // the person's choice, off until ticked (0.9.75); encrypted to viewers, never in a log line
     setup: setup ? { ready: setup.ready, total: setup.total, missing: [...setup.missing], todo: [...setup.todo] } : null,   // the reader checklist (0.9.72)
   };
 }

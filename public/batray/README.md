@@ -135,10 +135,20 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.75 (2026-10-06): debug log and location off until ticked
+
+Owner: "both debug and location off by default so user rights is manually consented". `logKeepOn(raw)` and
+`locOn(raw)` are true only for the '1' the checkbox writes; a phone that was never asked keeps no log file, reads no
+position and sends no crash report. The site worker now sends `Reporting-Endpoints` on /batray/ only with cookie
+`batray_debuglog=1` (before: stripped only on `=0`), and the page writes that cookie from the saved choice at every
+start, so a cookie left by the old default cannot disagree with the box. The ring buffer (Debug card) is still in
+memory; Copy log / Upload log stay disabled until the box is ticked. The location checklist row stays: unticked counts
+as missing (the ⚠ and Continue anyway, as for every other row).
+
 ## 0.9.74 (2026-10-06): the reader's location in its status; no history kept without file storage
 
 - **Location** (`location-logic.js` decides, app.js `locTick`): a checkbox `#locKeep` under "keep debug logs" in the
-  History card, default on (localStorage `batray_location`, '0' = off), reader only. `locDecision` reads a fix at
+  History card, reader only (localStorage `batray_location`; off until ticked since 0.9.75). `locDecision` reads a fix at
   most every `LOC_EVERY_MS` (10 min) once Chrome allows it, and asks for permission only right after a tap (the box,
   or starting a share), never by itself. The fix (5 decimals, accuracy in metres, time) goes only into the encrypted
   `status` envelope, so viewers see it in the reader sheet; a log line never holds the coordinates (`locLogText`:

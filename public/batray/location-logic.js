@@ -13,15 +13,16 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 //
 // Owner ask 2026-10-06: "a checkbox under the logging checkbox in the History tab, default on, for location; the
-// checklist checks it is on and approved". The fix goes only into the reader's status, which reaches its viewers
+// checklist checks it is on and approved"; 0.9.75: off until ticked. The fix goes only into the reader's status, which reaches its viewers
 // encrypted with the share key; it is never written into a log line (logs can be uploaded) - the log says only that a
 // fix was taken and how accurate it was. Chrome asks the person before the first fix; the page asks only right after a
 // tap (the checkbox, or starting a share), never by itself.
 
-export const LOC_KEY = 'batray_location';      // localStorage: '0' = the person turned it off; default on
+export const LOC_KEY = 'batray_location';      // localStorage: '1' = the person ticked it; off until then (0.9.75)
 export const LOC_EVERY_MS = 10 * 60000;        // a fresh fix at most this often (a phone left by a battery does not move)
 
-export const locOn = (raw) => raw !== '0';
+/** Owner 2026-10-06: off until the person ticks the box - consent first, nothing by default. */
+export const locOn = (raw) => raw === '1';
 
 /** Read a fix now, ask for permission now, or wait. permission: 'granted' | 'prompt' | 'denied' | 'none' (no API).
  *  gesture: this call follows a tap - the only time a permission prompt is shown. */

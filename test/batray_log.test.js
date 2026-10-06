@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LASTRUN_KEY, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX } from '../public/batray/log-logic.js';
+import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LASTRUN_KEY, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX, logKeepOn } from '../public/batray/log-logic.js';
 
 test('one file per session, rolled at 10 MB with the same session id; names sort by time and parse back', () => {
   const ls = logState(true, 'abc123');
@@ -73,4 +73,11 @@ test('the last-run record is the tombstone: a start after an unclean end says so
   assert.ok(!same.some((l) => /browser changed/.test(l)));
   const old = lastRunReport({ sid: 's0', at: t0, clean: true }, t0 + 60000, { browser: 'chrome 141' });
   assert.ok(!old.some((l) => /browser changed/.test(l)), 'a record from before 0.9.69 has no browser: nothing to compare');
+});
+
+test('the debug log is kept only after the person ticks the box (owner 2026-10-06: consent first)', () => {
+  assert.equal(logKeepOn(null), false, 'never asked = off');
+  assert.equal(logKeepOn('0'), false);
+  assert.equal(logKeepOn('1'), true);
+  assert.equal(logKeepOn('true'), false, 'only the value the box writes');
 });

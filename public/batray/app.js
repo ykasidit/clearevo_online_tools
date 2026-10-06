@@ -37,12 +37,12 @@ import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowD
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
-import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, LASTRUN_KEY, BOOT_PREV_KEY } from './log-logic.js';
+import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, logKeepOn, LASTRUN_KEY, BOOT_PREV_KEY } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.74';
+export const APP_VERSION = '0.9.75';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -84,9 +84,9 @@ function renderLog() {
   els.log.scrollTop = els.log.scrollHeight;
 }
 // The stored debug log (owner ask 2026-09-23): every line also goes to a session file in the browser's private
-// storage (10 MB per file, rolled with the same session id, the newest 10 files kept), unless the user unticks
-// "keep debug logs" in the History card. Decisions in the log logic module over `logS`; the history worker writes.
-let logKeepPref = true; try { logKeepPref = localStorage.getItem(LOG_KEY) !== '0'; } catch {}
+// storage (10 MB per file, rolled with the same session id, the newest 10 files kept), once the person ticks
+// "keep debug logs" in the History card (off until then, 0.9.75). Decisions in the log logic module over `logS`; the history worker writes.
+let logKeepPref = false; try { logKeepPref = logKeepOn(localStorage.getItem(LOG_KEY)); } catch {}
 const logS = logState(logKeepPref);
 function log(msg) {
   const line = `${new Date().toISOString().slice(11, 23)}  ${msg}`;
@@ -812,14 +812,18 @@ async function initLogStore() {
   logS.backend = await hist.ready;
   try { logS.files = await hist.logList(); } catch { logS.files = []; }
   const sum = logSummary(logS.files);
-  log(`debug log: ${logS.on ? 'kept on this device' : 'not kept (opted out)'}, ${sum.files} files, ${Math.round(sum.bytes / 1024)} KB, session ${logS.sid}`);
+  log(`debug log: ${logS.on ? 'kept on this device' : 'not kept (box not ticked)'}, ${sum.files} files, ${Math.round(sum.bytes / 1024)} KB, session ${logS.sid}`);
   // eslint-disable-next-line house/ui-after-await -- start-up paint of the list just read
   renderLogNote(); renderDebugButtons();
 }
+// the same choice covers Chrome's crash report: the site sends the Reporting-Endpoints header only when this cookie says 1
+function logCookie(on) {
+  try { document.cookie = `batray_debuglog=${on ? '1' : '0'}; Path=/batray/; Max-Age=31536000; SameSite=Lax${location.protocol === 'https:' ? '; Secure' : ''}`; } catch { /* no cookies */ }
+}
+logCookie(logS.on);                                          // a cookie from an older default never outlives the box
 function setLogKeep(on) {
   logS.on = !!on; try { localStorage.setItem(LOG_KEY, on ? '1' : '0'); } catch {}
-  // the same choice covers Chrome's crash report: the site strips the Reporting-Endpoints header when this cookie says 0
-  try { document.cookie = `batray_debuglog=${on ? '1' : '0'}; Path=/batray/; Max-Age=31536000; SameSite=Lax${location.protocol === 'https:' ? '; Secure' : ''}`; } catch { /* */ }
+  logCookie(on);
   if (!on) { logS.pending = []; logS.pendBytes = 0; }
   log(`debug log: ${on ? 'kept on this device from now on' : 'no longer kept on this device'}`);
   if (on) { logS.file = null; logS.fileBytes = 0; }          // a fresh file for the rest of this session
@@ -1878,7 +1882,7 @@ async function storeReceived(file) {
 }
 // ---- the reader phone's location (0.9.74, location-logic.js): on by default, the person's checkbox under "keep debug
 // logs"; read after a tap or every 10 min once allowed, kept in memory only, sent only inside the encrypted status.
-const locS = { on: (() => { try { return locOn(localStorage.getItem(LOC_KEY)); } catch { return true; } })(), perm: 'none', fix: null, asking: false, last: '' };
+const locS = { on: (() => { try { return locOn(localStorage.getItem(LOC_KEY)); } catch { return false; } })(), perm: 'none', fix: null, asking: false, last: '' };
 function getPosition() {
   return new Promise((ok, fail) => { navigator.geolocation.getCurrentPosition(ok, fail, { enableHighAccuracy: false, maximumAge: 300000, timeout: 20000 }); });
 }

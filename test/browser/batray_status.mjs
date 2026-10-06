@@ -50,6 +50,9 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
 
 // ---- 1. the reader sends its status when a share starts, and as last words ----
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
+// stored log files are needed for Browse logs below: tick "keep debug logs" (off until ticked since 0.9.75)
+await evalJs(`localStorage.setItem('batray_debuglog', '1'); 1`);
+await send('Page.navigate', { url: `${BASE}/batray/?test&logon=1` }); await sleep(2500);
 const st = await evalJs('window.__batrayTest.statusState()');
 check('the reader builds its status at start and logs it (no share yet: nothing sent)', st.last && st.last.why === 'start' && !st.sent, st);
 let lines = await logs('/^\\S+\\s+status: why=start/');
