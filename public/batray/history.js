@@ -36,7 +36,8 @@ class MemoryBackend {
       if (list.some((x) => x.id === id || (x.p === r.p && x.t === r.t))) { ignored++; continue; }
       list.push({ ...r, id }); inserted++;
     }
-    list.sort((a, b) => a.id - b.id); this.store.set(day, list);
+    list.sort((a, b) => a.id - b.id); if (list.length > 3000) list.splice(0, list.length - 3000);   // only the DEMO reaches here (0.9.74): a short trend, never a growing heap
+    this.store.set(day, list);
     return { inserted, ignored, maxId: list.length ? list[list.length - 1].id : 0 };
   }
   async days() { return { days: [...this.store.entries()].filter(([day]) => day !== 'demo').map(([day, rows]) => ({ day, bytes: rows.length * 120, rows: rows.length, maxId: rows.length ? rows[rows.length - 1].id : 0 })).sort((a, b) => (a.day < b.day ? -1 : 1)) }; }
@@ -160,7 +161,7 @@ export class HistoryStore {
     try { this.b.stop(); } catch { /* gone */ }
     this.b = new MemoryBackend(); this.backend = 'memory'; this.stats.lockouts = (this.stats.lockouts || 0) + 1;
     const why = e && e.name === 'TimeoutError' ? 'no answer' : POOL_LOCKED_RX.test(String(e && e.message)) ? 'a killed worker keeps its files open' : String(e && e.message);
-    this.log(`history: the storage pool stayed locked ${Math.round(ms / 1000)} s after the worker restart (${why}): readings are kept in memory only - reload the page to store again`);
+    this.log(`history: the storage pool stayed locked ${Math.round(ms / 1000)} s after the worker restart (${why}): readings are not kept until the page is reloaded`);
     if (this.onBackend) { try { this.onBackend(this.backend); } catch { /* ui */ } }
   }
   statsLine() { return statsLine(this.stats); }

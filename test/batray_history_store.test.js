@@ -121,7 +121,7 @@ test('a pool still locked after the restart (a worker killed while busy): the st
   st.locked = true;                                                         // the fresh worker cannot take the pool: its ping fails
   assert.deepEqual(await h.days(), [], 'answered from memory');
   assert.equal(h.backend, 'memory'); assert.deepEqual(seen, ['memory']); assert.ok(st.workers[1].terminated);
-  assert.equal(st.logs.filter((l) => /storage pool stayed locked \d+ s after the worker restart \(a killed worker keeps its files open\): .* reload the page to store again/.test(l)).length, 1, st.logs);
+  assert.equal(st.logs.filter((l) => /storage pool stayed locked \d+ s after the worker restart \(a killed worker keeps its files open\): readings are not kept until the page is reloaded/.test(l)).length, 1, st.logs);
   await h.insert('2026-09-24', [mk(0)]); assert.equal((await h.info('2026-09-24')).rows, 1, 'memory store works on');
   assert.equal(h.stats.lockouts, 1);
 });

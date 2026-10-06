@@ -135,6 +135,26 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.74 (2026-10-06): the reader's location in its status; no history kept without file storage
+
+- **Location** (`location-logic.js` decides, app.js `locTick`): a checkbox `#locKeep` under "keep debug logs" in the
+  History card, default on (localStorage `batray_location`, '0' = off), reader only. `locDecision` reads a fix at
+  most every `LOC_EVERY_MS` (10 min) once Chrome allows it, and asks for permission only right after a tap (the box,
+  or starting a share), never by itself. The fix (5 decimals, accuracy in metres, time) goes only into the encrypted
+  `status` envelope, so viewers see it in the reader sheet; a log line never holds the coordinates (`locLogText`:
+  "fix ±18 m"). Checklist row `location` (on and allowed; 14 items now).
+- **No memory-only history**: when the SQLite store cannot run (Chrome below 108, another BatRay tab holding the
+  pool, a pool that stayed locked) the page used to keep every row and the stored log in RAM with no cap - a day on a
+  small phone could end in "Aw, Snap". Now nothing is queued (`recordRow` returns, pending rows dropped, the log
+  keeps only its ring buffer), the History card is greyed (`.histoff`) and `#histOff` says why and what to do
+  (`histOffWhy`: old Chrome -> update, another tab -> close it and reload, else reload). The DEMO keeps its own
+  in-memory rows, capped at 3000.
+
+Tests: location-logic and the 14-item checklist in `batray_resume.test.js`; browser `batray_location.mjs` (default
+on and placed under the log box, a fix at start with emulated geolocation, the decrypted status carries it, no
+coordinates in any log line, untick -> null and the checklist names it, a lock-out keeps no rows and greys the card
+at 500 and 1440 px, a Chrome 96 user agent names the update).
+
 ## 0.9.73 (2026-10-06): "reader stopped - tap to reopen", a Web Push from the relay
 
 - **Page** (`push-logic.js` decides, app.js `syncPush`): while sharing, with Chrome notifications allowed, the reader

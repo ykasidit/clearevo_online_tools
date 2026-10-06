@@ -20,6 +20,7 @@ import { fmtVersion, OS_LABEL, canTryAnyway } from './compat-logic.js';
 import { RESUME_S } from './resume-logic.js';
 import { checklistSummary } from './setup-logic.js';
 import { fmt, flowModel, etaModel, chipList, socClass, fmtWhen, fmtAgo, offlineLines } from './view-logic.js';
+import { locCoords } from './location-logic.js';
 
 export const TABS = ['now', 'history', 'more'];
 export function uiState(role) { return { role: role === 'viewer' ? 'viewer' : 'reader', tab: 'now', sheet: null, lowPower: false }; }
@@ -182,6 +183,7 @@ export function sheetModel(kind, ctx, T) {
         m.rows.push([T.rsLog, st.log ? (st.log.on ? T.rsLogOn(st.log.files, st.log.kb) : T.rsLogOff) : T.rsUnknown]);
         m.rows.push([T.rsMissing, st.miss && st.miss.length ? st.miss.map((k) => T.compatFeature[k] || k).join(', ') : T.rsNothingMissing]);
         m.rows.push([T.rsScreen, `${st.vis ? T.rsVisible : T.rsHidden}${st.wake ? ` · ${T.rsWakeHeld}` : ''}`]);
+        m.rows.push([T.rsLocation, st.loc ? T.rsLocVal(locCoords(st.loc), st.loc.acc, fmtWhen(st.loc.at)) : T.rsLocNone]);
         m.rows.push([T.rsNet, st.net ? `${st.net.on ? T.rsOnline : T.rsOffline}${st.net.type ? ` · ${st.net.type}` : ''}` : T.rsUnknown]);
         m.rows.push([T.rsRunning, st.up !== null ? fmtAgo(st.up * 1000, T) : T.rsUnknown]);
         if (st.setup) m.rows.push([T.rsSetup, T.rsSetupVal(st.setup.ready, st.setup.total, [...st.setup.missing, ...st.setup.todo].map((k) => T.setupItem[k] || k).join(', '))]);

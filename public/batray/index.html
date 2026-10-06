@@ -145,6 +145,8 @@ body.demo #demoBadge{display:block}
 #demoBadge button:hover{background:#ffd24a;color:#1a1200}
 .chipbar[hidden],#packBar[hidden],#shareLink[hidden],#qrPanel[hidden],#qrShow[hidden]{display:none!important}
 .item.ck{justify-content:flex-start;align-items:flex-start}.item.ck .mk{flex:0 0 18px;font-weight:700;font-size:15px;line-height:20px}.ck-ok .mk,.ck-done .mk{color:#7ddc8a}.ck-missing .mk{color:#ff8a80}.ck-todo .mk,.ck-unknown .mk{color:#ffd24a}.item.ck .cb{flex:1 1 auto;min-width:0}.item.ck .cn{color:#cdd9e5;font-size:13px}.item.ck .ch{color:#8fa6bd;font-size:12px;margin-top:2px}
+.histoff #trend,.histoff #histRanges,.histoff #histParams,.histoff #trendEnergy,.histoff #stHist{opacity:.35;pointer-events:none}
+#histOff{color:#ffd99a}
 .bootFail{margin:12px;padding:12px;border:2px solid #ffd24a;border-radius:8px;background:#2a2410;color:#ffe9a8;font:14px/1.5 'Segoe UI',Tahoma,sans-serif}
 .readerOff{margin:8px 12px 0;padding:10px 12px;border:1px solid #6b4d1e;border-radius:8px;background:#22190a;color:#ffd99a;font:13px/1.45 'Segoe UI',Tahoma,sans-serif;cursor:pointer}
 .readerOff b{color:#ffe9a8}
@@ -404,6 +406,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           <div class="prog"><div class="bar" id="trendWaitBar" style="width:0%"></div></div>
         </div>
         <div class="card" id="trendCard" data-tab="history" hidden>
+          <div class="check warn" id="histOff" role="status" hidden></div>
           <h2><span data-i18n="trendH">History</span> <span class="note" data-i18n="trendNote">one row per reading, stored on this device for 30 days; sent only to your viewers while you share</span></h2>
           <div class="ranges" id="histRanges" role="group" aria-label="time range"><button type="button" data-range="1h" data-i18n="r1h">1 h</button><button type="button" data-range="6h" class="on" data-i18n="r6h">6 h</button><button type="button" data-range="24h" data-i18n="r24h">24 h</button><button type="button" data-range="7d" data-i18n="r7d">7 d</button><button type="button" data-range="all" data-i18n="rAll">all</button></div>
           <div class="ranges params" id="histParams" role="group" aria-label="lines on the chart"></div>
@@ -419,6 +422,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           </div>
           <div class="check" id="memUse"></div>
           <div class="check"><label class="chk"><input type="checkbox" id="logKeep" checked> <span data-i18n="logKeep">Keep debug logs on this device and let Chrome send a crash report (its reason only) to clearevo.com. Off: nothing is kept, no crash report is sent, Copy log and Upload log are disabled.</span></label></div>
+          <div class="check"><label class="chk"><input type="checkbox" id="locKeep" checked> <span data-i18n="locKeep">Share this phone's location with my viewers while sharing live (encrypted like the readings; helps find the reader phone). Chrome asks first.</span></label></div>
           <div class="check" id="histNote"></div>
         </div>
         <div class="card" data-tab="more" id="moreCard">

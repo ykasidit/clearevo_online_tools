@@ -21,6 +21,7 @@ import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel } fr
 import { parseIntent, intentEvent, resumePlan, resumeLine, RESUME_KEY, RESUME_ON_KEY } from './resume-logic.js';
 import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggleDone, SETUP_DONE_KEY } from './setup-logic.js';
 import { pushDecision, pushState, b64uBytes } from './push-logic.js';
+import { locOn, locDecision, locFix, locState, locLogText, LOC_KEY } from './location-logic.js';
 import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
@@ -41,7 +42,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.73';
+export const APP_VERSION = '0.9.74';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -347,7 +348,7 @@ function applyLang(code) {
   document.querySelectorAll('[data-i18n-html]').forEach((el) => { const v = T[el.dataset.i18nHtml]; if (typeof v === 'string') el.innerHTML = v; });
   if ($('histParams')) buildParamChips();
   document.querySelectorAll('[data-i18n-aria]').forEach((el) => { const v = T[el.dataset.i18nAria]; if (typeof v === 'string') { el.setAttribute('aria-label', v); el.title = v; } });
-  renderServerNote();
+  renderServerNote(); renderHistOff();
   $('fSysLbl').textContent = T.system;
   setStatus(statusThunk, statusKind);
   if (active) { if (active.info) renderDevice(active.info); if (active.settings) renderSettings(active.settings); if (active.data) render(active.data, true); }
@@ -553,7 +554,7 @@ function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 // from bucket queries and logs what happened. ----
 const histS = historyState();
 const hist = new HistoryStore({ log });
-hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') void explainLockOut(); };   // memory-only after a locked pool: the Storage box says so
+hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') { dropMemoryRows(); void explainLockOut(); } renderHistOff(); };   // memory-only after a locked pool: the Storage box says so
 const histMem = { pending: new Map(), plot: null, plotParams: '', cursorIdx: null, series: null, drawAt: 0, drawing: false, redraw: false, spanAt: 0, demoId: 0 };
 const utf8 = new TextEncoder();
 function pendingRows() { let n = 0; for (const l of histMem.pending.values()) n += l.length; return n; }
@@ -568,6 +569,7 @@ function recordRow(p, d, t, remoteRow = null) {
   if (p.demo) {                                                          // a demo trend from every frame, in the worker's memory database: never a file that looks like a real bank
     const row = rowFromReading(p.label, d, t); row.id = ++histMem.demoId; queueRow(row, 'demo'); return null;
   }
+  if (histS.backend === 'memory') return null;                          // no file storage: nothing is kept in RAM either (0.9.74, the card says why)
   const day = dayKey(t);
   if (!histS.day || day > histS.day) {                                   // a new UTC day: ids start again at 1 in its database
     const ro = rolloverDecision(histS, day);
@@ -688,17 +690,41 @@ async function maintainHistory() {
 const HIST_LOCK = 'batray-history';
 async function holdHistoryLock() {
   if (!navigator.locks) return;
-  try { await navigator.locks.request(HIST_LOCK, { mode: 'exclusive', ifAvailable: true }, (lock) => (lock ? new Flag().wait(true) : null)); } catch { /* lock API refused: nothing to hold */ }
+  try { await navigator.locks.request(HIST_LOCK, { mode: 'exclusive', ifAvailable: true }, (lock) => { histS.holdsLock = !!lock; return lock ? new Flag().wait(true) : null; }); } catch { /* lock API refused: nothing to hold */ }
+}
+/** No file storage (0.9.74, owner: "safer to drop and grey it out with the reason than risk the RAM limit"): the rows
+ *  queued so far go, nothing more is kept, the History card says why. The DEMO keeps its short trend (capped). */
+function dropMemoryRows() {
+  let n = 0; for (const [day, rows] of [...histMem.pending]) if (day !== 'demo') { n += rows.length; histMem.pending.delete(day); }
+  log(`history: no file storage in this tab - readings are shown but not kept${n ? ` (${n} queued rows dropped)` : ''}; debug log: the last ${4000} lines in memory only`);
+  renderHistOff();
+}
+function histOffWhy() {
+  if (compatCheck('reader', browserInfo, compatFeatures()).why === 'too-old') return 'old';
+  return histS.lockedByTab ? 'tab' : 'stuck';
+}
+function histOff() { return histS.backend === 'memory' && !(active && active.demo); }
+function renderHistOff() {
+  const off = histOff(), el = $('histOff');
+  $('trendCard').classList.toggle('histoff', off);
+  el.hidden = !off;
+  if (!off) return;
+  const why = histOffWhy();
+  el.textContent = why === 'old' ? T.histOffOld(`${T.compatName[browserInfo.name] || browserInfo.name} ${fmtVersion(browserInfo.version)}`) : why === 'tab' ? T.histOffTab : T.histOffStuck;
 }
 async function explainLockOut() {
   let other = false;
-  try { const q = navigator.locks ? await navigator.locks.query() : null; other = !!(q && q.held && q.held.some((l) => l.name === HIST_LOCK)); } catch { /* unknown */ }
+  // this page may hold the lock itself (it had the store, then lost the pool): the lock is exclusive, so then no other tab has it
+  try { const q = navigator.locks ? await navigator.locks.query() : null; other = !histS.holdsLock && !!(q && q.held && q.held.some((l) => l.name === HIST_LOCK)); } catch { /* unknown */ }
+  histS.lockedByTab = other;
+  // eslint-disable-next-line house/ui-after-await -- the reason line reads the state as it is now
+  renderHistOff();
   log(other ? 'history: another BatRay tab on this device holds the history store - close it, then reload this page' : 'history: no other BatRay tab holds the store - a worker ended mid-write keeps its files until Chrome releases them; reload later');
   if (other) toast(T.histOtherTab, 12000);
 }
 async function initHistory() {
   histS.backend = await hist.ready;
-  if (histS.backend === 'opfs') void holdHistoryLock(); else if (histS.backend === 'memory') void explainLockOut();
+  if (histS.backend === 'opfs') void holdHistoryLock(); else if (histS.backend === 'memory') { dropMemoryRows(); void explainLockOut(); }
   const now = Date.now(), today = dayKey(now);
   histS.day = today;
   try {
@@ -767,6 +793,7 @@ async function clearHistory() {
 let logFlushing = false;
 async function flushLog() {
   if (logFlushing || histS.backend === 'none') return;
+  if (histS.backend === 'memory') { logS.pending = []; logS.pendBytes = 0; return; }   // no file storage: the 4000-line ring buffer is all (Copy / Upload send it)
   const plan = flushPlan(logS, Date.now()); if (plan.action !== 'write') return;
   logFlushing = true;
   const lines = logS.pending, text = (plan.roll ? logHeaderLines().join('\n') + '\n---\n' : '') + lines.join('\n') + '\n';
@@ -860,6 +887,7 @@ function writeLastRun(clean) {
 }
 function memTick() {
   statusTick('tick');                                   // the reader status rides the same 15 s tick (status-logic decides when to send)
+  void locTick('tick');
   const m = writeLastRun(false);
   renderMemory(m);
   if (m) log(`mem: used=${Math.round(m.used / 1048576)}MB total=${Math.round(m.total / 1048576)}MB limit=${Math.round(m.limit / 1048576)}MB pct=${m.pct}${m.near ? ' NEAR THE LIMIT' : ''} rows=${pendingRows()} log=${logLines.length} precise=${m.precise ? 'yes' : 'no'}${m.parts ? ` measured=${Math.round(m.used / 1048576)}MB(${Object.entries(m.parts).filter(([, v]) => v > 0).map(([k, v]) => `${k} ${Math.round(v / 1048576)}`).join(', ')}MB)` : ''}`);
@@ -985,6 +1013,7 @@ function spanForWait(p) {
 }
 // while the history has too little to draw, say so with a bar instead of a blank History tab (owner, 2026-09-20)
 function renderTrendWait(p) {
+  if (histOff()) { $('trendWait').hidden = true; $('trendCard').hidden = false; renderHistOff(); return { ready: true, pct: 100 }; }   // the card shows the reason and the settings, greyed
   const pr = trendProgress(p ? spanForWait(p) : 0, !!(p && p.data));
   const w = $('trendWait'); w.hidden = pr.ready;
   if (pr.ready) return pr;
@@ -998,6 +1027,7 @@ function renderTrend(p) {
   const card = $('trendCard');
   if (!renderTrendWait(p).ready) { card.hidden = true; return; }
   card.hidden = false;
+  if (histOff()) return;                                               // nothing kept: no query, the card shows why
   scheduleDraw(false);
 }
 function scheduleDraw(force) { if (!trendRaf) trendRaf = requestAnimationFrame(() => { trendRaf = 0; if (active) void drawHistory(active, force); }); }
@@ -1352,7 +1382,7 @@ function statusNow(why) {
     usage: histS.usage, quota: histS.quota, hist: { backend: histS.backend, days: histS.days.length, rows: histS.todayRows, pend: pendingRows(), fails: (hist.stats.fails || 0) + (hist.stats.timeouts || 0) },
     log: { on: logS.on, files: ls.files, bytes: ls.bytes }, browser: { name: browserInfo.name, version: fmtVersion(browserInfo.version), os: browserInfo.os },
     missing: compatCheck('reader', browserInfo, compatFeatures()).missing, wake: !!wakeS.held, net: { online: navigator.onLine, type: c.type || c.effectiveType || '' },
-    packs: readerPacks(), prev: statusS.prevRun, sharing: !!publisher, setup: checklistSummary(setupCheck()),
+    packs: readerPacks(), prev: statusS.prevRun, sharing: !!publisher, setup: checklistSummary(setupCheck()), loc: locS.on ? locS.fix : null,
   });
 }
 /** Build the status; log it when it changed (or as last words, or every 10 min); send it while sharing when due. */
@@ -1445,6 +1475,7 @@ function setupCheck() {
     knownPermitted: saved && setupS.permitted !== null ? setupS.permitted.includes(saved.id) : null,
     notifications: typeof Notification === 'undefined' ? 'none' : Notification.permission, persisted: hist.persistent, history: histS.backend,
     wakeLock: 'wakeLock' in navigator, charging: battNow ? !!battNow.charging : null, resumeOn: resumeOn(), done: setupS.done,
+    location: locState({ on: locS.on, permission: locS.perm }),
     push: pushState({ sharing: !!publisher, permission: typeof Notification === 'undefined' ? 'none' : Notification.permission, subscribed: !!(publisher && pushS.room === publisher.room) }),
   });
   const line = checklistLine(items);
@@ -1763,7 +1794,7 @@ async function stopShare(why = 'chip') {
   toast(T.shareStopped, 5000);
 }
 els.share.addEventListener('click', shareTap);
-$('shareGo').addEventListener('click', () => beginShare().catch(() => {}));
+$('shareGo').addEventListener('click', () => { void locTick('share', true); beginShare().catch(() => {}); });   // the tap is the moment Chrome may ask for location
 $('shareCancel').addEventListener('click', () => { $('sharePanel').hidden = true; shareSetupCancelled(shareS); });
 $('shareName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); beginShare().catch(() => {}); } });
 $('viewStop').addEventListener('click', () => { if (viewer) { viewer.stop(); setStatus(() => T.viewStopped, 'bad'); $('viewStop').hidden = true; els.viewTxt.textContent = T.viewStopped; } });
@@ -1845,6 +1876,47 @@ async function storeReceived(file) {
   histS.days = await hist.days();
   if (active) renderTrend(active); else renderHistNote();                // throttled: a transfer of 100 files is not 100 chart queries
 }
+// ---- the reader phone's location (0.9.74, location-logic.js): on by default, the person's checkbox under "keep debug
+// logs"; read after a tap or every 10 min once allowed, kept in memory only, sent only inside the encrypted status.
+const locS = { on: (() => { try { return locOn(localStorage.getItem(LOC_KEY)); } catch { return true; } })(), perm: 'none', fix: null, asking: false, last: '' };
+function getPosition() {
+  return new Promise((ok, fail) => { navigator.geolocation.getCurrentPosition(ok, fail, { enableHighAccuracy: false, maximumAge: 300000, timeout: 20000 }); });
+}
+async function refreshLocPerm() {
+  if (!('geolocation' in navigator)) { locS.perm = 'none'; return; }
+  try {
+    const st = await navigator.permissions.query({ name: 'geolocation' });
+    locS.perm = st.state;
+    st.onchange = () => { locS.perm = st.state; log(`location: permission ${st.state}`); setupCheck(); };
+  } catch { locS.perm = 'prompt'; }
+}
+async function locTick(why, gesture = false) {
+  if (viewMode) return;
+  const d = locDecision({ on: locS.on, permission: locS.perm, lastFixAt: locS.fix ? locS.fix.at : 0, now: Date.now(), gesture, asking: locS.asking });
+  if (d.action === 'none') { if (d.why !== locS.last && d.why !== 'fresh') { locS.last = d.why; log(`location: none (${d.why})`); } return; }
+  locS.asking = true;
+  try {
+    const fix = locFix(await getPosition(), Date.now());
+    locS.fix = fix; locS.perm = 'granted'; locS.last = '';
+    log(`location: ${locLogText(fix)} (${why})`);                       // never the coordinates: a log can be uploaded
+  } catch (e) {
+    const denied = e && e.code === 1;
+    if (denied) locS.perm = 'denied';
+    log(`location: ${denied ? 'not allowed' : `no fix (${e && e.message ? e.message : 'error'})`} (${why})`);
+  } finally { locS.asking = false; setupCheck(); }
+}
+async function startLocation() { await refreshLocPerm(); await locTick('start'); }
+function setLocOn(on) {
+  locS.on = !!on; if (!on) locS.fix = null;
+  try { localStorage.setItem(LOC_KEY, on ? '1' : '0'); } catch { /* no storage */ }
+  log(`location: ${on ? 'on' : 'off'} (the person's choice)`);
+  setupCheck(); renderSetupWarn();
+  if (on) void locTick('checkbox', true);
+}
+$('locKeep').checked = locS.on;
+$('locKeep').addEventListener('change', () => setLocOn($('locKeep').checked));
+if (viewMode) $('locKeep').closest('.check').hidden = true;
+
 // ---- the reader as the viewer last heard of it (0.9.71): its status envelope (the room keeps the newest) and the
 // relay's record of how its socket ended. Shown in a box while the reader is away, and in the Reader phone sheet.
 const readerS = { status: null, at: null, logged: null, loggedAt: 0 };
@@ -2279,7 +2351,7 @@ if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
   shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
-  uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake, rxHistFile, compatState: () => compatS, browserInfo: () => browserInfo, statusState: () => ({ ...statusS }), statusTick, pubLink: () => (publisher ? publisher.link : null), readerState: () => ({ ...readerS, gone: viewer ? viewer.state.gone : null, reader: viewer ? viewer.state.reader : null }), packData: () => (active ? active.data : null),
+  uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake, rxHistFile, compatState: () => compatS, browserInfo: () => browserInfo, histLockOut: () => hist.lockOut(1000, new Error('test')), locState: () => ({ ...locS }), histOffState: () => ({ off: histOff(), text: $('histOff').textContent, grey: $('trendCard').classList.contains('histoff'), cardShown: !$('trendCard').hidden }), statusState: () => ({ ...statusS }), statusTick, pubLink: () => (publisher ? publisher.link : null), readerState: () => ({ ...readerS, gone: viewer ? viewer.state.gone : null, reader: viewer ? viewer.state.reader : null }), packData: () => (active ? active.data : null),
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
 
@@ -2508,4 +2580,4 @@ if (viewMode) void startView();
 else if (new URLSearchParams(location.search).has('demo')) runDemo();
 statusTick('start');
 bootMark('ready');
-if (!viewMode) { void refreshPermitted(); void startResume(); }
+if (!viewMode) { void refreshPermitted(); void startResume(); void startLocation(); }

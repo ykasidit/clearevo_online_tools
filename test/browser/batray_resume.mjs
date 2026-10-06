@@ -91,8 +91,8 @@ await send('Page.navigate', { url: `${BASE}/batray/?test&setupgate&n=5` }); awai
 await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(600);
 sh = await sheet();
 const items = await evalJs(`[...document.querySelectorAll('#sheetItems .item.ck')].map((i) => ({ cls: i.className, txt: i.textContent, tog: !!i.querySelector('[data-tog]') }))`);
-check('tap Connect: the checklist, with Continue anyway and Cancel', sh.kind === 'checklist' && sh.acts.join('|') === 'go|cancel' && /of 13 ready/.test(sh.lead), sh);
-check('...13 rows; the flag row is ok here (getDevices), the two Chrome steps wait for Done', items.length === 13 && /ck-ok/.test(items[2].cls) && items.filter((i) => i.tog).length === 2 && items.filter((i) => /ck-todo/.test(i.cls)).length === 2, items);
+check('tap Connect: the checklist, with Continue anyway and Cancel', sh.kind === 'checklist' && sh.acts.join('|') === 'go|cancel' && /of 14 ready/.test(sh.lead), sh);
+check('...14 rows; the flag row is ok here (getDevices), the two Chrome steps wait for Done', items.length === 14 && /ck-ok/.test(items[2].cls) && items.filter((i) => i.tog).length === 2 && items.filter((i) => /ck-todo/.test(i.cls)).length === 2, items);
 await evalJs(`document.querySelector('#sheetItems [data-tog="chromeUpdate"]').click(); 1`); await sleep(400);
 const after = await evalJs(`({ cls: document.querySelector('#sheetItems [data-tog="chromeUpdate"]').closest('.item').className, done: localStorage.getItem('batray_setup_done') })`);
 check('Done on "Chrome auto-update off" marks it in place and keeps it', /ck-done/.test(after.cls) && after.done === '["chromeUpdate"]', after);
@@ -100,7 +100,7 @@ await act('go'); await sleep(1500);
 const go = await evalJs(`({ chooser: window.__requestDevices, conn: window.__batrayTest.connState() })`);
 check('Continue anyway goes on to the chooser and connects', go.chooser === 1 && go.conn && go.conn.phase === 'connected', go);
 lines = await logs('/setup: (chromeUpdate confirmed|continue anyway)/');
-check('the log has the Done and the continue-anyway with what was missing', lines.length === 2 && /continue anyway - setup: \d+\/13 ready/.test(lines[1]), lines);
+check('the log has the Done and the continue-anyway with what was missing', lines.length === 2 && /continue anyway - setup: \d+\/14 ready/.test(lines[1]), lines);
 
 // ---- 6. the sign by "updated" while running; tap -> the list with Close; the status carries the summary ----
 await sleep(1500);
@@ -112,7 +112,7 @@ const rows = await evalJs(`[...document.querySelectorAll('#sheetRows .k')].map((
 check('tapping it opens the list with Close, the Chrome version and the flag row', sh.kind === 'checklist' && sh.acts.join('|') === 'ok' && rows.includes('Browser') && rows.includes('Chrome remembers Bluetooth permissions'), { sh, rows });
 await act('ok');
 const ss = await evalJs(`(() => { window.__batrayTest.statusTick('tick'); return window.__batrayTest.statusState().last.setup; })()`);
-check('the reader status carries the checklist summary', ss && ss.total === 13 && ss.ready >= 1, ss);
+check('the reader status carries the checklist summary', ss && ss.total === 14 && ss.ready >= 1, ss);
 for (const [w, h] of [[500, 900], [1440, 900]]) {
   await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: w < 700 }); await sleep(1500);
   const r = await evalJs(`(() => { const g = document.getElementById('setupWarn').getBoundingClientRect(), svg = document.getElementById('flow').getBoundingClientRect(), body = document.querySelectorAll('#gBatt > rect')[1].getBoundingClientRect(); const hit = g.right > body.left && g.left < body.right && g.bottom > body.top && g.top < body.bottom; return { inside: g.left >= svg.left && g.right <= svg.right, hit }; })()`);

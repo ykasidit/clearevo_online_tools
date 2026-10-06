@@ -20,7 +20,7 @@
 
 export const SETUP_DONE_KEY = 'batray_setup_done';      // localStorage: JSON array of the manual items confirmed
 export const MANUAL = ['chromeUpdate', 'chromeBattery'];
-export const ITEMS = ['compat', 'bluetooth', 'remember', 'known', 'notify', 'push', 'persist', 'history', 'wake', 'charging', 'resume', ...MANUAL];
+export const ITEMS = ['compat', 'bluetooth', 'remember', 'known', 'notify', 'push', 'location', 'persist', 'history', 'wake', 'charging', 'resume', ...MANUAL];
 
 export function parseDone(raw) {
   try { const a = JSON.parse(raw || '[]'); return Array.isArray(a) ? a.filter((x) => MANUAL.includes(x)) : []; } catch { return []; }
@@ -33,7 +33,7 @@ const tri = (v) => (v === true ? 'ok' : v === false ? 'missing' : 'unknown');
  *  knownSaved: a BMS was remembered on this device; knownPermitted: Chrome still lists it (null without getDevices). */
 export function checklist({
   compatOk = null, bluetooth = null, getDevices = null, knownSaved = false, knownPermitted = null, notifications = 'none',
-  persisted = null, history = null, wakeLock = null, charging = null, resumeOn = true, done = [], push = null,
+  persisted = null, history = null, wakeLock = null, charging = null, resumeOn = true, done = [], push = null, location = null,
 } = {}) {
   const items = [
     { id: 'compat', state: tri(compatOk) },
@@ -41,7 +41,8 @@ export function checklist({
     { id: 'remember', state: tri(getDevices) },
     { id: 'known', state: !knownSaved ? 'unknown' : tri(knownPermitted) },
     { id: 'notify', state: notifications === 'granted' ? 'ok' : notifications === 'none' ? 'unknown' : 'missing' },
-    { id: 'push', state: tri(push) },                                   // the "reader stopped" push (0.9.73): known once sharing
+    { id: 'push', state: tri(push) },
+    { id: 'location', state: tri(location) },                           // on and allowed (0.9.74)                                   // the "reader stopped" push (0.9.73): known once sharing
     { id: 'persist', state: tri(persisted) },
     { id: 'history', state: history === 'opfs' ? 'ok' : history === 'memory' ? 'missing' : 'unknown' },
     { id: 'wake', state: tri(wakeLock) },
