@@ -135,6 +135,23 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.78 (2026-10-06): one reader per browser
+
+Owner: "for reader only one can open at a time - ensure that lock is in and tell the user to close all other tabs if
+detected; test this well". A reader page (no `?view=`) holds the Web Lock `batray-reader` for its life (taken with
+`ifAvailable` at once; when it is held, `#readerBusy` shows at once and the lock is still waited for
+`READER_WAIT_MS` 3 s, so a reload is never refused by its own page that is leaving). A page that does not get it never
+starts: no tab id, no store, no BMS, no share; it covers the app with `#readerBusy` (EN + TH, in the page itself, like
+`#bootFail`: close the other BatRay tabs; a share link is not a reader and may stay open), posts `reader-busy` on
+BroadcastChannel `batray` (the running reader logs it and toasts `T.readerSecond`), and queues for the lock: when the
+reader page goes, the first waiting page reloads and starts as the reader, taking over the closed reader store. Viewers:
+any number, no lock. Without the Web Locks API nothing can be enforced (the page starts).
+
+Tests: browser `batray_tabs.mjs` (a second and a third reader tab wait with the message, no store, no 12 s stuck box;
+the reader is told once per waiting tab; a viewer still opens; the reader closes -> exactly one waiting tab starts,
+with the reader's rows and last run, the other keeps waiting; the message fits at 500 and 1440 px; three reloads of the
+reader start at once). Reverting the lock fails the first four checks.
+
 ## 0.9.77 (2026-10-06): one store per tab - no history lock
 
 Owner: "remove this history lock, store per tab id - most other sites have no such limit; re-download the db per day

@@ -43,7 +43,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.77';
+export const APP_VERSION = '0.9.78';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -94,6 +94,35 @@ async function holdTabLock(id) {
 }
 async function legacyStoreExists() {
   try { const root = await within(navigator.storage.getDirectory(), 2000); if (root === TIMEOUT) return false; await root.getDirectoryHandle('batray-history-db'); return true; } catch { return false; }
+}
+// Only ONE reader per browser (owner 2026-10-06: "for reader only one can open at a time"): two reader pages would
+// both talk to the BMS and both publish into the share room. A reader page holds the Web Lock 'batray-reader' for its
+// life; a second reader page does not start: it covers itself with #readerBusy (close the other BatRay tabs), tells
+// the running reader over a BroadcastChannel, and takes over by itself (a reload) once the lock is free. The request
+// waits up to READER_WAIT_MS so a reload of the reader is never blocked by its own page that is still leaving.
+// Viewer pages (?view=): any number, no lock.
+const READER_LOCK = 'batray-reader', READER_WAIT_MS = 3000;
+function readerBusyShown(on) { $('app').hidden = on; $('readerBusy').hidden = !on; }
+/** The reader lock: at once when free; else the message shows at once and the lock is waited for READER_WAIT_MS. */
+async function holdReaderLock() {
+  if (!navigator.locks) return true;                                         // no Web Locks API: nothing can be enforced
+  const got = new Channel();
+  const hold = (lock) => { got.push(!!lock); return lock ? new Flag().wait(true) : null; };
+  navigator.locks.request(READER_LOCK, { ifAvailable: true }, hold).catch(() => got.push(true));
+  let r = await got.next({ ms: 2000 });
+  if (r === true || r === TIMEOUT) return true;                              // free, or an API that never answers: never lock the reader out
+  readerBusyShown(true);
+  navigator.locks.request(READER_LOCK, { signal: AbortSignal.timeout(READER_WAIT_MS) }, hold).catch(() => got.push(false));
+  r = await got.next({ ms: READER_WAIT_MS + 2000 });
+  if (r === true || r === TIMEOUT) { readerBusyShown(false); return true; }  // it was this tab's own page leaving (a reload)
+  return false;
+}
+if (!viewMode && !(await holdReaderLock())) {
+  window.__batrayStarted = true; bootMark('reader-busy');
+  readerBusyShown(true);
+  try { new BroadcastChannel('batray').postMessage({ kind: 'reader-busy', at: Date.now() }); } catch { /* no channel: the running reader is not told */ }
+  // wait for the reader page to go, then start as the reader (the reload takes the lock in its first READER_WAIT_MS)
+  await navigator.locks.request(READER_LOCK, () => { location.reload(); return new Flag().wait(true); });
 }
 async function pickTab() {
   const role = viewMode ? 'viewer' : 'reader', room = viewMode ? viewMode.room : null;
@@ -2640,6 +2669,10 @@ $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('ab
 for (const line of logHeaderLines()) log(line);     // typeof-guarded inside: a missing BluetoothDevice global must not abort startup
 log(`tab: store ${TAB.id} (${TAB.role}${TAB.room ? ` of room ${TAB.room.slice(0, 6)}…` : ''}) - ${TAB.why}; ${TAB.others.length} other tab record${TAB.others.length === 1 ? '' : 's'} on this device`);
 logLastRun();
+// a second reader page tells this one (it waits until this page closes): say so, it explains a page the person sees
+if (!viewMode && typeof BroadcastChannel === 'function') {
+  try { new BroadcastChannel('batray').onmessage = (e) => { if (e.data && e.data.kind === 'reader-busy') { log('tab: BatRay was opened as the reader in another tab too; that tab waits until this one closes'); toast(T.readerSecond, 10000); } }; } catch { /* no channel */ }
+}
 void logEnvAsync();
 // one line a minute with everything that matters, so a log of a whole night reads as a timeline
 setInterval(() => {

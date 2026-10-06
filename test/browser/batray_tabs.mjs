@@ -15,7 +15,8 @@
 // Owner decision 2026-10-06: "remove this history lock, store per tab id; re-download per tab is fine, the same for
 // debug logs; Browse can list and delete for all; keep only the settings global". Real tabs of one browser, opened and
 // closed over CDP: the old store (one pool for every tab, before 0.9.77) and its global keys go to the first reader;
-// a second reader tab stores at the same time in a store of its own; Browse lists the other tab's store as open and
+// a viewer tab stores at the same time in a store of its own; a second READER tab does not start (one reader per
+// browser), says so and takes over by itself once the first closes; Browse lists the other tab's store as open and
 // will not delete it; the first tab closes and a new reader tab takes its store over (rows, last-run record); a viewer
 // tab gets a store of its own; a closed tab's store is deleted from Browse; every tab's debug log is listed.
 const PORT = +(process.env.PORT || 8077), CDP = +(process.env.CDP || 9333);
@@ -74,10 +75,11 @@ check('the log names the tab choice', (await A.logs('/^.{14}tab: store legacy \\
 check('A seeds 5 rows into its store', (await seed(A, 'n11', 5)) === 5 && (await rowsOf(A)) === 5);
 const sidA = await A.eval('window.__batrayTest.logState().sid');
 
-// ---- 2. a second reader tab while A is open: no lock, no grey card - a store of its own, both storing ----
-const B = await Tab.open(`${BASE}/batray/?test`);
+// ---- 2. a viewer tab while the reader A is open: no history lock, no grey card - a store of its own, both storing ----
+const KEY = 'qOZe1xrVxvTfYHUobOqjmg';
+const B = await Tab.open(`${BASE}/batray/?view=RoomOneRoomOneRoomOneX&test#k=${KEY}`);
 const tb = await tabOf(B);
-check('B is a new tab with its own store (A is open)', tb.how === 'new' && tb.id !== 'legacy' && /^[a-z0-9]{8}$/.test(tb.id), tb);
+check('B (a viewer) is a new tab with its own store (A is open)', tb.how === 'new' && tb.role === 'viewer' && tb.id !== 'legacy' && /^[a-z0-9]{8}$/.test(tb.id), tb);
 const bh = await B.eval('({ backend: window.__batrayTest.histState().backend, off: window.__batrayTest.histOffState().off })');
 check('B stores in SQLite too, its History card is not greyed', bh.backend === 'opfs' && !bh.off, bh);
 check('B and A store at the same time, each into its own day file', (await seed(B, 'm-00', 3)) === 3 && (await rowsOf(B)) === 3 && (await rowsOf(A)) === 5);
@@ -99,16 +101,42 @@ const bLog = br.find((i) => i.id.startsWith(`${tb.id}/log-`)), aLog = br.find((i
 check('Browse logs in A lists B\'s session file (another tab, open: no Delete) and its own (this session, live)', bLog && !bLog.del && /another tab, open/.test(bLog.name) && aLog && /this session, live/.test(aLog.name), br.map((i) => [i.id, i.name, i.del]));
 await A.eval(`document.getElementById('sheetBack') ? document.getElementById('sheetBack').click() : null; 1`); await sleep(300);
 
-// ---- 4. A closes (Chrome killed it, say); a new reader tab takes its store over ----
-await A.close();
-const C = await Tab.open(`${BASE}/batray/?test`);
-const tc = await tabOf(C);
-check('C, a new tab, takes over the closed reader store (A\'s), not B\'s open one', tc.id === 'legacy' && /closed reader tab/.test(tc.why), tc);
-check('...with A\'s rows', (await rowsOf(C)) === 7);
-check('...and A\'s last-run record (the run before, in this store)', (await C.logs(`/previous session ${sidA}/`)).length === 1, await C.logs('/previous session|first start/'));
+// ---- 4. ONE reader per browser (owner 2026-10-06): a second reader tab while A runs does not start, says why, ----
+// tells A, creates no store; when A closes it takes over by itself, with A's store
+const storesBefore = (await A.eval('window.__batrayTest.hasStores()')).map((x) => x.id).sort();
+const C = await Tab.open(`${BASE}/batray/?test`, 2500);
+const busy = await C.eval(`({ test: typeof window.__batrayTest, busy: !document.getElementById('readerBusy').hidden, app: !document.getElementById('app').hidden, text: document.getElementById('readerBusy').innerText, bootFail: !document.getElementById('bootFail').hidden, tab: sessionStorage.getItem('batray_tab') })`);
+check('a second reader tab does not start: the app is hidden, the message says to close the other BatRay tabs (EN + TH)', busy.test === 'undefined' && busy.busy && !busy.app && /already open as the reader in another tab/.test(busy.text) && /Close the other BatRay tabs/.test(busy.text) && /ปิดแท็บ BatRay อื่น/.test(busy.text), busy);
+check('...no "did not start" box and no tab id taken (it never chose a store)', !busy.bootFail && busy.tab === null, busy);
+for (const [w, h] of [[500, 900], [1440, 900]]) {
+  await C.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: w < 700 }); await sleep(300);
+  const r = await C.eval(`(() => { const b = document.getElementById('readerBusy').getBoundingClientRect(); return { left: b.left, right: b.right, vw: innerWidth, h: b.height, sw: document.documentElement.scrollWidth }; })()`);
+  check(`${w}px: the message fits the width, no sideways scroll`, r.left >= 0 && r.right <= r.vw && r.h > 40 && r.sw <= r.vw, r);
+}
+await C.send('Emulation.clearDeviceMetricsOverride');
+const D = await Tab.open(`${BASE}/batray/?test&third=1`, 2500);
+check('a third reader tab waits too', (await D.eval(`typeof window.__batrayTest === 'undefined' && !document.getElementById('readerBusy').hidden`)) === true);
+await sleep(7000);
+check('...still waiting after 13 s (the 12 s stuck watchdog does not fire either)', (await C.eval(`!document.getElementById('readerBusy').hidden && document.getElementById('bootFail').hidden`)) === true);
+check('...and no store was created for it', JSON.stringify((await A.eval('window.__batrayTest.hasStores()')).map((x) => x.id).sort()) === JSON.stringify(storesBefore), storesBefore);
+check('the running reader is told, once per waiting tab (C and D), in its log and a toast', (await A.logs('/tab: BatRay was opened as the reader in another tab too/')).length === 2 && /opened again in another tab/.test(await A.eval(`document.getElementById('toast') ? document.getElementById('toast').textContent : ''`)), await A.logs('/tab: /'));
+const V0 = await Tab.open(`${BASE}/batray/?view=RoomTwoRoomTwoRoomTwoR&test#k=${KEY}`);
+check('a viewer tab still opens while the reader runs (no limit on viewers)', (await V0.eval('window.__batrayTest.tab().role')) === 'viewer');
+await V0.close();
+await A.close();                                                            // Chrome killed the reader tab, say
+await sleep(7000);
+const state = async (t) => t.eval(`({ t: window.__batrayTest ? window.__batrayTest.tab() : null, busy: !document.getElementById('readerBusy').hidden })`);
+const sc = await state(C), sd = await state(D);
+check('A closed with two tabs waiting: exactly one starts as the reader, the other keeps waiting', [sc, sd].filter((x) => x.t && x.t.role === 'reader').length === 1 && [sc, sd].filter((x) => !x.t && x.busy).length === 1, { sc, sd });
+const R = sc.t ? C : D; const W = sc.t ? D : C;
+const tc = sc.t ? sc.t : sd.t;
+check('...it took over the closed reader store (A\'s)', tc && tc.id === 'legacy' && /closed reader tab/.test(tc.why), tc);
+check('...with A\'s rows', (await rowsOf(R)) === 7);
+check('...and A\'s last-run record (the run before, in this store)', (await R.logs(`/previous session ${sidA}/`)).length === 1, await R.logs('/previous session|first start/'));
+check('...the message is gone', (await R.eval(`document.getElementById('readerBusy').hidden && !document.getElementById('app').hidden`)) === true);
+await W.close();
 
 // ---- 5. a viewer tab: a store of its own (never a reader's), re-downloaded from its reader ----
-const KEY = 'qOZe1xrVxvTfYHUobOqjmg';
 const V = await Tab.open(`${BASE}/batray/?view=AbCdEfGhIjKlMnOpQrStUv&test#k=${KEY}`);
 const tv = await tabOf(V);
 check('a viewer tab gets a store of its own', tv.how === 'new' && tv.role === 'viewer' && tv.id !== tb.id && tv.id !== 'legacy', tv);
@@ -125,12 +153,17 @@ const left = await B.eval(`(async () => ({ stores: (await window.__batrayTest.ha
 check('...Delete removes its files and its tab record', !left.stores.includes(tv.id) && left.meta === null && left.stores.includes(tb.id) && left.stores.includes('legacy'), left);
 await B.eval(`document.getElementById('sheetBack') ? document.getElementById('sheetBack').click() : null; 1`); await sleep(300);
 
-// ---- 7. a reload keeps the tab's store ----
-await B.go(`${BASE}/batray/?test&n=2`);
+// ---- 7. a reload keeps the tab's store; a reload of the reader is never refused by its own leaving page ----
+await B.go(`${BASE}/batray/?view=RoomOneRoomOneRoomOneX&test&n=2#k=${KEY}`);
 const tb2 = await tabOf(B);
 check('a reload of B keeps B\'s store and rows', tb2.id === tb.id && tb2.how === 'same' && (await rowsOf(B)) === 3, tb2);
+for (let i = 1; i <= 3; i++) {
+  await R.go(`${BASE}/batray/?test&r=${i}`, 4500);
+  const r = await R.eval(`({ t: window.__batrayTest ? window.__batrayTest.tab() : null, busy: !document.getElementById('readerBusy').hidden })`);
+  check(`reload ${i} of the reader: starts as the reader at once, same store`, r.t && r.t.id === 'legacy' && r.t.how === 'same' && !r.busy, r);
+}
 
-const thrown = [...B.thrown(), ...C.thrown()];
+const thrown = [...B.thrown(), ...R.thrown()];
 check('no page exceptions', thrown.length === 0, thrown);
 console.log(fails ? 'BATRAY TABS TEST FAILED' : 'batray tabs test ok');
 process.exit(fails ? 1 : 0);
