@@ -41,9 +41,10 @@ export function locFix(pos, now) {
   const r5 = (x) => Math.round(x * 1e5) / 1e5;
   return { lat: r5(c.latitude), lon: r5(c.longitude), acc: typeof c.accuracy === 'number' ? Math.round(c.accuracy) : null, at: typeof pos.timestamp === 'number' ? pos.timestamp : now };
 }
-/** The checklist row: on and allowed. Off counts as missing (the owner wants it on); no API: cannot tell. */
+/** The checklist row: on and allowed. Off is the person's choice, not a warning (owner 2026-10-06: "warn on location
+ *  only if on but not allowed"); on but not (yet) allowed is missing; no API: cannot tell. */
 export function locState({ on, permission }) {
-  if (!on) return false;
+  if (!on) return 'off';
   if (permission === 'none') return null;
   return permission === 'granted';
 }

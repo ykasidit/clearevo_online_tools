@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, REACH_HOLD_MS, viewState, viewerEvent, viewHello, viewerDataSeen } from '../public/batray/share-logic.js';
+import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, REACH_HOLD_MS, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision } from '../public/batray/share-logic.js';
 import { suggestChannelName } from '../public/batray/live-logic.js';
 
 test('the Share button: opens the setup, is sunk and stops on the next press, greyed while starting', () => {
@@ -99,4 +99,21 @@ test('viewer: the reader\'s presence alerts only after it was seen once and only
   assert.deepEqual(viewHello(vs, { v: { channel: 'm-00', version: '0.9.21' } }), { name: 'm-00', version: '0.9.21' });
   assert.equal(viewHello(vs, { v: { channel: 'm-00' } }), null);
   assert.deepEqual(viewHello(vs, { v: {} }), { name: '', version: '' });
+});
+
+test('viewer packs: an old retained slot of a pack the reader no longer lists is ignored, not a second chip (2026-10-05 15:29)', () => {
+  // the room replays every slot it ever kept, first-seen order: hello, packs (the newest list: n11 under its new id),
+  // then pack slots - slot 0 still holds n11 under the id it had before the reader's Chrome forgot the permission
+  const vs = viewState(); const have = new Set();
+  const take = (id, retained) => { const d = remotePackDecision(vs, { id, known: have.has(id), retained }); if (d.action === 'add') have.add(id); return d; };
+  assert.deepEqual(take('bt-OLD', true), { action: 'add' }, 'before any list a retained reading may add (the list that follows drops it)');
+  have.delete('bt-OLD');                                           // ... which the list below does (removePack)
+  viewPacks(vs, [{ id: 'bt-NEW', name: 'n11' }]);
+  assert.deepEqual(take('bt-OLD', true), { action: 'ignore', log: true }, 'info0 of the old id');
+  assert.deepEqual(take('bt-OLD', true), { action: 'ignore', log: false }, 'settings0 / data0: logged once');
+  assert.deepEqual(take('bt-NEW', true), { action: 'add' }, 'the listed pack is added from its retained reading');
+  assert.deepEqual(take('bt-NEW', false), { action: 'use' });
+  assert.equal(have.size, 1, 'one chip for one bank');
+  assert.deepEqual(take('bt-ADDED', false), { action: 'add' }, 'live news of a pack the reader just added comes before its next list');
+  viewPacks(vs, null); assert.deepEqual(vs.packIds, [], 'a junk list names nothing');
 });

@@ -42,7 +42,7 @@ export function checklist({
     { id: 'known', state: !knownSaved ? 'unknown' : tri(knownPermitted) },
     { id: 'notify', state: notifications === 'granted' ? 'ok' : notifications === 'none' ? 'unknown' : 'missing' },
     { id: 'push', state: tri(push) },
-    { id: 'location', state: tri(location) },                           // on and allowed (0.9.74)                                   // the "reader stopped" push (0.9.73): known once sharing
+    { id: 'location', state: location === 'off' ? 'off' : tri(location) },  // on and allowed; off = the person's choice, no warning (0.9.76)
     { id: 'persist', state: tri(persisted) },
     { id: 'history', state: history === 'opfs' ? 'ok' : history === 'memory' ? 'missing' : 'unknown' },
     { id: 'wake', state: tri(wakeLock) },
@@ -52,16 +52,16 @@ export function checklist({
   ];
   return items.map((i) => ({ manual: false, ...i }));
 }
-/** ready = ok or confirmed; the rest by kind. `ok` only when nothing is missing or left to confirm. */
+/** ready = ok, confirmed, or switched off by the person; the rest by kind. `ok` only when nothing is missing or left to confirm. */
 export function checklistSummary(items) {
   const by = (s) => items.filter((i) => i.state === s).map((i) => i.id);
-  const ready = items.filter((i) => i.state === 'ok' || i.state === 'done').length;
-  const missing = by('missing'), todo = by('todo'), unknown = by('unknown');
-  return { ready, total: items.length, missing, todo, unknown, ok: !missing.length && !todo.length };
+  const ready = items.filter((i) => i.state === 'ok' || i.state === 'done' || i.state === 'off').length;
+  const missing = by('missing'), todo = by('todo'), unknown = by('unknown'), off = by('off');
+  return { ready, total: items.length, missing, todo, unknown, off, ok: !missing.length && !todo.length };
 }
 export function checklistLine(items) {
   const s = checklistSummary(items);
-  return `setup: ${s.ready}/${s.total} ready${s.missing.length ? ` - missing: ${s.missing.join(', ')}` : ''}${s.todo.length ? ` - not confirmed: ${s.todo.join(', ')}` : ''}${s.unknown.length ? ` - cannot tell: ${s.unknown.join(', ')}` : ''}${items.some((i) => i.state === 'done') ? ` - confirmed by the user: ${items.filter((i) => i.state === 'done').map((i) => i.id).join(', ')}` : ''}`;
+  return `setup: ${s.ready}/${s.total} ready${s.missing.length ? ` - missing: ${s.missing.join(', ')}` : ''}${s.todo.length ? ` - not confirmed: ${s.todo.join(', ')}` : ''}${s.unknown.length ? ` - cannot tell: ${s.unknown.join(', ')}` : ''}${s.off.length ? ` - off by choice: ${s.off.join(', ')}` : ''}${items.some((i) => i.state === 'done') ? ` - confirmed by the user: ${items.filter((i) => i.state === 'done').map((i) => i.id).join(', ')}` : ''}`;
 }
 /** The warning sign by "updated": a running reader with something missing or not confirmed. */
 export function setupWarn({ items, reader, running }) { return !!(reader && running && !checklistSummary(items).ok); }

@@ -143,6 +143,33 @@ for (const [w, h] of [[500, 900], [1440, 900]]) {
 }
 await send('Emulation.clearDeviceMetricsOverride');
 
+// ---- 6. a viewer joins a room that still keeps a slot of the reader's pack under an OLD id (owner's viewer, 2026-10-05
+// 15:29: one bank, but a second "n11" chip that never went live). First-seen order, as the room replays it: hello, the
+// newest pack list (n11 under its new id), then pack slots - slot 0 from before the id changed, slot 1 the live one.
+await send('Page.navigate', { url: `${BASE}/batray/?view=AbCdEfGhIjKlMnOpQrStUv&test&n=7#k=${KEY}` }); await sleep(2500);
+await evalJs(`(async () => {
+  const L = await import('/batray/live-logic.js');
+  const key = await L.importKey('${KEY}');
+  const sock = window.__wsAll[window.__wsAll.length - 1];
+  const now = Date.now();
+  const send = async (env, slot, ago) => { const b = await L.encrypt(key, env); let s = ''; for (const x of b) s += String.fromCharCode(x); sock.push({ type: 'd', b: btoa(s), slot, ago }); };
+  const d = { soc: 64, packV: 52.4, current: -3.1, power: -162, cells: [{ v: 3.27 }, { v: 3.28 }], cellSum: 6.55, plausible: true, variant: 'JK02_32S' };
+  sock.push({ type: 'status', viewers: 1, live: false, gone: { ago: 852_000, code: 1006, reason: '' } });
+  await send({ k: 'hello', p: { id: '*', name: '*' }, t: now - 852_000, v: { channel: 'seahut-n11', version: '0.9.69' } }, 'hello', 852_000);
+  await send({ k: 'packs', p: { id: '*', name: '*' }, t: now - 852_000, v: [{ id: 'bt-NEWid0000000000', name: 'n11', demo: false, connected: true }] }, 'packs', 852_000);
+  await send({ k: 'info', p: { id: 'bt-OLDid0000000000', name: 'n11' }, t: now - 86_400_000, v: { model: 'JK_PB2A16S20P' } }, 'info0', 86_400_000);
+  await send({ k: 'settings', p: { id: 'bt-OLDid0000000000', name: 'n11' }, t: now - 86_400_000, v: {} }, 'settings0', 86_400_000);
+  await send({ k: 'data', p: { id: 'bt-OLDid0000000000', name: 'n11' }, t: now - 86_400_000, v: d }, 'data0', 86_400_000);
+  await send({ k: 'data', p: { id: 'bt-NEWid0000000000', name: 'n11' }, t: now - 852_000, v: d }, 'data1', 852_000);
+  return 1;
+})()`);
+await sleep(1500);
+const pk = await evalJs(`window.__batrayTest.packIds()`);
+check('one bank, one pack: the old id\'s retained slots add no second "n11"', pk.length === 1 && pk[0] === 'bt-NEWid0000000000', pk);
+lines = await logs('/live: an old retained .* of pack "n11" \\(bt-OLDid00000.*ignored - the reader lists only 1 pack/');
+check('...the log says once that an old retained slot was ignored', lines.length === 1, await logs('/live: (pack|an old)/'));
+check('...and that n11 came from the reader\'s list', (await logs('/live: pack "n11" added \\(bt-NEWid00000.*from the reader.s pack list/')).length === 1, await logs('/live: (pack|an old)/'));
+
 const thrown = events.filter((e) => e.method === 'Runtime.exceptionThrown').map((e) => e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text).filter((t) => !/app\.js/.test(t));
 check('no page exceptions', thrown.length === 0, thrown);
 ws.close();

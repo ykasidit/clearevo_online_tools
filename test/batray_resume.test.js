@@ -83,6 +83,15 @@ test('the checklist: each item checked where the page can, manual steps by the p
   const bare = checklistSummary(checklist({}));
   assert.ok(!bare.ok && bare.unknown.includes('charging') && bare.unknown.includes('notify'), 'nothing known is never "ok"');
   assert.deepEqual(checklist({ history: 'memory' }).find((i) => i.id === 'history').state, 'missing');
+  // owner 2026-10-06: "warn on location only if on but not allowed" - unticked is a choice, counted ready, no sign
+  const off = checklist({ ...h46, getDevices: true, knownPermitted: true, notifications: 'granted', push: true, location: 'off', done: [...MANUAL] });
+  assert.equal(off.find((i) => i.id === 'location').state, 'off');
+  sum = checklistSummary(off);
+  assert.deepEqual([sum.ready, sum.ok, sum.off], [14, true, ['location']]);
+  assert.equal(setupWarn({ items: off, reader: true, running: true }), false, 'no warning sign for a location the person left off');
+  assert.ok(checklistLine(off).includes(' - off by choice: location'), checklistLine(off));
+  const denied = checklist({ ...h46, getDevices: true, knownPermitted: true, notifications: 'granted', push: true, location: false, done: [...MANUAL] });
+  assert.equal(setupWarn({ items: denied, reader: true, running: true }), true, 'ticked but Chrome does not allow it: the sign shows');
 });
 
 test('manual steps: Done toggles and survives storage; the warning sign shows on a running reader with something left', () => {
@@ -164,7 +173,7 @@ test('location: asked only after a tap, read every 10 min once allowed, rounded,
   assert.equal(locLogText(fix), 'fix ±19 m'); assert.ok(!locLogText(fix).includes('13.7'), 'no coordinates in a log line');
   assert.equal(locCoords(fix), '13.75633, 100.50177');
   assert.equal(locState({ on: true, permission: 'granted' }), true);
-  assert.equal(locState({ on: false, permission: 'granted' }), false, 'off counts as missing');
+  assert.equal(locState({ on: false, permission: 'granted' }), 'off', 'off is the person\'s choice, no warning (0.9.76)');
   assert.equal(locState({ on: true, permission: 'prompt' }), false);
   assert.equal(locState({ on: true, permission: 'none' }), null);
   const s = statusSnapshot({ now, loc: fix });

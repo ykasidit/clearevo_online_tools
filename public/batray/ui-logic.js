@@ -158,7 +158,7 @@ export function sheetModel(kind, ctx, T) {
       const sum = checklistSummary(c.items);
       m.title = T.setupTitle;
       m.lead = `${T.setupLead(sum.ready, sum.total)}${c.mode === 'connect' && !sum.ok ? ` ${T.setupContinueNote}` : ''}`;
-      m.items = c.items.map((i) => ({ id: i.id, kind: 'check', state: i.state, name: T.setupItem[i.id] || i.id, size: T.setupState[i.state], hint: i.state === 'ok' || i.state === 'done' ? '' : (T.setupHow[i.id] || ''), tog: !!i.manual, togLabel: i.state === 'done' ? T.setupUndo : T.setupMark }));
+      m.items = c.items.map((i) => ({ id: i.id, kind: 'check', state: i.state, name: T.setupItem[i.id] || i.id, size: T.setupState[i.state], hint: i.state === 'ok' || i.state === 'done' || i.state === 'off' ? '' : (T.setupHow[i.id] || ''), tog: !!i.manual, togLabel: i.state === 'done' ? T.setupUndo : T.setupMark }));
       const f = c.facts || {};
       m.rows.push([T.rsBrowser, `${f.browser || '?'}${f.os ? ` · ${OS_LABEL[f.os] || f.os}` : ''}`], [T.setupFlag, f.getDevices ? T.setupFlagOn : T.setupFlagOff], [T.rsVersion, `BatRay ${f.ver || ''}`]);
       m.actions = c.mode === 'connect'

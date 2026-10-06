@@ -89,7 +89,23 @@ export function reachSettle(rs, s, now) {
 }
 
 // ---- viewer side: the reader's presence and the channel name ----
-export function viewState() { return { readerLive: false, readerSeen: false, channel: '' }; }
+export function viewState() { return { readerLive: false, readerSeen: false, channel: '', packIds: null, ignored: [] }; }
+/** The reader's pack list arrived: the ids it lists now (owner's log 2026-10-05: a second, never-live "n11" chip). */
+export function viewPacks(vs, list) { vs.packIds = Array.isArray(list) ? list.map((x) => x.id) : []; }
+/** A pack's info / settings / data arrived. The room keeps the newest message of every slot it ever saw, so a
+ *  joining viewer is also replayed slots of packs the reader has since dropped - on a phone whose Chrome forgets
+ *  Bluetooth permissions the same BMS comes back under a new id after a restart, and the old id's slot lingers.
+ *  'use' a pack we have; 'add' an unknown one when it is live news (the reader's next list confirms or drops it)
+ *  or when no list has come yet; 'ignore' a retained message of an id the reader's list does not name. `log` is
+ *  true the first time an id is ignored. */
+export function remotePackDecision(vs, { id, known, retained }) {
+  if (known) return { action: 'use' };
+  if (retained && vs.packIds && !vs.packIds.includes(id)) {
+    const log = !vs.ignored.includes(id); if (log) vs.ignored.push(id);
+    return { action: 'ignore', log };
+  }
+  return { action: 'add' };
+}
 /** A Viewer state update. Returns { readerAlert: 'on' | 'off' } when the reader's presence changed and is worth an alert. */
 export function viewerEvent(vs, s) {
   // reader online/offline is the server's word (its session registered or

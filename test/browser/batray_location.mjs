@@ -79,9 +79,14 @@ await evalJs(`(() => { window.__batrayTest.statusTick('visible'); return 1; })()
 sent = await evalJs(decryptStatus);
 check('the next status carries no position', sent.length >= 2 && sent[sent.length - 1].loc === null, sent.map((x) => x.loc));
 setup = await evalJs(`window.__batrayTest.statusState().last.setup`);
-check('...and the checklist says location is missing', setup.missing.includes('location'), setup);
+check('...and the checklist takes it as the person\'s choice: not missing, "off", no warning for it (0.9.76)', !setup.missing.includes('location') && setup.off.includes('location'), setup);
 await evalJs(`document.getElementById('locKeep').click(); 1`); await sleep(1500);
 check('ticked again: a fix at once (the tap)', !!(await evalJs('window.__batrayTest.locState().fix')));
+// ticked but Chrome blocks it: that is the one case worth the warning
+await send('Browser.setPermission', { origin: BASE, permission: { name: 'geolocation' }, setting: 'denied' }); await sleep(800);
+setup = await evalJs(`(() => { window.__batrayTest.statusTick('tick'); return window.__batrayTest.statusState().last.setup; })()`);
+check('ticked but blocked in Chrome: the checklist says location is missing', setup.missing.includes('location'), { setup, loc: await evalJs('window.__batrayTest.locState()') });
+await send('Browser.setPermission', { origin: BASE, permission: { name: 'geolocation' }, setting: 'granted' }); await sleep(500);
 
 // ---- 3. no file storage: nothing kept, the card greyed with the reason ----
 await send('Page.navigate', { url: `${BASE}/batray/?test&n=3` }); await sleep(2500);

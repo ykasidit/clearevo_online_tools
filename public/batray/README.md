@@ -135,6 +135,26 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.76 (2026-10-06): no ghost pack chip on a viewer; location warns only when ticked but not allowed
+
+- **Ghost pack** (owner's viewer log 2026-10-05 15:29, "seahut-n11": one bank, a second "n11" chip that never went
+  live): the room keeps the newest message of every slot it ever saw (`data0`, `info1`, ...: the reader numbers a pack
+  id the first time it publishes it), and replays them all to a joining viewer after the newest pack list. A phone
+  whose Chrome does not remember Bluetooth permissions (getDevices off) gets a NEW device id for the same BMS after a
+  Chrome restart, so the room still held n11 under its old id; the viewer made a pack from any envelope with an
+  unknown id, and with the reader offline no later list removed it. Now `remotePackDecision(viewS, {id, known,
+  retained})` in share-logic: a retained message of an id the latest list (`viewPacks`) does not name is ignored
+  (logged once per id); live news of an unlisted id still adds (the reader's next list confirms or drops it). The
+  viewer logs every remote pack added (and from what) and removed. The reader's slot numbering is unchanged on
+  purpose: renumbering would leave two retained readings of one pack and the older would paint last.
+- **Checklist**: `locState` returns 'off' when unticked -> state 'off' ("off (your choice)", mark –, no hint), counted
+  ready, no ⚠; ticked but not allowed (prompt / denied) stays missing.
+
+Tests: `batray_share.test.js` replays the slot order of that join; `batray_resume.test.js` off / denied; browser
+`batray_status.mjs` feeds the encrypted retained replay through the real viewer handler (one pack, the ignore and add
+lines; it shows the second pack when the decision is reverted), `batray_location.mjs` unticked = off, ticked but
+denied in Chrome = missing.
+
 ## 0.9.75 (2026-10-06): debug log and location off until ticked
 
 Owner: "both debug and location off by default so user rights is manually consented". `logKeepOn(raw)` and

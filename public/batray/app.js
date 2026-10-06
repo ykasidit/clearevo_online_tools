@@ -23,7 +23,7 @@ import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggl
 import { pushDecision, pushState, b64uBytes } from './push-logic.js';
 import { locOn, locDecision, locFix, locState, locLogText, LOC_KEY } from './location-logic.js';
 import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
-import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
+import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, tvPreviewToggle, previewState, previewEvent, previewSource } from './tv-logic.js';
 import { startDemo } from './demo.js';
@@ -42,7 +42,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.75';
+export const APP_VERSION = '0.9.76';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -259,6 +259,11 @@ const uiS = uiState(viewMode ? 'viewer' : 'reader');
 let langCode = 'en';
 const wakeS = wakeState('wakeLock' in navigator, !!viewMode);   // a viewer never plays the keep-awake video (owner, 2026-09-22)
 
+/** A viewer's copy of one of the reader's packs; logged, so a chip the person did not expect can be traced. */
+function addRemotePack(id, name, why) {
+  log(`live: pack "${name}" added (${String(id).slice(0, 13)}…, from ${why === 'listed' ? "the reader's pack list" : `a ${why} reading`})`);
+  return addPack(new Pack(id, name, { remote: true }));
+}
 function addPack(pack) { packs.set(pack.id, pack); if (!active) setActive(pack); renderPackBar(); return pack; }
 function removePack(pack) {
   packs.delete(pack.id);
@@ -1984,15 +1989,21 @@ async function startView() {
         return;
       }
       if (env.k === 'packs') {
+        viewPacks(viewS, env.v);
         const ids = new Set(env.v.map((x) => x.id));
-        for (const p of [...packs.values()]) if (!ids.has(p.id)) removePack(p);
-        for (const x of env.v) { const p = packs.get(x.id) || addPack(new Pack(x.id, x.name, { remote: true })); p.name = x.name; if (x.demo && !p.demo) p.demo = { stop() {} }; p.remoteLive = viewer.state.live && x.connected; }
+        for (const p of [...packs.values()]) if (!ids.has(p.id)) { log(`live: pack "${p.label}" removed (the reader no longer lists it)`); removePack(p); }
+        for (const x of env.v) { const p = packs.get(x.id) || addRemotePack(x.id, x.name, 'listed'); p.name = x.name; if (x.demo && !p.demo) p.demo = { stop() {} }; p.remoteLive = viewer.state.live && x.connected; }
         renderPackBar(); return;
       }
       if (env.k === 'hist-file') { rxHistFile(env); return; }
       if (env.k === 'status') { rxReaderStatus(env); return; }
       let p = packs.get(env.p.id);
-      if (!p) { p = addPack(new Pack(env.p.id, env.p.name, { remote: true })); }
+      const pd = remotePackDecision(viewS, { id: env.p.id, known: !!p, retained: !!env.retained });
+      if (pd.action === 'ignore') {
+        if (pd.log) log(`live: an old retained ${env.k} of pack "${env.p.name}" (${String(env.p.id).slice(0, 13)}…, ${env.ageS ?? '?'} s old) ignored - the reader lists only ${(viewS.packIds || []).length} pack(s) now`);
+        return;
+      }
+      if (!p) p = addRemotePack(env.p.id, env.p.name, env.retained ? 'retained' : 'live');
       // a frozen tab gets the whole queue on resume (the 2026-09-22 log: 20 s of replay): a reading older than
       // FRESH_MS is kept for the history but never painted, and does not count as the reader being there
       const seen = viewerDataSeen(viewS, !!env.stale, Math.round((Date.now() - env.t) / 1000));
@@ -2354,7 +2365,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, packIds: () => [...packs.keys()], connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake, rxHistFile, compatState: () => compatS, browserInfo: () => browserInfo, histLockOut: () => hist.lockOut(1000, new Error('test')), locState: () => ({ ...locS }), histOffState: () => ({ off: histOff(), text: $('histOff').textContent, grey: $('trendCard').classList.contains('histoff'), cardShown: !$('trendCard').hidden }), statusState: () => ({ ...statusS }), statusTick, pubLink: () => (publisher ? publisher.link : null), readerState: () => ({ ...readerS, gone: viewer ? viewer.state.gone : null, reader: viewer ? viewer.state.reader : null }), packData: () => (active ? active.data : null),
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
@@ -2390,7 +2401,7 @@ function renderSheetItems(m) {
 }
 /** The checklist rows, built as nodes: a mark, the item, its state and how to fix it, and Done for a manual step. */
 function renderCheckItems(el, items) {
-  const MARK = { ok: '✓', done: '✓', missing: '✗', todo: '○', unknown: '?' };
+  const MARK = { ok: '✓', done: '✓', missing: '✗', todo: '○', unknown: '?', off: '–' };
   el.replaceChildren(...items.map((i) => {
     const row = document.createElement('div'); row.className = `item ck ck-${i.state}`;
     const mark = document.createElement('span'); mark.className = 'mk'; mark.textContent = MARK[i.state] || '?';
