@@ -255,10 +255,14 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
 </style>
 <script>
 /* BatRay boot trail (0.9.71): each page load's stages go to localStorage before any module runs (the one before is
-   kept as batray_boot_prev); app.js adds its own and reads the previous load's at start. A load that never gets past
-   'html' (a script that did not load, a stuck page process) says so on screen after 12 s and in the next log. */
+   kept as <key>_prev); app.js adds its own and reads the previous load's at start. A load that never gets past
+   'html' (a script that did not load, a stuck page process) says so on screen after 12 s and in the next log.
+   0.9.77: per tab - the key carries this tab's id (sessionStorage); a new tab writes under 'new' and app.js moves it
+   once it has chosen the tab's store (__batrayBootMove). */
 (function () { try {
-  var k = 'batray_boot', prev = localStorage.getItem(k); if (prev) localStorage.setItem('batray_boot_prev', prev);
+  var id = null; try { id = sessionStorage.getItem('batray_tab'); } catch (x) { /* no session storage */ }
+  var k = 'batrayTab:' + (id || 'new') + ':boot', prev = localStorage.getItem(k); if (prev && id) localStorage.setItem(k + '_prev', prev);
+  window.__batrayBootKey = k; window.__batrayBootMove = function (nk) { k = nk; };
   var b = { t: Date.now(), st: [['html', 0]], err: null }; localStorage.setItem(k, JSON.stringify(b));
   window.__batrayBoot = function (stage, err) { try { var r = JSON.parse(localStorage.getItem(k) || 'null') || b; r.st.push([stage, Date.now() - r.t]); if (r.st.length > 20) r.st.splice(1, r.st.length - 20); if (err) r.err = String(err).slice(0, 300); localStorage.setItem(k, JSON.stringify(r)); } catch (x) { /* storage full or blocked */ } };
   addEventListener('error', function (e) { var t = e.target, src = t && t.src ? ' ' + String(t.src).split('/').pop() : '', f = (e.filename || '').split('/').pop(); window.__batrayBoot('error', (e.message || 'load failed') + (f ? ' @' + f + ':' + e.lineno : '') + src); }, true);

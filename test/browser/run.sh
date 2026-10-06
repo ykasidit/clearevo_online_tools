@@ -13,6 +13,7 @@
 #   batray_resume.mjs - a reopened reader resumes after the 30 s countdown (Now / Cancel / run out / no getDevices), the setup checklist and its sign
 #   batray_push.mjs  - the "reader stopped" push: sign-up while sharing (stubbed push service), the real service worker shows it, a stop forgets it
 #   batray_location.mjs - the reader's location in its status (off until ticked, never in a log line) and the greyed History card when nothing can be kept
+#   batray_tabs.mjs - one store per tab: two tabs store at once, a reopened reader adopts its closed store, Browse lists and deletes every tab's
 #   clinician.mjs - 24-scenario DICOM viewer suite (measure landing under
 #                   zoom/pan/rotate/flip/hi-DPI, wheel/keys/slider, cine,
 #                   multi-frame US, tags, capture-with-overlay)
@@ -54,6 +55,7 @@ node batray_status.mjs || rc=1
 node batray_resume.mjs || rc=1
 node batray_push.mjs || rc=1
 node batray_location.mjs || rc=1
+node batray_tabs.mjs || rc=1
 node batray_log.mjs || rc=1      # last: it throws deliberate errors that Chrome replays to the next Runtime.enable
 node probe.mjs
 node repro.mjs

@@ -15,10 +15,10 @@
 import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castSettle, castProgress, castButtons, castStateUi, castTapAllowed, castTvUpdate, CAST_FLOW_TIMEOUT_MS, CAST_TV_WAIT_MS } from './cast-logic.js';
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
-import { stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
+import { fmtWhen, stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fmtVersion } from './compat-logic.js';
 import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel } from './status-logic.js';
-import { parseIntent, intentEvent, resumePlan, resumeLine, RESUME_KEY, RESUME_ON_KEY } from './resume-logic.js';
+import { parseIntent, intentEvent, resumePlan, resumeLine, RESUME_ON_KEY } from './resume-logic.js';
 import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggleDone, SETUP_DONE_KEY } from './setup-logic.js';
 import { pushDecision, pushState, b64uBytes } from './push-logic.js';
 import { locOn, locDecision, locFix, locState, locLogText, LOC_KEY } from './location-logic.js';
@@ -32,17 +32,18 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope, suggestChannelName, parseSavedShare } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
-import { Flag, Channel, select, sleep } from './sync.js';
+import { Flag, Channel, select, sleep, TIMEOUT } from './sync.js';
+import { TAB_SS, TAB_PREFIX, LEGACY, LEGACY_DROP, tabLock, tabKey, metaKey, tabMeta, tabRecords, chooseTab, orphanDrops, legacyMoves, storeRows } from './tab-logic.js';
 import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
-import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, logKeepOn, LASTRUN_KEY, BOOT_PREV_KEY } from './log-logic.js';
+import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, logKeepOn } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.76';
+export const APP_VERSION = '0.9.77';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -65,6 +66,75 @@ const els = {
 // packs arrive over the live channel and are decrypted on this device.
 const viewMode = parseShare(location.href);
 let alerts = null;
+
+// One store per tab (0.9.77, owner: "remove this history lock, store per tab id"): this page's id is chosen before
+// anything reads per-tab state (tab-logic decides; this does the lookups). The page holds its tab lock for life.
+/** A promise or TIMEOUT after `ms` (a lookup that hangs must not hold the page's start). */
+const within = (p, ms) => Promise.race([p, sleep(ms)]);
+function tabEntries() {
+  const out = []; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(TAB_PREFIX)) out.push([k, localStorage.getItem(k)]); } } catch { /* no storage */ }
+  return out;
+}
+/** Ids whose tab lock another page holds (a live tab). No Web Locks API: none known. */
+async function liveTabs() {
+  const ids = new Set();
+  try {
+    const q = navigator.locks ? await within(navigator.locks.query(), 2000) : null;
+    if (q && q !== TIMEOUT) for (const l of q.held || []) if (l.name && l.name.startsWith('batray-tab-')) ids.add(l.name.slice('batray-tab-'.length));
+  } catch { /* unknown */ }
+  return ids;
+}
+/** Hold this tab's lock for as long as the page lives; false when another page holds it already. */
+async function holdTabLock(id) {
+  if (!navigator.locks) return true;
+  const got = new Channel();
+  navigator.locks.request(tabLock(id), { mode: 'exclusive', ifAvailable: true }, (lock) => { got.push(!!lock); return lock ? new Flag().wait(true) : null; }).catch(() => got.push(true));
+  const r = await got.next({ ms: 2000 });
+  return r === TIMEOUT ? true : r;
+}
+async function legacyStoreExists() {
+  try { const root = await within(navigator.storage.getDirectory(), 2000); if (root === TIMEOUT) return false; await root.getDirectoryHandle('batray-history-db'); return true; } catch { return false; }
+}
+async function pickTab() {
+  const role = viewMode ? 'viewer' : 'reader', room = viewMode ? viewMode.room : null;
+  let sessionId = null; try { sessionId = sessionStorage.getItem(TAB_SS); } catch { /* no session storage */ }
+  const records = tabRecords(tabEntries()), live = await liveTabs();
+  const legacy = role === 'reader' ? await legacyStoreExists() : false;
+  for (let i = 0; i < 3; i++) {
+    const c = chooseTab({ sessionId, live, role, room, records, legacy });
+    if (await holdTabLock(c.id)) {
+      try { sessionStorage.setItem(TAB_SS, c.id); } catch { /* no session storage: a reload makes a new tab */ }
+      return { ...c, role, room, others: records.filter((r) => r.id !== c.id) };
+    }
+    live.add(c.id); sessionId = null;                                        // another page took it in between: choose again
+  }
+  return { ...chooseTab({ live, role, room, records: [] }), role, room, others: records };
+}
+const TAB = await pickTab();
+const tk = (name) => tabKey(TAB.id, name);
+/** Settle this tab's per-tab state: the legacy keys (taken with the legacy store), the boot trail the inline script
+ *  wrote before the id was known, and the tab's record. */
+(() => {
+  try {
+    if (TAB.id === LEGACY && TAB.how === 'legacy' && !TAB.from) {
+      for (const [from, to] of legacyMoves(LEGACY)) { const v = localStorage.getItem(from); if (v !== null && localStorage.getItem(to) === null) localStorage.setItem(to, v); localStorage.removeItem(from); }
+      for (const k of LEGACY_DROP) localStorage.removeItem(k);
+    }
+    const inlineKey = window.__batrayBootKey;
+    if (inlineKey && inlineKey !== tk('boot')) {
+      const rec = localStorage.getItem(inlineKey), before = localStorage.getItem(tk('boot'));
+      if (before !== null) localStorage.setItem(tk('boot_prev'), before);          // a taken-over tab: its last page load is "the one before"
+      if (rec !== null) localStorage.setItem(tk('boot'), rec);
+      if (inlineKey.includes(':new:')) { localStorage.removeItem(inlineKey); localStorage.removeItem(inlineKey + '_prev'); }   // a copied tab's inline key is the live tab's own: leave it
+      if (typeof window.__batrayBootMove === 'function') window.__batrayBootMove(tk('boot'));
+    }
+  } catch { /* no storage */ }
+})();
+let tabChannel = (() => { try { const m = JSON.parse(localStorage.getItem(metaKey(TAB.id)) || 'null'); return m && m.channel ? String(m.channel) : ''; } catch { return ''; } })();
+function writeTabMeta() { try { localStorage.setItem(metaKey(TAB.id), JSON.stringify(tabMeta({ id: TAB.id, role: TAB.role, room: TAB.room, channel: tabChannel, at: Date.now() }))); } catch { /* no storage */ } }
+writeTabMeta();
+/** Remove another tab's per-tab state (its store was deleted). */
+function forgetTab(id) { try { const ks = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && (k === metaKey(id) || k.startsWith(`${metaKey(id)}:`))) ks.push(k); } for (const k of ks) localStorage.removeItem(k); } catch { /* no storage */ } }
 
 $('titleText').textContent = `BatRay by ClearEvo.com v${APP_VERSION}`;
 $('aboutVer').textContent = `v${APP_VERSION}`;
@@ -558,8 +628,8 @@ function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 // counts them, this block queues, flushes, keeps the day's id counter, draws
 // from bucket queries and logs what happened. ----
 const histS = historyState();
-const hist = new HistoryStore({ log });
-hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') { dropMemoryRows(); void explainLockOut(); } renderHistOff(); };   // memory-only after a locked pool: the Storage box says so
+const hist = new HistoryStore({ log, store: TAB.id });
+hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') dropMemoryRows(); renderHistOff(); };   // memory-only after a locked pool: the Storage box says so
 const histMem = { pending: new Map(), plot: null, plotParams: '', cursorIdx: null, series: null, drawAt: 0, drawing: false, redraw: false, spanAt: 0, demoId: 0 };
 const utf8 = new TextEncoder();
 function pendingRows() { let n = 0; for (const l of histMem.pending.values()) n += l.length; return n; }
@@ -636,16 +706,15 @@ setInterval(flushHistory, HISTORY_FLUSH_MS);
 // inserted at the next start; the worker is stopped at once so its OPFS access handles die with it and the next
 // page (or another tab) can take the pool. A page back from the back/forward cache starts a fresh worker on its
 // next call. Not SQLite's pauseVfs(): that crashed the renderer under the cache in the sandbox (2026-09-24).
-const SPILL_KEY = 'batray_hist_spill';
 function spillPending() {
   const rows = []; for (const [day, l] of histMem.pending) for (const r of l) if (day !== 'demo') rows.push(r);
   histMem.pending = new Map();
   if (!rows.length) return 0;
-  try { const prev = JSON.parse(localStorage.getItem(SPILL_KEY) || '[]'); localStorage.setItem(SPILL_KEY, JSON.stringify(prev.concat(rows).slice(-2000))); } catch { /* no room: those rows are lost */ }
+  try { const prev = JSON.parse(localStorage.getItem(tk('spill')) || '[]'); localStorage.setItem(tk('spill'), JSON.stringify(prev.concat(rows).slice(-2000))); } catch { /* no room: those rows are lost */ }
   return rows.length;
 }
 async function unspill() {
-  let rows = []; try { rows = JSON.parse(localStorage.getItem(SPILL_KEY) || '[]'); localStorage.removeItem(SPILL_KEY); } catch { /* nothing spilled */ }
+  let rows = []; try { rows = JSON.parse(localStorage.getItem(tk('spill')) || '[]'); localStorage.removeItem(tk('spill')); } catch { /* nothing spilled */ }
   if (!rows.length) return;
   const byDay = new Map(); for (const r of rows) { if (!r || typeof r.t !== 'number') continue; const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); }
   let n = 0; for (const [d, rs] of byDay) { try { n += (await hist.insert(d, rs)).inserted; } catch { /* logged by the store */ } }
@@ -677,9 +746,23 @@ async function corruptDb(e, where, rows) {
   // eslint-disable-next-line house/ui-after-await -- paints histS as it stands; corruptDb is the only writer of today's counters while it runs
   renderStorage(); if (active) renderTrend(active);
 }
+/** Closed viewer tabs' copies (0.9.77): freed after 30 days unused, or at once, oldest first, when space is low - before
+ *  any day of this tab's own. A reader's store is the original and is never freed here: only Browse deletes one. */
+async function dropOrphans(lowSpace) {
+  const ids = orphanDrops({ records: tabRecords(tabEntries()), live: await liveTabs(), own: TAB.id, now: Date.now(), lowSpace });
+  let n = 0;
+  for (const id of ids) {
+    try { await hist.dropStore(id); forgetTab(id); n++; log(`tab: freed the store of closed viewer tab ${id} (${lowSpace ? 'space is low' : 'unused for 30 days'})`); }
+    catch (e) { log(`tab: could not free store ${id}: ${e.message}`); }
+    if (lowSpace) { const e2 = await hist.estimate(); if (e2.quota - e2.usage >= HEADROOM_BYTES) break; }
+  }
+  return n;
+}
 async function maintainHistory() {
   try {
-    const est = await hist.estimate(); histS.usage = est.usage; histS.quota = est.quota;
+    let est = await hist.estimate();
+    if (histS.backend === 'opfs' && await dropOrphans(est.quota > 0 && est.quota - est.usage < HEADROOM_BYTES)) est = await hist.estimate();
+    histS.usage = est.usage; histS.quota = est.quota;
     const d = retentionDecision(await hist.days(), dayKey(Date.now()), { usage: est.usage, quota: est.quota });
     for (const f of d.delete) { await hist.remove(f.day); log(`history: deleted ${f.day} (${f.bytes} B): under ${Math.round(HEADROOM_BYTES / 1048576)} MB free`); }
     histS.days = await hist.days();
@@ -689,14 +772,6 @@ async function maintainHistory() {
   renderHistNote();
 }
 /** Start: today's counters come from its database, so ids continue exactly where the last session stopped. */
-// The page whose worker holds the SQLite pool also holds a Web Lock for as long as it lives, so a page that cannot
-// take the pool can tell the two cases apart: another BatRay tab on this device (close it, reload), or a worker
-// killed mid-write whose files Chrome has not released yet (reload later). 2026-10-04 viewer log: 40 tries, memory.
-const HIST_LOCK = 'batray-history';
-async function holdHistoryLock() {
-  if (!navigator.locks) return;
-  try { await navigator.locks.request(HIST_LOCK, { mode: 'exclusive', ifAvailable: true }, (lock) => { histS.holdsLock = !!lock; return lock ? new Flag().wait(true) : null; }); } catch { /* lock API refused: nothing to hold */ }
-}
 /** No file storage (0.9.74, owner: "safer to drop and grey it out with the reason than risk the RAM limit"): the rows
  *  queued so far go, nothing more is kept, the History card says why. The DEMO keeps its short trend (capped). */
 function dropMemoryRows() {
@@ -704,10 +779,7 @@ function dropMemoryRows() {
   log(`history: no file storage in this tab - readings are shown but not kept${n ? ` (${n} queued rows dropped)` : ''}; debug log: the last ${4000} lines in memory only`);
   renderHistOff();
 }
-function histOffWhy() {
-  if (compatCheck('reader', browserInfo, compatFeatures()).why === 'too-old') return 'old';
-  return histS.lockedByTab ? 'tab' : 'stuck';
-}
+function histOffWhy() { return compatCheck('reader', browserInfo, compatFeatures()).why === 'too-old' ? 'old' : 'stuck'; }
 function histOff() { return histS.backend === 'memory' && !(active && active.demo); }
 function renderHistOff() {
   const off = histOff(), el = $('histOff');
@@ -715,21 +787,11 @@ function renderHistOff() {
   el.hidden = !off;
   if (!off) return;
   const why = histOffWhy();
-  el.textContent = why === 'old' ? T.histOffOld(`${T.compatName[browserInfo.name] || browserInfo.name} ${fmtVersion(browserInfo.version)}`) : why === 'tab' ? T.histOffTab : T.histOffStuck;
-}
-async function explainLockOut() {
-  let other = false;
-  // this page may hold the lock itself (it had the store, then lost the pool): the lock is exclusive, so then no other tab has it
-  try { const q = navigator.locks ? await navigator.locks.query() : null; other = !histS.holdsLock && !!(q && q.held && q.held.some((l) => l.name === HIST_LOCK)); } catch { /* unknown */ }
-  histS.lockedByTab = other;
-  // eslint-disable-next-line house/ui-after-await -- the reason line reads the state as it is now
-  renderHistOff();
-  log(other ? 'history: another BatRay tab on this device holds the history store - close it, then reload this page' : 'history: no other BatRay tab holds the store - a worker ended mid-write keeps its files until Chrome releases them; reload later');
-  if (other) toast(T.histOtherTab, 12000);
+  el.textContent = why === 'old' ? T.histOffOld(`${T.compatName[browserInfo.name] || browserInfo.name} ${fmtVersion(browserInfo.version)}`) : T.histOffStuck;
 }
 async function initHistory() {
   histS.backend = await hist.ready;
-  if (histS.backend === 'opfs') void holdHistoryLock(); else if (histS.backend === 'memory') { dropMemoryRows(); void explainLockOut(); }
+  if (histS.backend === 'memory') dropMemoryRows();
   const now = Date.now(), today = dayKey(now);
   histS.day = today;
   try {
@@ -891,7 +953,8 @@ function browserTag() {
 }
 function writeLastRun(clean) {
   const m = memModel();
-  try { localStorage.setItem(LASTRUN_KEY, JSON.stringify(lastRunRecord({ sid: logS.sid, now: Date.now(), mem: m, rows: pendingRows(), state: appState(), file: logS.file, clean, browser: browserTag(), status: statusS.last }))); } catch { /* no storage */ }
+  writeTabMeta();
+  try { localStorage.setItem(tk('lastrun'), JSON.stringify(lastRunRecord({ sid: logS.sid, now: Date.now(), mem: m, rows: pendingRows(), state: appState(), file: logS.file, clean, browser: browserTag(), status: statusS.last }))); } catch { /* no storage */ }
   return m;
 }
 function memTick() {
@@ -908,12 +971,12 @@ setTimeout(memMeasure, 3000);
 window.addEventListener('pagehide', () => { if (!(window.__batrayTest && window.__batrayTest.skipLastRun)) writeLastRun(true); });
 /** Right after the header lines: what the previous run last reported, then this run's first record. */
 function logLastRun() {
-  let prev = null; try { prev = JSON.parse(localStorage.getItem(LASTRUN_KEY) || 'null'); } catch { /* no record */ }
+  let prev = null; try { prev = JSON.parse(localStorage.getItem(tk('lastrun')) || 'null'); } catch { /* no record */ }
   const nav = performance.getEntriesByType ? (performance.getEntriesByType('navigation')[0] || {}).type : '';
   const report = lastRunReport(prev, Date.now(), { wasDiscarded: !!document.wasDiscarded, navType: nav, browser: browserTag() });
   if (report) for (const line of report) log(line);
-  else log(`first start on this device (this start: ${nav || 'navigate'})`);
-  let boot = null; try { boot = JSON.parse(localStorage.getItem(BOOT_PREV_KEY) || 'null'); } catch { /* no record */ }
+  else log(`first start of this tab's store (this start: ${nav || 'navigate'})`);
+  let boot = null; try { boot = JSON.parse(localStorage.getItem(tk('boot_prev')) || 'null'); } catch { /* no record */ }
   for (const line of bootReport(boot)) log(line);
   if (prev) statusS.prevRun = { clean: !!prev.clean, at: prev.at };
   writeLastRun(false);
@@ -976,9 +1039,22 @@ async function resetSettings() {
 // Browse: one engine for the three kinds of storage - the list comes from the store, the sheet shows it, Delete removes one
 const browseS = { type: null, items: [], sizeText: '' };
 async function browseData(type) {
-  if (type === 'hist') { histS.days = await hist.days().catch(async (e) => { if (isCorrupt(e)) await corruptDb(e, 'history read'); return histS.days; }); return browseItems('hist', { days: histS.days, today: histS.day }); }
+  if (type === 'hist') {
+    histS.days = await hist.days().catch(async (e) => { if (isCorrupt(e)) await corruptDb(e, 'history read'); return histS.days; });
+    // every other tab's store too (0.9.77, owner: "browse can list and delete for all"); one open in another tab cannot go
+    const stores = await hist.stores().catch(() => []), live = await liveTabs();
+    const others = storeRows({ stores, records: tabRecords(tabEntries()), live, own: TAB.id }).map((r) => ({ id: `store:${r.id}`, name: storeLabel(r), bytes: r.bytes, del: !r.inUse }));
+    return browseItems('hist', { days: histS.days, today: histS.day, others });
+  }
   if (type === 'set') return browseItems('set', { snapshot: settingsSnapshot(settingsEntries()) });
-  logS.files = await hist.logList().catch(() => logS.files); return browseItems('log', { files: logS.files, current: logS.file });
+  const all = await hist.logList(true).catch(() => null), live = await liveTabs();
+  if (all) logS.files = all.filter((f) => f.store === TAB.id);
+  return browseItems('log', { files: all || logS.files.map((f) => ({ ...f, store: TAB.id })), current: logS.file, own: TAB.id, live });
+}
+/** One line for another tab's store in Browse: whose it is and whether it is open. */
+function storeLabel(r) {
+  const who = r.legacy ? T.storeLegacy : r.role === 'reader' ? T.storeReader(r.channel) : r.role === 'viewer' ? T.storeViewer(r.channel || (r.room ? r.room.slice(0, 6) : '')) : T.storeUnknown(r.id);
+  return `${who} - ${r.inUse ? T.storeOpen : r.at ? T.storeClosed(fmtWhen(r.at)) : T.storeClosedNoDate}`;
 }
 async function refreshBrowse() {
   const items = await browseData(browseS.type);
@@ -993,9 +1069,14 @@ async function openBrowse(type) {
 }
 async function browseDelete(id) {
   const t = browseS.type;
-  if (t === 'hist') { await flushHistory(); await hist.remove(id); histMem.series = null; if (id === histS.day) { histS.todayRows = 0; histS.nextId = 1; histS.contig = 0; histS.gap = null; histMem.pending.delete(id); } }
+  if (t === 'hist' && id.startsWith('store:')) { const sid = id.slice(6); await hist.dropStore(sid); forgetTab(sid); log(`tab: deleted the store of tab ${sid}`); }
+  else if (t === 'hist') { await flushHistory(); await hist.remove(id); histMem.series = null; if (id === histS.day) { histS.todayRows = 0; histS.nextId = 1; histS.contig = 0; histS.gap = null; histMem.pending.delete(id); } }
   else if (t === 'set') { try { localStorage.removeItem(id); } catch { /* */ } }
-  else { if (id === logS.file) { logS.pending = []; logS.pendBytes = 0; logS.file = null; logS.fileBytes = 0; } await hist.logRemove(id); }
+  else {
+    const cut = id.indexOf('/'), store = cut > 0 ? id.slice(0, cut) : TAB.id, name = cut > 0 ? id.slice(cut + 1) : id;
+    if (store === TAB.id && name === logS.file) { logS.pending = []; logS.pendBytes = 0; logS.file = null; logS.fileBytes = 0; }
+    await hist.logRemove(name, store === TAB.id ? null : store);
+  }
   log(`browse: deleted ${t} ${id}`);
   // eslint-disable-next-line house/ui-after-await -- updateSheet() re-checks that the open sheet is still the browse sheet
   await refreshBrowse(); updateSheet('browse'); renderStorage();
@@ -1412,11 +1493,11 @@ window.addEventListener('pagehide', () => statusTick('pagehide'));
 
 // ---- resume after a reopen (0.9.72, resume-logic.js): the intent is what the person last asked for; a reopened reader
 // counts down RESUME_S, then shares again and reconnects what Chrome still allows without a tap.
-let intentNow = (() => { try { return parseIntent(localStorage.getItem(RESUME_KEY)); } catch { return parseIntent(null); } })();
+let intentNow = (() => { try { return parseIntent(localStorage.getItem(tk('resume'))); } catch { return parseIntent(null); } })();
 function intentNote(ev, inp = {}) {
   if (viewMode) return;
   intentNow = intentEvent(intentNow, ev, inp);
-  try { localStorage.setItem(RESUME_KEY, JSON.stringify(intentNow)); } catch { /* no storage */ }
+  try { localStorage.setItem(tk('resume'), JSON.stringify(intentNow)); } catch { /* no storage */ }
   log(`resume intent: ${ev}${inp.name ? ` ${inp.name}` : ''} -> share ${intentNow.share ? 'on' : 'off'}, packs ${intentNow.packs.map((x) => x.name || x.id).join(', ') || 'none'}`);
 }
 const resumeOn = () => { try { return localStorage.getItem(RESUME_ON_KEY) !== '0'; } catch { return true; } };
@@ -1454,7 +1535,7 @@ async function runResume(plan) {
 async function doResume(plan) {
   if (plan.share && !publisher) {
     const saved = savedShare();
-    let name = ''; try { name = localStorage.getItem('batray_share_name') || ''; } catch { /* no storage */ }
+    let name = ''; try { name = localStorage.getItem(tk('share_name')) || ''; } catch { /* no storage */ }
     $('shareName').value = name; $('shareReuse').checked = !!saved;
     log(`resume: sharing again${saved ? ` on room ${saved.room}` : ' (no saved link: a new one)'}`);
     await beginShare();
@@ -1579,10 +1660,10 @@ $('connectBig').addEventListener('click', () => { void startConnect(null); });
 // The remembered BMS (owner ask 2026-09-21): Chrome gives a page no Bluetooth address, only a per-site id and the
 // name, so that pair is kept (localStorage + devices.ndjson in the history store) and, while getDevices() still lists
 // the id as permitted, a green "Connect to NAME" button connects without the chooser.
-function savedDevice() { try { return JSON.parse(localStorage.getItem('batray_known_dev') || 'null'); } catch { return null; } }
+function savedDevice() { try { return JSON.parse(localStorage.getItem(tk('known_dev')) || 'null'); } catch { return null; } }
 function rememberDevice(device) {
   const rec = { id: device.id, name: device.name || '', at: Date.now() };
-  try { localStorage.setItem('batray_known_dev', JSON.stringify(rec)); } catch {}
+  try { localStorage.setItem(tk('known_dev'), JSON.stringify(rec)); } catch {}
   hist.note('devices.ndjson', JSON.stringify(rec)).catch(() => {});
   log(`known device: remembered "${rec.name}"`);
   void refreshPermitted();                                          // the checklist's 'still allowed' row
@@ -1678,9 +1759,9 @@ function showQr(show) {
 if (new URLSearchParams(location.search).has('test')) window.__batrayTest = { renderQr };
 // Share setup: a name the viewers see, and whether to keep the earlier link
 // (room + key saved on this device, so a restart does not orphan bookmarks).
-const savedShare = () => { try { return parseSavedShare(localStorage.getItem('batray_share_last')); } catch { return null; } };
+const savedShare = () => { try { return parseSavedShare(localStorage.getItem(tk('share_last'))); } catch { return null; } };
 function openSharePanel() {
-  let savedName = ''; try { savedName = localStorage.getItem('batray_share_name') || ''; } catch {}
+  let savedName = ''; try { savedName = localStorage.getItem(tk('share_name')) || ''; } catch {}
   const m = shareSetupModel({ savedName, deviceName: active && !active.remote && !active.demo ? active.label : '', saved: savedShare(), now: Date.now(), suggest: suggestChannelName });
   $('shareName').value = m.name;
   const cb = $('shareReuse'); cb.disabled = !m.reuseEnabled; cb.checked = m.reuseChecked;
@@ -1700,7 +1781,7 @@ function shareTap() {
 async function beginShare() {
   const b = shareBegin(shareS, { typedName: $('shareName').value, reuseChecked: $('shareReuse').checked, saved: savedShare(), suggest: suggestChannelName });
   if (b.action !== 'start') { log(`share: start -> ${b.action} (${b.why})`); return; }
-  try { localStorage.setItem('batray_share_name', b.name); } catch {}
+  try { localStorage.setItem(tk('share_name'), b.name); tabChannel = b.name; writeTabMeta(); } catch {}
   log(`share: name "${b.name}", ${b.reuse ? `reusing room ${b.reuse.room}` : 'new room'}`);
   $('sharePanel').hidden = true;
   renderLiveChip(); void syncWake();
@@ -1716,7 +1797,7 @@ async function beginShare() {
   try {
     await pub.start(b.reuse);
     if (publisher !== pub) return;                                    // cancelled from the toolbar meanwhile
-    try { localStorage.setItem('batray_share_last', JSON.stringify(publisher.credentials)); } catch {}
+    try { localStorage.setItem(tk('share_last'), JSON.stringify(publisher.credentials)); } catch {}
     const st = shareStarted(shareS, { link: publisher.link, reused: publisher.reused });
     intentNote('share-on');
     if (st.toastNewLink) toast(T.shareNewLink, 9000);
@@ -1985,7 +2066,7 @@ async function startView() {
     onEnvelope: (env) => {
       if (env.k === 'hello') {
         const h = viewHello(viewS, env);
-        if (h) { $('viewName').textContent = h.name; $('viewName').hidden = !h.name; document.title = h.name ? `${h.name} · BatRay live` : document.title; log(`live: channel "${h.name}"${h.version ? ` (reader v${h.version})` : ''}`); }
+        if (h) { if (h.name && h.name !== tabChannel) { tabChannel = h.name; writeTabMeta(); } $('viewName').textContent = h.name; $('viewName').hidden = !h.name; document.title = h.name ? `${h.name} · BatRay live` : document.title; log(`live: channel "${h.name}"${h.version ? ` (reader v${h.version})` : ''}`); }
         return;
       }
       if (env.k === 'packs') {
@@ -2365,7 +2446,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, packIds: () => [...packs.keys()], connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, packIds: () => [...packs.keys()], tab: () => ({ id: TAB.id, how: TAB.how, why: TAB.why, role: TAB.role }), tabKey: (name) => tk(name), hasStores: async () => hist.stores(), connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake, rxHistFile, compatState: () => compatS, browserInfo: () => browserInfo, histLockOut: () => hist.lockOut(1000, new Error('test')), locState: () => ({ ...locS }), histOffState: () => ({ off: histOff(), text: $('histOff').textContent, grey: $('trendCard').classList.contains('histoff'), cardShown: !$('trendCard').hidden }), statusState: () => ({ ...statusS }), statusTick, pubLink: () => (publisher ? publisher.link : null), readerState: () => ({ ...readerS, gone: viewer ? viewer.state.gone : null, reader: viewer ? viewer.state.reader : null }), packData: () => (active ? active.data : null),
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
@@ -2500,8 +2581,9 @@ async function uploadLog(btn, file = null) {
   if (uploadS.xhr) { log('log upload: one is already running'); return; }
   await flushLog();
   let stored = '';
-  const name = file || (logS.on ? logS.file : null);
-  if (name) { try { stored = await hist.logRead(name); } catch { stored = ''; } }
+  const cut = file ? file.indexOf('/') : -1, fileStore = cut > 0 ? file.slice(0, cut) : null;     // Browse names a file as <store>/<name> (0.9.77)
+  const name = file ? (cut > 0 ? file.slice(cut + 1) : file) : (logS.on ? logS.file : null);
+  if (name) { try { stored = await hist.logRead(name, fileStore && fileStore !== TAB.id ? fileStore : null); } catch { stored = ''; } }
   if (file) log(`log upload: the stored file ${file} (${stored.length} B)`);
   const ub = uploadBody({ header: logHeaderLines(), ring: logLines.join('\n'), stored, limit: LOG_UPLOAD_MAX });
   log(`log upload: sending the ${ub.source === 'ring' ? 'last lines in memory' : ub.source === 'file' ? 'stored session file' : 'tail of the stored session file'}`);
@@ -2556,6 +2638,7 @@ $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('ab
 })();
 
 for (const line of logHeaderLines()) log(line);     // typeof-guarded inside: a missing BluetoothDevice global must not abort startup
+log(`tab: store ${TAB.id} (${TAB.role}${TAB.room ? ` of room ${TAB.room.slice(0, 6)}…` : ''}) - ${TAB.why}; ${TAB.others.length} other tab record${TAB.others.length === 1 ? '' : 's'} on this device`);
 logLastRun();
 void logEnvAsync();
 // one line a minute with everything that matters, so a log of a whole night reads as a timeline

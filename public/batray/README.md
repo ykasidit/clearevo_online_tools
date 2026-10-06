@@ -135,6 +135,40 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.77 (2026-10-06): one store per tab - no history lock
+
+Owner: "remove this history lock, store per tab id - most other sites have no such limit; re-download the db per day
+per tab is fine, similar for debug logs, although Browse can list and delete for all; keep only the settings global".
+Until 0.9.76 every tab shared ONE SQLite pool (only the tab holding it stored; the others went grey) and one set of
+state keys: on the owner's phone (2026-10-05) a seahut viewer and a backyard viewer wrote both readers' row numbers
+into one day file (rows lost, "complete to id 0, a hole" 55 times), and the backyard tab's freeze was reported as the
+seahut tab's crash.
+
+- **Tab id** (`tab-logic.js`, pure): sessionStorage `batray_tab` (kept over a reload, restored with the tab). The page
+  holds Web Lock `batray-tab-<id>` for its life - only so another page can tell a live tab from a closed one.
+  `chooseTab()`: the same id after a reload; a new tab (or a copy of a tab that is still open) takes over the newest
+  CLOSED store of the same role (a reader; a viewer of the same room), else a new id. The pre-0.9.77 pool
+  (`batray-history-db`, id `legacy`) is taken by the first reader page, with its global state keys
+  (`legacyMoves`). Chosen with a top-level await at the start of app.js (lookups capped at 2 s).
+- **Per store**: SQLite pool `batray-db-<id>/`, debug logs `batray-history/logs-<id>/` (+ the device notes); per-tab
+  state `batrayTab:<id>:<name>` (lastrun, boot, boot_prev, spill, resume, share_last, share_name, known_dev) and the
+  record `batrayTab:<id>` {role, room, channel, at}. Outside `batray_*`, so never in a settings backup. The inline
+  boot trail writes under the tab's key (`new` for a new tab, moved once the id is chosen).
+- **Gone**: the history lock, `explainLockOut`, the "another tab holds the store" reason and its toast. A greyed
+  History card now means only old Chrome or a store that did not start in this tab.
+- **Browse**: History lists this tab's day files and one line per other store (whose, open in another tab or closed
+  and when; Delete only when closed: `dropStore` removes its pool and logs, `forgetTab` its keys). Logs lists every
+  store's files as `<store>/<name>` (another tab's open session cannot be deleted; any can be uploaded).
+- **Orphans**: a closed VIEWER tab's store (a copy) is freed after 30 days unused, or oldest first when free space is
+  under the 100 MB headroom, before any of this tab's own days (`orphanDrops`). A reader's store is never freed
+  automatically.
+
+Tests: `batray_tab.test.js` (ids/dirs, records, choose: reload / copy / reopened reader / viewer per room, legacy,
+orphans, browse rows); browser `batray_tabs.mjs` over real CDP tabs (legacy taken with its keys and last run; two
+reader tabs storing at once; Browse sees the open store and will not delete it; logs of both tabs listed; a new reader
+tab adopts the closed one's rows and last run; a viewer gets its own store; Delete of a closed store; a reload keeps
+the store). Browser tests reach per-tab keys through `__batrayTest.tabKey(name)`.
+
 ## 0.9.76 (2026-10-06): no ghost pack chip on a viewer; location warns only when ticked but not allowed
 
 - **Ghost pack** (owner's viewer log 2026-10-05 15:29, "seahut-n11": one bank, a second "n11" chip that never went

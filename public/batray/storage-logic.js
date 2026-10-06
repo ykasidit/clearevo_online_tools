@@ -45,9 +45,18 @@ export function settingsRestorePlan(obj) {
 /** The Browse sheet's list for one kind of storage: every file (or key) with its size, and whether it may go on its own.
  *  hist: [{day, raw, gz, bytes}] with `today`; set: a settings snapshot; log: [{name, bytes}] with the current file. */
 export function browseItems(type, data) {
-  if (type === 'hist') return [...(data.days || [])].sort((a, b) => (a.day < b.day ? 1 : -1)).map((d) => ({ id: d.day, name: d.day + '.sqlite' + (d.rows ? ` (${d.rows} rows)` : '') + (d.day === data.today ? ' (today, live)' : ''), bytes: d.bytes || 0, del: true }));
+  // this tab's day files, then one line per other tab's store (0.9.77: one store per tab; `others` comes labelled)
+  if (type === 'hist') return [...(data.days || [])].sort((a, b) => (a.day < b.day ? 1 : -1)).map((d) => ({ id: d.day, name: d.day + '.sqlite' + (d.rows ? ` (${d.rows} rows)` : '') + (d.day === data.today ? ' (today, live)' : ''), bytes: d.bytes || 0, del: true })).concat((data.others || []).map((o) => ({ id: o.id, name: o.name, bytes: o.bytes || 0, del: !!o.del })));
   if (type === 'set') return Object.entries(data.snapshot || {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, v]) => ({ id: k, name: k, bytes: utf8.encode(k).length + utf8.encode(v).length, del: true }));
-  if (type === 'log') return [...(data.files || [])].sort((a, b) => (a.name < b.name ? 1 : -1)).map((f) => ({ id: f.name, name: f.name + (f.name === data.current ? ' (this session, live)' : ''), bytes: f.bytes || 0, del: true }));
+  // every tab's log files (0.9.77), each named <store>/<file>; another tab's file is deletable once that tab is closed
+  if (type === 'log') {
+    const own = data.own || null, live = data.live || new Set();
+    return [...(data.files || [])].sort((a, b) => (a.name < b.name ? 1 : -1)).map((f) => {
+      const store = f.store || own, mine = store === own, open = !mine && live.has(store);
+      const tag = mine ? (f.name === data.current ? ' (this session, live)' : '') : open ? ' (another tab, open)' : ' (a closed tab)';
+      return { id: store ? `${store}/${f.name}` : f.name, name: f.name + tag, bytes: f.bytes || 0, del: !open };
+    });
+  }
   return [];
 }
 /** This tab's JavaScript heap against the limit Chrome gives it (owner ask 2026-09-23: see the limit coming before

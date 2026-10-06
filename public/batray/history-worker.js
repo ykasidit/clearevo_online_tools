@@ -15,9 +15,10 @@
 // A dedicated module worker: SQLite (the sqlite.org wasm build, public
 // domain) over its OPFS "sahpool" VFS, which needs the synchronous access
 // handles only a worker has. One database per UTC day, the live day
-// included; the pool keeps them in the origin's private directory
-// batray-history-db/. Plain text files (the debug log sessions, the device
-// notes) stay in batray-history/. Old NDJSON day files from before 0.9.40
+// included; the pool keeps them in the origin's private directory, one
+// pool per tab's store (batray-db-<id>/; the store from before 0.9.77 is
+// batray-history-db/). Plain text files (the debug log sessions, the device
+// notes) stay in batray-history/<logs dir>. Old NDJSON day files from before 0.9.40
 // are neither read nor migrated (owner 2026-09-24: "no more ndjson, no more
 // gz", day 0 is a breaking change); start counts them once for the log and
 // Clear stored history removes them. Nothing here decides anything:
@@ -31,9 +32,12 @@
 import sqlite3InitModule from './sqlite3.js';
 import { isCorruptError } from './history-logic.js';
 import { ensureSchema, insertRows, rowsAfter, lastRows, buckets, energyWh, span, dayInfo, dbBytes, mergeFrom, looksLikeDayDb } from './history-sql.js';
+import { storeDirs, storeOfDir, storeOfLogDir, validTabId } from './tab-logic.js';
 
-const DIR = 'batray-history';           // text files: logs/, devices.ndjson (and old day files from before 0.9.40, unread)
-const DB_DIR = '/batray-history-db';    // the SQLite pool's directory (its files are opaque; export gives a real .sqlite)
+const DIR = 'batray-history';           // text files: one logs directory per store (and old day files from before 0.9.40, unread)
+// One store per tab (0.9.77): the page names its store first ('config'); the SQLite pool's directory and the debug-log
+// directory come from that id (tab-logic storeDirs). Other tabs' stores are only listed, read (their logs) or removed.
+let STORE = null, DIRS = null;
 const OLD_RX = /^\d{4}-\d{2}-\d{2}\.ndjson(\.gz)?$/;   // a day file from before 0.9.40
 const IDLE_CLOSE_MS = 60000;            // a past day's database is closed after this without use (today's stays open)
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -46,18 +50,20 @@ const DAY_RX = /^(\d{4}-\d{2}-\d{2})$/;
 const dbName = (day) => `/${day}.sqlite`;
 const dayOfName = (name) => { const m = /^\/(\d{4}-\d{2}-\d{2})\.sqlite$/.exec(name); return m ? m[1] : null; };
 
-// The pool holds a sync access handle on every file: only one worker in the browser can have it. The page that
-// went before (a reload, a tab in the back/forward cache) may still hold it for a moment, so the install is
+// The pool holds a sync access handle on every file: only one worker can have a pool, so every tab has its own
+// (0.9.77). The page that went before in this tab (a reload, a page in the back/forward cache) may still hold it
+// for a moment, so the install is
 // retried for a few seconds, and a page hands the pool back on pagehide (`pause`) and takes it again on use.
 const INSTALL_TRIES = 40, INSTALL_WAIT_MS = 500;    // up to 20 s: the page before may hold the pool for a moment after it left; then the store goes memory-only
 const wlog = (msg) => { try { self.postMessage({ log: msg }); } catch { /* no page */ } };
 async function init() {
   if (pool) return;
+  if (!DIRS) throw new Error('no store named yet');
   if (!initP) {
     initP = (async () => {
       sqlite3 = await sqlite3InitModule({ print: () => {}, printErr: () => {} });
       for (let i = 1; ; i++) {
-        try { pool = await sqlite3.installOpfsSAHPoolVfs({ directory: DB_DIR, initialCapacity: 16, clearOnInit: false }); if (i > 1) wlog(`pool taken on try ${i}`); break; }
+        try { pool = await sqlite3.installOpfsSAHPoolVfs({ directory: '/' + DIRS.db, initialCapacity: 16, clearOnInit: false }); if (i > 1) wlog(`pool taken on try ${i}`); break; }
         catch (e) {
           const busy = /Access Handle|NoModificationAllowed|InvalidState/i.test(String(e && e.message));
           if (!busy || i >= INSTALL_TRIES) { wlog(`pool not taken after ${i} tries: ${e && e.message}`); throw e; }
@@ -101,7 +107,58 @@ async function fileBytes(d, name) {
 async function remove(d, name) { try { await d.removeEntry(name); return true; } catch (e) { if (e && e.name === 'NotFoundError') return false; throw e; } }
 async function gzip(bytes) { return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer()); }
 
+/** Bytes under a directory (an unreadable file - one another tab is writing - counts as 0). */
+async function dirBytes(d) {
+  let n = 0;
+  for await (const [, h] of d.entries()) {
+    try { n += h.kind === 'file' ? (await h.getFile()).size : await dirBytes(h); } catch { /* busy or gone */ }
+  }
+  return n;
+}
+async function logDirOf(store, create) { return (await dir()).getDirectoryHandle(storeDirs(store).logs, { create }); }
+/** The origin's private root (typed loosely: the DOM typings lack the async iterator on a directory handle).
+ *  @returns {Promise<any>} */
+async function rootDir() { return navigator.storage.getDirectory(); }
+/** Remove a directory and what is in it; a missing one is fine, one whose files another tab holds says so. */
+async function rmTree(d, name) {
+  try { await d.removeEntry(name, { recursive: true }); return true; }
+  catch (e) {
+    if (e && e.name === 'NotFoundError') return false;
+    if (e && (e.name === 'NoModificationAllowedError' || e.name === 'InvalidModificationError')) throw new Error('in use by another tab', { cause: e });
+    throw e;
+  }
+}
+/** The log files of one directory into `out`, each with its store. */
+async function scanLogs(out, d, store) {
+  for await (const [name, handle] of d.entries()) {
+    if (handle.kind !== 'file' || !name.startsWith('log-')) continue;
+    let bytes = 0; try { bytes = (await handle.getFile()).size; } catch { /* being written */ }
+    out.push({ name, bytes, store });
+  }
+}
+
 const ops = {
+  /** The page names this worker's store before anything else; it never changes for the worker's life. */
+  async config({ store }) {
+    if (!validTabId(store)) throw new Error('bad store ' + store);
+    if (STORE && STORE !== store) throw new Error('this worker already serves store ' + STORE);
+    STORE = store; DIRS = storeDirs(store); return { store, dirs: DIRS };
+  },
+  /** Every store in this browser: {id, bytes, logBytes} (Browse lists the others; 'drop' removes one not in use). */
+  async stores() {
+    const root = await rootDir(), by = new Map(), get = (id) => by.get(id) || by.set(id, { id, bytes: 0, logBytes: 0 }).get(id);
+    for await (const [name, h] of root.entries()) { const id = h.kind === 'directory' ? storeOfDir(name) : null; if (id) get(id).bytes = await dirBytes(h); }
+    for await (const [name, h] of (await dir()).entries()) { const id = h.kind === 'directory' ? storeOfLogDir(name) : null; if (id) get(id).logBytes = await dirBytes(h); }
+    return { stores: [...by.values()], own: STORE };
+  },
+  /** Remove another tab's store (its pool and its logs). A store a live tab holds refuses (its files are open). */
+  async dropStore({ store }) {
+    if (!validTabId(store)) throw new Error('bad store ' + store);
+    if (store === STORE) throw new Error("this tab's own store: use Clear");
+    const dirs = storeDirs(store);
+    const a = await rmTree(await rootDir(), dirs.db), b = await rmTree(await dir(), dirs.logs);
+    return { removed: a || b };
+  },
   async ping() { await init(); await dir(); return { ok: true, vfs: pool.vfsName, files: pool.getFileCount(), capacity: pool.getCapacity(), version: sqlite3.version.libVersion }; },
   /** Rows into the day's database (one transaction). */
   async insert({ day, rows }) { const db = await open(day); const r = insertRows(db, rows || []); closeIdle(todayKey()); return r; },
@@ -186,23 +243,28 @@ const ops = {
   async spin({ ms }) { const end = Date.now() + Math.min(ms || 0, 120000); while (Date.now() < end) { /* busy */ } return { spun: ms }; },
   async note({ name, text }) {
     if (!/^[a-z]+\.ndjson$/.test(name)) throw new Error('bad note name');
-    const d = await dir(); const fh = await d.getFileHandle(name, { create: true }); const h = await fh.createSyncAccessHandle();
+    const d = await ops.logDir(); const fh = await d.getFileHandle(name, { create: true }); const h = await fh.createSyncAccessHandle();   // per store since 0.9.77
     try { const size = h.getSize(); h.write(enc.encode(text), { at: size }); h.flush(); return { bytes: size + text.length }; } finally { h.close(); }
   },
-  // ---- the debug log: session files under logs/ (owner ask 2026-09-23) ----
-  async logDir() { return (await dir()).getDirectoryHandle('logs', { create: true }); },
+  // ---- the debug log: session files in this store's logs directory (owner ask 2026-09-23; per tab since 0.9.77) ----
+  async logDir() { if (!DIRS) throw new Error('no store named yet'); return logDirOf(STORE, true); },
   async logAppend({ name, text }) {
     if (!/^log-[0-9TZ-]+-[a-z0-9]{6}\.txt$/.test(name)) throw new Error('bad log name');
     const d = await ops.logDir(); const fh = await d.getFileHandle(name, { create: true }); const h = await fh.createSyncAccessHandle();
     try { const size = h.getSize(); const b = enc.encode(text); h.write(b, { at: size }); h.flush(); return { bytes: size + b.length }; } finally { h.close(); }
   },
-  async logList() {
-    const d = await ops.logDir(); const out = [];
-    for await (const [name, handle] of d.entries()) if (handle.kind === 'file' && name.startsWith('log-')) out.push({ name, bytes: (await handle.getFile()).size });
+  /** This store's log files; `all`: every store's, each with its `store` (Browse lists them all). */
+  async logList({ all = false } = {}) {
+    const out = [];
+    if (!all) await scanLogs(out, await ops.logDir(), STORE);
+    else for await (const [name, h] of (await dir()).entries()) { const id = h.kind === 'directory' ? storeOfLogDir(name) : null; if (id) await scanLogs(out, h, id); }
     return { files: out.sort((a, b) => (a.name < b.name ? -1 : 1)) };
   },
-  async logRead({ name }) { const d = await ops.logDir(); const b = await fileBytes(d, name); return { text: b ? dec.decode(b) : '' }; },
-  async logRemove({ name }) { const d = await ops.logDir(); return { removed: await remove(d, name) }; },
+  async logRead({ name, store = null }) { const d = store && store !== STORE ? await logDirOf(store, false) : await ops.logDir(); const b = await fileBytes(d, name); return { text: b ? dec.decode(b) : '' }; },
+  async logRemove({ name, store = null }) {
+    if (!/^log-[0-9TZ-]+-[a-z0-9]{6}\.txt$/.test(name)) throw new Error('bad log name');
+    const d = store && store !== STORE ? await logDirOf(store, false) : await ops.logDir(); return { removed: await remove(d, name) };
+  },
   async logClear() { const d = await ops.logDir(); let n = 0; for await (const [name] of d.entries()) { await d.removeEntry(name); n++; } return { removed: n }; },
   /** Every log file gzipped, for a .tar download. */
   async logAllGz() {

@@ -57,7 +57,7 @@ const st = await evalJs('window.__batrayTest.statusState()');
 check('the reader builds its status at start and logs it (no share yet: nothing sent)', st.last && st.last.why === 'start' && !st.sent, st);
 let lines = await logs('/^\\S+\\s+status: why=start/');
 check('the start status is in the log with the phone facts', lines.length === 1 && /hist=\S+ log=\S+ chrome \d+ \S+ missing=\S+ wake=\S+ share=off net=online/.test(lines[0]), lines);
-await evalJs(`localStorage.removeItem('batray_share_last'); document.getElementById('share').click(); 1`); await sleep(300);
+await evalJs(`localStorage.removeItem(window.__batrayTest.tabKey('share_last')); document.getElementById('share').click(); 1`); await sleep(300);
 await evalJs(`document.getElementById('shareGo').click(); 1`); await sleep(1500);
 const decryptAll = `(async () => {
   const L = await import('/batray/live-logic.js');
@@ -77,7 +77,7 @@ lines = await logs('/status: why=(freeze|resume)/');
 check('...and each is in the log', lines.length === 2, lines);
 await evalJs(`window.__batrayTest.statusTick('tick'); 1`); await sleep(300);
 check('a minute tick with nothing changed sends nothing more', (await evalJs(decryptAll)).length === 3, null);
-const rec = await evalJs(`(() => { window.__batrayTest.memTick(); return JSON.parse(localStorage.getItem('batray_lastrun')); })()`);
+const rec = await evalJs(`(() => { window.__batrayTest.memTick(); return JSON.parse(localStorage.getItem(window.__batrayTest.tabKey('lastrun'))); })()`);
 check('the last-run record carries the last status', rec && rec.status && rec.status.why === 'tick' && rec.status.sharing === true, rec && rec.status);
 
 // ---- 2. the next start logs that status ----
@@ -88,7 +88,7 @@ check('the next start logs the previous run\'s last status', lines.length === 1,
 // ---- 3. the boot trail: a load whose app module never ran (the blank tab) ----
 await send('Network.setBlockedURLs', { urls: ['*app.js*'] });
 await send('Page.navigate', { url: `${BASE}/batray/?test&n=3` }); await sleep(13500);
-const fail = await evalJs(`({ shown: !document.getElementById('bootFail').hidden, txt: document.getElementById('bootFail').textContent, boot: JSON.parse(localStorage.getItem('batray_boot')) })`);
+const fail = await evalJs(`({ shown: !document.getElementById('bootFail').hidden, txt: document.getElementById('bootFail').textContent, boot: JSON.parse(localStorage.getItem('batrayTab:' + sessionStorage.getItem('batray_tab') + ':boot')) })`);
 check('a page whose module never runs shows "BatRay did not start" after 12 s and records its stages', fail.shown && /did not start/.test(fail.txt) && fail.boot.st.map((x) => x[0]).join(',').startsWith('html') && fail.boot.st.some((x) => x[0] === 'stuck'), fail);
 check('...with the failed script in the record', !!(fail.boot.err && /app\.js/.test(fail.boot.err)), fail.boot);
 await send('Network.setBlockedURLs', { urls: [] });
@@ -97,7 +97,7 @@ lines = await logs('/PREVIOUS PAGE LOAD|its error|module never ran/');
 check('the next start names it: never finished starting, its error, the module never ran', lines.length === 3 && /NEVER FINISHED STARTING/.test(lines[0]) && /app\.js/.test(lines[1]), lines);
 await send('Page.navigate', { url: `${BASE}/batray/?test&n=5` }); await sleep(2500);
 check('a normal start after a normal start says nothing about it', (await logs('/PREVIOUS PAGE LOAD/')).length === 0);
-const b = await evalJs(`JSON.parse(localStorage.getItem('batray_boot')).st.map((x) => x[0])`);
+const b = await evalJs(`JSON.parse(localStorage.getItem('batrayTab:' + sessionStorage.getItem('batray_tab') + ':boot')).st.map((x) => x[0])`);
 check('a normal load reaches html, module, ready', b.join(',') === 'html,module,ready', b);
 
 // ---- 4. Browse: every stored log file can be uploaded ----

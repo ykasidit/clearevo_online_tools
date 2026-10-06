@@ -71,16 +71,20 @@ class MemoryBackend {
   async logClear() { let n = 0; for (const k of [...this.files.keys()]) if (k.startsWith('L:')) { this.files.delete(k); n++; } return { removed: n }; }
   async logAllGz() { return { files: [] }; }
   async estimate() { return { usage: 0, quota: 0 }; }
+  async stores() { return { stores: [], own: null }; }
+  async dropStore() { return { removed: false }; }
 }
 
 /** The worker and its message protocol: one promise per call, a deadline per call, terminate + fresh worker on restart. */
 class WorkerBackend {
-  constructor(log, makeWorker) { this.log = log; this.makeWorker = makeWorker || (() => new Worker(WORKER_URL, { type: 'module' })); this.seq = 0; this.waiting = new Map(); this.generation = 0; this.start(); }
+  constructor(log, makeWorker, store = null) { this.log = log; this.store = store; this.makeWorker = makeWorker || (() => new Worker(WORKER_URL, { type: 'module' })); this.seq = 0; this.waiting = new Map(); this.generation = 0; this.start(); }
   start() {
     this.generation++;
     this.w = this.makeWorker();
-    this.w.onmessage = (ev) => { const m = ev.data; if (m && m.log) { this.log('history worker: ' + m.log); return; } const p = this.waiting.get(m.id); if (!p) return; this.waiting.delete(m.id); clearTimeout(p.timer); m.ok ? p.res(m.r) : p.rej(Object.assign(new Error(m.error), { name: m.name || 'Error' }, m.data || {})); };
+    this.w.onmessage = (ev) => { const m = ev.data; if (m && m.log) { this.log('history worker: ' + m.log); return; } if (m && m.id === 0) { if (!m.ok) this.log('history: the worker refused its store: ' + m.error); return; } const p = this.waiting.get(m.id); if (!p) return; this.waiting.delete(m.id); clearTimeout(p.timer); m.ok ? p.res(m.r) : p.rej(Object.assign(new Error(m.error), { name: m.name || 'Error' }, m.data || {})); };
     this.w.onerror = (e) => { this.log('history: worker error ' + (e.message || e)); this.failAll(new Error('worker failed')); };
+    // every fresh worker is told its tab's store first (0.9.77); the worker handles it before the next message
+    if (this.store) { try { this.w.postMessage({ id: 0, op: 'config', args: { store: this.store } }); } catch { /* the next call fails and says so */ } }
   }
   failAll(err) { for (const p of this.waiting.values()) { clearTimeout(p.timer); p.rej(err); } this.waiting.clear(); }
   /** Kill the worker (whatever it is doing) and start another; pending calls fail at once. */
@@ -100,20 +104,21 @@ class WorkerBackend {
 }
 
 const POOL_LOCKED_RX = /Access Handles? cannot be created|pool not taken/i;
-const KIND = { ping: 'ping', pause: 'other', resume: 'other', insert: 'insert', days: 'days', info: 'days', rows: 'rows', last: 'rows', query: 'query', span: 'query', remove: 'remove', clear: 'clear', export: 'export', import: 'import', oldFiles: 'days', slow: 'other', spin: 'other', corrupt: 'other', note: 'log', logAppend: 'log', logList: 'log', logRead: 'log', logRemove: 'log', logClear: 'log', logAllGz: 'export', estimate: 'days' };
+const KIND = { ping: 'ping', pause: 'other', resume: 'other', insert: 'insert', days: 'days', info: 'days', rows: 'rows', last: 'rows', query: 'query', span: 'query', remove: 'remove', clear: 'clear', export: 'export', import: 'import', oldFiles: 'days', slow: 'other', spin: 'other', corrupt: 'other', note: 'log', logAppend: 'log', logList: 'log', logRead: 'log', logRemove: 'log', logClear: 'log', logAllGz: 'export', estimate: 'days', config: 'other', stores: 'days', dropStore: 'remove' };
 
 export class HistoryStore {
-  /** opts: { log(msg), forceMemory, backend (tests), makeWorker (tests), timeouts (tests: {op: ms}) } */
+  /** opts: { log(msg), store (this tab's store id, or a promise of it: 0.9.77), forceMemory, backend (tests), makeWorker (tests), timeouts (tests: {op: ms}) } */
   constructor(opts = {}) {
     this.log = opts.log || (() => {}); this.backend = 'none'; this.b = null; this.persistent = null; this.stats = statsState(); this.onBackend = null;   // the app's hook when the backend changes (lock-out)
-    this.timeouts = opts.timeouts || {}; this.makeWorker = opts.makeWorker || null; this.lastFail = '';
+    this.timeouts = opts.timeouts || {}; this.makeWorker = opts.makeWorker || null; this.lastFail = ''; this.store = null; this.storeP = Promise.resolve(opts.store || null);
     this.ready = opts.backend ? this.adopt(opts.backend, opts.backendName || 'test') : this.open(!!opts.forceMemory);
   }
   async adopt(b, name) { this.b = b; this.backend = name; return name; }
   async open(forceMemory) {
     if (!forceMemory && typeof Worker === 'function' && typeof navigator !== 'undefined' && navigator.storage && navigator.storage.getDirectory) {
       try {
-        const wb = new WorkerBackend(this.log, this.makeWorker);
+        this.store = await this.storeP;
+        const wb = new WorkerBackend(this.log, this.makeWorker, this.store);
         const t0 = Date.now(); const r = await wb.call('ping', {}, this.timeoutFor('ping'));
         this.b = wb; this.backend = 'opfs'; this.log(`history: SQLite ${r.version} over ${r.vfs}, ${r.files} files, ${Date.now() - t0} ms to open`);
       } catch (e) { this.log('history: no SQLite store (' + (e && e.message) + '), keeping this session in memory only'); }
@@ -196,9 +201,12 @@ export class HistoryStore {
   note(name, line) { return this.call('note', { name, text: line + '\n' }); }
   // ---- the debug log's files ----
   logAppend(name, text) { return this.call('logAppend', { name, text }, text.length); }
-  async logList() { return (await this.call('logList')).files; }
-  async logRead(name) { return (await this.call('logRead', { name })).text; }
-  logRemove(name) { return this.call('logRemove', { name }); }
+  async logList(all = false) { return (await this.call('logList', { all })).files; }
+  async logRead(name, store = null) { return (await this.call('logRead', { name, store })).text; }
+  logRemove(name, store = null) { return this.call('logRemove', { name, store }); }
+  /** Every store in this browser (0.9.77): [{id, bytes, logBytes}]. */
+  async stores() { return (await this.call('stores')).stores; }
+  dropStore(store) { return this.call('dropStore', { store }); }
   logClear() { return this.call('logClear'); }
   async logAllGz() { return (await this.call('logAllGz')).files; }
 }

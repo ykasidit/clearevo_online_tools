@@ -43,7 +43,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   window.fetch = async (u, i = {}) => { const url = String(u); if (url.endsWith('/batray/api/room') && (i.method || 'GET').toUpperCase() === 'POST') return new Response(JSON.stringify({ room: 'testroom0000000000000A', pub: 'testpub00000000000000A' }), { status: 200, headers: { 'Content-Type': 'application/json' } }); return rf(u, i); };
   window.__wsAll = [];
   window.WebSocket = class { constructor(url) { this.url = url; this.readyState = 0; this.bufferedAmount = 0; window.__wsAll.push(this); setTimeout(() => { this.readyState = 1; if (this.onopen) this.onopen(); }, 20); } send() {} close(code = 1000, reason = '') { if (this.readyState === 3) return; this.readyState = 3; if (this.onclose) this.onclose({ code, reason, wasClean: true }); } };` });
-const seed = (intent) => evalJs(`localStorage.setItem('batray_resume', JSON.stringify(${JSON.stringify(intent)})); localStorage.setItem('batray_share_name', 'seahut'); localStorage.removeItem('batray_share_last'); 1`);
+const seed = (intent) => evalJs(`localStorage.setItem(window.__batrayTest.tabKey('resume'), JSON.stringify(${JSON.stringify(intent)})); localStorage.setItem(window.__batrayTest.tabKey('share_name'), 'seahut'); localStorage.removeItem(window.__batrayTest.tabKey('share_last')); 1`);
 const intent = { share: true, packs: [{ id: 'fake-1', name: 'n11' }], at: Date.now() };
 
 // ---- 1. a reopened reader: the countdown says what it will do; Now does it, without the chooser ----
@@ -83,7 +83,7 @@ check('without getDevices the sheet says n11 needs a tap on Connect', sh.kind ==
 await sleep(3500);
 const nf = await evalJs(`({ share: window.__batrayTest.shareState().phase, toast: document.getElementById('toast').textContent, connects: window.__connects || 0 })`);
 check('...the share resumes, no connect is tried, the toast says to tap Connect', nf.share === 'on' && nf.connects === 0 && /Tap Connect for n11/.test(nf.toast), nf);
-await evalJs(`sessionStorage.removeItem('noGetDevices'); localStorage.removeItem('batray_resume'); 1`);
+await evalJs(`sessionStorage.removeItem('noGetDevices'); localStorage.removeItem(window.__batrayTest.tabKey('resume')); 1`);
 
 // ---- 5. the checklist on Connect: Continue anyway, a Done that sticks, all in the log ----
 await evalJs(`localStorage.removeItem('batray_setup_done'); 1`);

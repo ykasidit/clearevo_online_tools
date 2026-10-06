@@ -52,7 +52,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
 // ---- 1. sharing with notifications allowed: the page signs up and gives the room its endpoint ----
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2000);
 check('notifications are allowed in this test', (await evalJs('Notification.permission')) === 'granted');
-await evalJs(`localStorage.removeItem('batray_share_last'); localStorage.setItem('batray_share_name', 'seahut'); document.getElementById('share').click(); 1`); await sleep(300);
+await evalJs(`localStorage.removeItem(window.__batrayTest.tabKey('share_last')); localStorage.setItem(window.__batrayTest.tabKey('share_name'), 'seahut'); document.getElementById('share').click(); 1`); await sleep(300);
 await evalJs(`document.getElementById('shareName').value = 'seahut'; document.getElementById('shareGo').click(); 1`); await sleep(3500);
 const calls = await evalJs('window.__calls');
 check('the room gets this phone\'s push endpoint, with the publisher token', calls.length === 1 && calls[0].m === 'PUT' && /\/room\/testroom0000000000000A\/push\?token=testpub00000000000000A$/.test(calls[0].url) && JSON.parse(calls[0].body).endpoint === 'https://fcm.googleapis.com/fcm/send/test-endpoint', calls);

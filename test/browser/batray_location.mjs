@@ -50,7 +50,7 @@ const decryptStatus = `(async () => {
 
 // ---- 1. location: off by default, read once ticked and allowed, into the encrypted status, never into a log line ----
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(1500);
-await evalJs(`localStorage.removeItem('batray_location'); localStorage.removeItem('batray_share_last'); 1`);
+await evalJs(`localStorage.removeItem('batray_location'); localStorage.removeItem(window.__batrayTest.tabKey('share_last')); 1`);
 await send('Page.navigate', { url: `${BASE}/batray/?test&n=1` }); await sleep(3000);
 let st = await evalJs(`({ box: document.getElementById('locKeep').checked, inHistory: !!document.getElementById('locKeep').closest('#trendCard'), afterLog: document.getElementById('logKeep').closest('.check').nextElementSibling.contains(document.getElementById('locKeep')), loc: window.__batrayTest.locState() })`);
 check('the checkbox is OFF by default (consent first, 0.9.75), right under "keep debug logs" in the History card', !st.box && st.inHistory && st.afterLog, st);

@@ -92,7 +92,7 @@ await window_reset();
 async function window_reset() { await evalJs(`window.__batrayTest.setKeepAwake('auto'); 1`); }
 
 // share: pulsing while starting, and that tap cancels
-await evalJs(`localStorage.removeItem('batray_share_last'); document.getElementById('share').click(); 1`); await sleep(200);
+await evalJs(`localStorage.removeItem(window.__batrayTest.tabKey('share_last')); document.getElementById('share').click(); 1`); await sleep(200);
 await evalJs(`document.getElementById('shareGo').click(); 1`); await sleep(300);
 let sb = await evalJs(`({ busy: document.getElementById('share').classList.contains('busy'), on: document.getElementById('share').classList.contains('on'), disabled: document.getElementById('share').disabled, title: document.getElementById('share').title, phase: window.__batrayTest.shareState().phase })`);
 check('while the share starts, the button pulses, stays tappable and says tap to cancel', sb.busy && !sb.on && !sb.disabled && /cancel/.test(sb.title) && sb.phase === 'starting', sb);

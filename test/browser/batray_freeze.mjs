@@ -218,7 +218,7 @@ check('changing the cut-off moves the line on the battery at once', bf2 === 'M9 
 await evalJs(`{ const c = document.getElementById('cutoff'); c.value = '10'; c.dispatchEvent(new Event('change')); } 1`);
 
 // --- the share setup prefills the BMS's own name ---
-await evalJs(`localStorage.removeItem('batray_share_name'); document.getElementById('share').click(); 1`); await sleep(200);
+await evalJs(`localStorage.removeItem(window.__batrayTest.tabKey('share_name')); document.getElementById('share').click(); 1`); await sleep(200);
 const sp = await evalJs(`({ name: document.getElementById('shareName').value, shown: !document.getElementById('sharePanel').hidden })`);
 check('Share prefills the name with the BMS name', sp.shown && sp.name === 'n11', sp);
 await evalJs(`document.getElementById('shareCancel').click(); 1`);
