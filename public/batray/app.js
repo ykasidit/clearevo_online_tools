@@ -15,8 +15,9 @@
 import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castSettle, castProgress, castButtons, castStateUi, castTapAllowed, castTvUpdate, CAST_FLOW_TIMEOUT_MS, CAST_TV_WAIT_MS } from './cast-logic.js';
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
-import { stampLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
+import { stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fmtVersion } from './compat-logic.js';
+import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel } from './status-logic.js';
 import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
@@ -32,12 +33,20 @@ import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowD
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
-import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, LASTRUN_KEY } from './log-logic.js';
+import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, LASTRUN_KEY, BOOT_PREV_KEY } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.70';
+export const APP_VERSION = '0.9.71';
+
+// The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
+// stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
+// 2026-10-05 left no record at all).
+const bootMark = (stage) => { try { if (typeof window.__batrayBoot === 'function') window.__batrayBoot(stage); } catch { /* no storage */ } };
+window.__batrayStarted = true;
+bootMark('module');
+const startedAt = Date.now();
 
 /** @returns {any} */
 const $ = (id) => document.getElementById(id);
@@ -106,7 +115,7 @@ function logHeaderLines() {
 // what the header cannot know synchronously: battery, codec support, adapter state
 async function logEnvAsync() {
   // each probe on its own: one that never settles (getBattery in some builds) must not hold the others
-  void (async () => { try { if (navigator.getBattery) { const b = await navigator.getBattery(); log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => log(`battery: ${Math.round(b.level * 100)}%`)); b.addEventListener('chargingchange', () => log(`battery: charging=${b.charging}`)); } } catch (e) { log(`battery: ${e.message}`); } })();
+  void (async () => { try { if (navigator.getBattery) { const b = await navigator.getBattery(); battNow = b; log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => log(`battery: ${Math.round(b.level * 100)}%`)); b.addEventListener('chargingchange', () => { log(`battery: charging=${b.charging}`); statusTick('charging'); }); } } catch (e) { log(`battery: ${e.message}`); } })();
   if (typeof VideoEncoder !== 'undefined') {
     const out = [];
     for (const codec of ['avc1.42E01E', 'avc1.4D401F', 'vp09.00.10.08']) { try { const r = await VideoEncoder.isConfigSupported({ codec, width: 1280, height: 720, bitrate: 500000, framerate: 1, ...(codec.startsWith('avc') ? { avc: { format: 'avc' } } : {}) }); out.push(`${codec}=${yn(r.supported)}`); } catch (e) { out.push(`${codec}=err`); } }
@@ -122,6 +131,7 @@ document.addEventListener('visibilitychange', () => log(`tab ${document.visibili
 window.addEventListener('online', () => log('network: online')); window.addEventListener('offline', () => log('network: offline'));
 window.addEventListener('pagehide', () => log('page hidden/unloading'));
 let lastStatusKey = '';
+let battNow = null;                    // the BatteryManager once getBattery answers (level, charging), for the reader status
 let toastTimer = null, btWarned = false;
 function toast(msg, ms = 8000) {
   const t = $('toast');
@@ -841,10 +851,11 @@ function browserTag() {
 }
 function writeLastRun(clean) {
   const m = memModel();
-  try { localStorage.setItem(LASTRUN_KEY, JSON.stringify(lastRunRecord({ sid: logS.sid, now: Date.now(), mem: m, rows: pendingRows(), state: appState(), file: logS.file, clean, browser: browserTag() }))); } catch { /* no storage */ }
+  try { localStorage.setItem(LASTRUN_KEY, JSON.stringify(lastRunRecord({ sid: logS.sid, now: Date.now(), mem: m, rows: pendingRows(), state: appState(), file: logS.file, clean, browser: browserTag(), status: statusS.last }))); } catch { /* no storage */ }
   return m;
 }
 function memTick() {
+  statusTick('tick');                                   // the reader status rides the same 15 s tick (status-logic decides when to send)
   const m = writeLastRun(false);
   renderMemory(m);
   if (m) log(`mem: used=${Math.round(m.used / 1048576)}MB total=${Math.round(m.total / 1048576)}MB limit=${Math.round(m.limit / 1048576)}MB pct=${m.pct}${m.near ? ' NEAR THE LIMIT' : ''} rows=${pendingRows()} log=${logLines.length} precise=${m.precise ? 'yes' : 'no'}${m.parts ? ` measured=${Math.round(m.used / 1048576)}MB(${Object.entries(m.parts).filter(([, v]) => v > 0).map(([k, v]) => `${k} ${Math.round(v / 1048576)}`).join(', ')}MB)` : ''}`);
@@ -861,6 +872,9 @@ function logLastRun() {
   const report = lastRunReport(prev, Date.now(), { wasDiscarded: !!document.wasDiscarded, navType: nav, browser: browserTag() });
   if (report) for (const line of report) log(line);
   else log(`first start on this device (this start: ${nav || 'navigate'})`);
+  let boot = null; try { boot = JSON.parse(localStorage.getItem(BOOT_PREV_KEY) || 'null'); } catch { /* no record */ }
+  for (const line of bootReport(boot)) log(line);
+  if (prev) statusS.prevRun = { clean: !!prev.clean, at: prev.at };
   writeLastRun(false);
   renderMemory(memModel());
   log(`mem: ${memPrecise() ? 'page is cross-origin isolated: figures are live' : 'page is NOT cross-origin isolated: Chrome refreshes performance.memory only every ~20 min'}`);
@@ -1160,6 +1174,7 @@ function tickAge() {
   els.updated.setAttribute('fill', a.stale ? '#ffd24a' : '#6f8aa6');
   const lines = active ? stampLines({ readerAt: active.readerAt, localAt: active.localAt, viewer: !!active.remote }, T) : [];
   $('updR').textContent = lines[0] || ''; $('updL').textContent = lines[1] || '';
+  if (viewMode) renderReaderOff();
   fitCorner($('updR')); fitCorner($('updL'));
 }
 setInterval(tickAge, 1000);
@@ -1319,6 +1334,39 @@ async function compatGate(role) {
   if (go) compatAccepted.add(role);
   return go;
 }
+// ---- the reader's status (0.9.71, status-logic.js): every minute, on a change that matters, and as last words when
+// the page is hidden, frozen or unloaded. It goes to the viewers encrypted (the room keeps the newest), into the log
+// when it changes, and into the last-run record for the next start.
+const statusS = { last: null, sent: null, sentAt: 0, logged: null, loggedAt: 0, prevRun: null };
+function readerPacks() {
+  return [...packs.values()].filter((p) => !p.remote && !p.demo).map((p) => ({ name: p.label, connected: !!p.connected, at: p.lastFrameAt, soc: p.data ? p.data.soc : null, v: p.data && typeof p.data.packV === 'number' ? Math.round(p.data.packV * 100) / 100 : null, a: p.data && typeof p.data.current === 'number' ? Math.round(p.data.current * 100) / 100 : null }));
+}
+function statusNow(why) {
+  const ls = logSummary(logS.files), c = navigator.connection || {};
+  return statusSnapshot({
+    why, now: Date.now(), startedAt, ver: APP_VERSION, sid: logS.sid, visible: document.visibilityState === 'visible', batt: battNow, mem: memModel(),
+    usage: histS.usage, quota: histS.quota, hist: { backend: histS.backend, days: histS.days.length, rows: histS.todayRows, pend: pendingRows(), fails: (hist.stats.fails || 0) + (hist.stats.timeouts || 0) },
+    log: { on: logS.on, files: ls.files, bytes: ls.bytes }, browser: { name: browserInfo.name, version: fmtVersion(browserInfo.version), os: browserInfo.os },
+    missing: compatCheck('reader', browserInfo, compatFeatures()).missing, wake: !!wakeS.held, net: { online: navigator.onLine, type: c.type || c.effectiveType || '' },
+    packs: readerPacks(), prev: statusS.prevRun, sharing: !!publisher,
+  });
+}
+/** Build the status; log it when it changed (or as last words, or every 10 min); send it while sharing when due. */
+function statusTick(why = 'tick') {
+  if (viewMode) return;
+  const s = statusNow(why); statusS.last = s;
+  if (why !== 'tick' || statusChanged(statusS.logged, s) || s.t - statusS.loggedAt >= 600000) { statusS.logged = s; statusS.loggedAt = s.t; log(`status: ${statusLine(s)}`); }
+  if (!publisher) return;
+  if (!statusDue({ lastSentAt: statusS.sentAt, now: s.t, changed: statusChanged(statusS.sent, s), why })) return;
+  statusS.sent = s; statusS.sentAt = s.t;
+  void publisher.publish(envelope('status', { id: '*', name: '*' }, s));
+}
+// last words: the socket is still open when the page goes to the background or freezes; pagehide is best effort
+document.addEventListener('visibilitychange', () => statusTick(document.visibilityState === 'hidden' ? 'hidden' : 'visible'));
+document.addEventListener('freeze', () => statusTick('freeze'));
+document.addEventListener('resume', () => statusTick('resume'));
+window.addEventListener('pagehide', () => statusTick('pagehide'));
+
 // Connect a BMS: into `p` (reconnect of a known pack) or a new pack (+ Add BMS).
 async function startConnect(p) {
   if (!(await compatGate('reader'))) return;
@@ -1453,8 +1501,11 @@ async function beginShare() {
   log(`share: name "${b.name}", ${b.reuse ? `reusing room ${b.reuse.room}` : 'new room'}`);
   $('sharePanel').hidden = true;
   renderLiveChip(); void syncWake();
+  let wasLive = false;
   publisher = new Publisher({ log, onState: (s) => {
     renderLiveChip(); void syncWake(); watchReach(s);
+    if (s.live && !wasLive) { statusS.sent = null; statusTick('online'); }   // each time the socket comes up (first open, every reopen): the room gets a fresh status
+    wasLive = s.live;
     const v = viewersChange(shareS, s.viewers);
     if (v && alerts) alerts.notify('viewers', v.joined ? T.evViewerJoined : T.evViewerLeft, T.evWatching(v.viewers));
   }, onRequest: (m) => histRequest(m) });
@@ -1539,7 +1590,7 @@ async function stopShare(why = 'chip') {
   if (!publisher) return;
   log(`share: stop (${why})`);
   clearInterval(publisher.snapshotTimer);
-  const pub = publisher; publisher = null; shareStopped(shareS); histS.xfer = null;
+  const pub = publisher; publisher = null; shareStopped(shareS); histS.xfer = null; statusS.sent = null;   // the next share sends its status at once
   renderLiveChip(); void syncWake();
   await pub.stop();
   if (!publisher) { showQr(false); renderLiveChip(); }                   // unless a newer share owns the chip and the QR by now
@@ -1628,6 +1679,40 @@ async function storeReceived(file) {
   histS.days = await hist.days();
   if (active) renderTrend(active); else renderHistNote();                // throttled: a transfer of 100 files is not 100 chart queries
 }
+// ---- the reader as the viewer last heard of it (0.9.71): its status envelope (the room keeps the newest) and the
+// relay's record of how its socket ended. Shown in a box while the reader is away, and in the Reader phone sheet.
+const readerS = { status: null, at: null, logged: null, loggedAt: 0 };
+function rxReaderStatus(env) {
+  const v = env.v; if (!v || !Array.isArray(v.packs)) return;
+  readerS.status = v; readerS.at = env.retained ? Date.now() - env.ageS * 1000 : Date.now();
+  const now = Date.now();
+  if (v.why !== 'tick' || statusChanged(readerS.logged, v) || now - readerS.loggedAt >= 600000) {
+    readerS.logged = v; readerS.loggedAt = now;
+    log(`reader status${env.retained ? ` (kept by the room, ${env.ageS} s old)` : ''}: ${statusLine(v)}`);
+  }
+  renderReaderOff();
+}
+function readerModel() { return offlineModel({ status: readerS.status, statusAt: readerS.at, gone: viewer ? viewer.state.gone : null, now: Date.now() }); }
+let readerOffLogged = '';
+function renderReaderOff() {
+  const el = $('readerOff'); if (!el) return;
+  $('readerPhone').hidden = !viewMode;
+  const away = !!(viewer && viewer.state.reader === false);
+  const lines = away ? offlineLines(readerModel(), T) : null;
+  el.hidden = !lines;
+  if (!lines) { readerOffLogged = ''; return; }
+  const b = document.createElement('b'); b.textContent = lines.head;
+  const more = document.createElement('span'); more.className = 'more'; more.textContent = T.readerOffMore;
+  /** @type {Node[]} */ const parts = [b];
+  for (const t of [lines.how, lines.last, lines.phone]) if (t) parts.push(document.createElement('br'), document.createTextNode(t));
+  parts.push(document.createTextNode(' '), more);
+  el.replaceChildren(...parts);
+  const key = `${lines.how}|${lines.last}`;
+  if (key !== readerOffLogged) { readerOffLogged = key; log(`reader offline box: ${lines.head} - ${lines.how}${lines.last ? ' - ' + lines.last : ''}${lines.phone ? ' - ' + lines.phone : ''}`); }
+}
+$('readerOff').addEventListener('click', () => { void openSheet('reader'); });
+$('readerOff').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void openSheet('reader'); } });
+$('readerPhone').addEventListener('click', () => { void openSheet('reader'); });
 async function startView() {
   document.body.classList.add('view'); $('tabs').hidden = false; renderTabs();
   $('keepAwakeRow').hidden = true;                                   // a viewer never plays the keep-awake video
@@ -1648,7 +1733,7 @@ async function startView() {
       const ve = viewerEvent(viewS, s);           // the reader's presence: share-logic.js decides what is worth an alert
       if (ve && alerts) alerts.notify('reader', ve.readerAlert === 'on' ? T.evReaderOn : T.evReaderOff, ve.readerAlert === 'on' ? T.evReaderOnBody : T.evReaderOffBody);
       if (active) { if (!s.live) setStatus(() => (s.reader === false ? T.viewOfflineShort : T.viewReconnecting), 'bad'); else setStatus(() => T.viewingPack(active.label), 'good'); }
-      refreshCard(); renderPackBar(); void syncWake();
+      refreshCard(); renderPackBar(); void syncWake(); renderReaderOff();
     },
     onEnvelope: (env) => {
       if (env.k === 'hello') {
@@ -1663,6 +1748,7 @@ async function startView() {
         renderPackBar(); return;
       }
       if (env.k === 'hist-file') { rxHistFile(env); return; }
+      if (env.k === 'status') { rxReaderStatus(env); return; }
       let p = packs.get(env.p.id);
       if (!p) { p = addPack(new Pack(env.p.id, env.p.name, { remote: true })); }
       // a frozen tab gets the whole queue on resume (the 2026-09-22 log: 20 s of replay): a reading older than
@@ -2027,7 +2113,7 @@ if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
   shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, connState: () => (active && active.cs ? { ...active.cs } : null),
-  uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake, rxHistFile, compatState: () => compatS, browserInfo: () => browserInfo, packData: () => (active ? active.data : null),
+  uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake, rxHistFile, compatState: () => compatS, browserInfo: () => browserInfo, statusState: () => ({ ...statusS }), statusTick, pubLink: () => (publisher ? publisher.link : null), readerState: () => ({ ...readerS, gone: viewer ? viewer.state.gone : null, reader: viewer ? viewer.state.reader : null }), packData: () => (active ? active.data : null),
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });
 
@@ -2037,7 +2123,7 @@ const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 let sheetResolve = null, suppressPop = 0;
 function sheetCtx() {
   const p = active;
-  return { compat: compatS, d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, cast: castSheetCtx(), browse: browseS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
+  return { reader: viewMode ? { model: readerModel(), status: readerS.status, live: !!(viewer && viewer.state.reader !== false) } : null, compat: compatS, d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, cast: castSheetCtx(), browse: browseS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
 function openSheet(kind) {
@@ -2057,7 +2143,7 @@ function openSheet(kind) {
 function renderSheetProgress(m) { const p = $('sheetProg'); p.hidden = m.progress === undefined; if (!p.hidden) $('sheetBar').style.width = `${m.progress}%`; }
 function renderSheetItems(m) {
   const el = $('sheetItems'); const items = m.items || []; el.hidden = !items.length;
-  el.innerHTML = items.map((i) => `<div class="item"><span class="nm">${esc(i.name)}</span><span class="sz">${esc(i.size)}</span>${i.del ? `<button type="button" class="stBtn danger" data-del="${esc(i.id)}">${esc(T.browseDel)}</button>` : ''}</div>`).join('');
+  el.innerHTML = items.map((i) => `<div class="item"><span class="nm">${esc(i.name)}</span><span class="sz">${esc(i.size)}</span>${i.up ? `<button type="button" class="stBtn" data-up="${esc(i.id)}">${esc(T.browseUpload)}</button>` : ''}${i.del ? `<button type="button" class="stBtn danger" data-del="${esc(i.id)}">${esc(T.browseDel)}</button>` : ''}</div>`).join('');
 }
 /** Refresh the open sheet's text and bar from the state (a progress sheet), without touching history. */
 function updateSheet(kind) {
@@ -2080,7 +2166,10 @@ function closeSheet(result = null, why = 'dismiss') {
   $('sheetBack').addEventListener('click', () => closeSheet(null, 'tap outside'));
   $('sheetOpts').addEventListener('click', (e) => { const b = e.target.closest('[data-opt]'); if (b) closeSheet(b.dataset.opt, 'pick'); });
   $('sheetActs').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) closeSheet(b.dataset.act, 'action'); });
-  $('sheetItems').addEventListener('click', (e) => { const b = e.target.closest('[data-del]'); if (b) browseDelete(b.dataset.del).catch((err) => log(`browse: delete failed: ${err.message}`)); });
+  $('sheetItems').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-del]'); if (b) { browseDelete(b.dataset.del).catch((err) => log(`browse: delete failed: ${err.message}`)); return; }
+    const u = e.target.closest('[data-up]'); if (u) { const f = u.getAttribute('data-up'); log(`browse: upload ${f}`); void uploadLog(null, f); }   // any stored session, not only this one (0.9.71)
+  });
   // drag down to dismiss, like a messenger's sheet
   const box = $('sheetBox'); let y0 = null, dy = 0;
   box.addEventListener('touchstart', (e) => { if (box.scrollTop > 0) return; y0 = e.touches[0].clientY; dy = 0; }, { passive: true });
@@ -2136,19 +2225,21 @@ els.copy.addEventListener('click', () => copyLog(els.copy));
 // The upload shows its progress in a sheet with a Cancel (owner ask 2026-09-23): XMLHttpRequest because fetch
 // gives no upload progress and no abort of a request body in flight on every Chrome.
 const uploadS = { loaded: 0, total: 0, xhr: null };
-async function uploadLog(btn) {
+async function uploadLog(btn, file = null) {
   if ((await openSheet('upload')) !== 'ok') { log('log upload: declined at the warning'); return; }
   if (uploadS.xhr) { log('log upload: one is already running'); return; }
   await flushLog();
   let stored = '';
-  if (logS.on && logS.file) { try { stored = await hist.logRead(logS.file); } catch { stored = ''; } }
+  const name = file || (logS.on ? logS.file : null);
+  if (name) { try { stored = await hist.logRead(name); } catch { stored = ''; } }
+  if (file) log(`log upload: the stored file ${file} (${stored.length} B)`);
   const ub = uploadBody({ header: logHeaderLines(), ring: logLines.join('\n'), stored, limit: LOG_UPLOAD_MAX });
   log(`log upload: sending the ${ub.source === 'ring' ? 'last lines in memory' : ub.source === 'file' ? 'stored session file' : 'tail of the stored session file'}`);
   const body = ub.body;
   const bytes = new TextEncoder().encode(body);
-  const lbl = btn.querySelector('.lbl'); const was = lbl ? lbl.textContent : '';
+  const lbl = btn ? btn.querySelector('.lbl') : null; const was = lbl ? lbl.textContent : '';
   if (lbl) lbl.textContent = T.uploading;
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
   uploadS.loaded = 0; uploadS.total = bytes.length;
   const xhr = new XMLHttpRequest(); uploadS.xhr = xhr;
   let finished = false;
@@ -2172,7 +2263,7 @@ async function uploadLog(btn) {
     toast(T.uploadDone(r.j.id), 14000);
   } else if (r.cancelled) toast(T.uploadCancelled, 6000);
   else { log(`log upload failed: ${r.error}`); toast(T.uploadFailed(r.error), 10000); }
-  if (lbl) lbl.textContent = was; btn.disabled = false;
+  if (lbl) lbl.textContent = was; if (btn) btn.disabled = false;
 }
 $('upload').addEventListener('click', () => uploadLog($('upload')));
 $('upload2').addEventListener('click', () => uploadLog($('upload2')));
@@ -2231,3 +2322,5 @@ void initHistory().then(initLogStore);
 log(compatLogLine(viewMode ? 'viewer' : 'reader', browserInfo, compatCheck(viewMode ? 'viewer' : 'reader', browserInfo, compatFeatures())));
 if (viewMode) void startView();
 else if (new URLSearchParams(location.search).has('demo')) runDemo();
+statusTick('start');
+bootMark('ready');

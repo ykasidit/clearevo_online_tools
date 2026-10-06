@@ -121,6 +121,32 @@ export function stampLines({ readerAt, localAt, viewer }, T) {
   if (viewer && localAt) out.push(T.stampLocal(clockMs(localAt)));
   return out;
 }
+/** "2026-10-05 10:39" in this device's time zone: when something happened, for a person to read. */
+export function fmtWhen(ms) {
+  if (!ms) return '-';
+  const d = new Date(ms), p2 = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
+/** How long ago, in the unit a person would use: seconds, minutes, hours and minutes, days and hours. */
+export function fmtAgo(ms, T) {
+  if (ms === null || ms === undefined) return '-';
+  const s = Math.max(0, Math.round(ms / 1000)), u = T.agoUnits;
+  if (s < 60) return `${s} ${u.s}`;
+  const m = Math.floor(s / 60); if (m < 60) return `${m} ${u.min}`;
+  const h = Math.floor(m / 60); if (h < 48) return `${h} ${u.h}${m % 60 ? ` ${m % 60} ${u.min}` : ''}`;
+  const d = Math.floor(h / 24); return `${d} ${u.d}${h % 24 ? ` ${h % 24} ${u.h}` : ''}`;
+}
+/** The viewer's box while the reader is away (0.9.71): since when, how it ended, what it last read, its phone. */
+export function offlineLines(m, T) {
+  if (!m) return null;
+  const head = m.since ? T.readerOffHead(fmtWhen(m.since), fmtAgo(m.agoMs, T)) : T.readerOffHeadNoTime;
+  const packs = m.packs.filter((p) => p.soc !== null || p.v !== null).map((p) => `${p.name} ${p.soc !== null ? `${p.soc} %` : ''}${p.v !== null ? ` · ${p.v} V` : ''}${p.a !== null ? ` · ${p.a} A` : ''}${p.at ? ` (${fmtWhen(p.at).slice(11)})` : ''}`.replace(/\s+/g, ' ').trim());
+  return {
+    head, how: T.readerOffHow[m.reason] || T.readerOffHow.unknown,
+    last: packs.length ? T.readerOffLast(packs.join('; ')) : '',
+    phone: m.bat ? T.readerOffPhone(m.bat.pct, m.bat.chg) : '',
+  };
+}
 export function ageLabel(ageS, T) {
   if (ageS === null || ageS === undefined) return { text: T.noData, stale: false };
   return { text: ageS < 2 ? T.justNow : T.agoS(ageS), stale: ageS > STALE_AGE_S };

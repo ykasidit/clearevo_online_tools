@@ -135,6 +135,40 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.71 (2026-10-06): every outage explains itself - reader status, last words, the relay's close record, a boot trail
+
+The h46 reader went offline with the screen off and its tab gone, and nothing anywhere said when or how; two new tabs
+then stayed blank and left no trace. Now:
+
+- **Reader status** (`status-logic.js`, pure): `statusSnapshot()` = the phone's battery and charging, page memory,
+  storage, the history store (backend, days, rows, pending, failures), the debug log, Chrome name / version / OS, the
+  APIs missing, wake lock, visibility, network, sharing, each pack's last reading, uptime and how the previous run
+  ended. Sent as a `status` envelope in the retained slot `status` (encrypted like a reading) when the reader's socket
+  comes up, at once on a change that matters (`statusChanged`: visibility, charging, a 10 % battery step, a pack
+  connecting or dropping, history falling back to memory, network, wake lock), and once a minute (`statusDue`); as
+  **last words** on `visibilitychange` hidden, `freeze`, `resume` and `pagehide` (best effort). It rides the 15 s
+  memory tick, goes into the log when it changes (and every 10 min), and into the last-run record, so the next start
+  logs `its last status (N s before this start): ...`.
+- **Relay close record**: the room stores `pubEnd` {at, code, reason} when the publisher's socket ends (not for a
+  socket replaced by the same publisher, 4000), and every status while the publisher is away carries `gone: {ago,
+  code, reason}` - also the plain `GET /room/:id`. Connection facts only; no reading or phone fact is readable there.
+- **Viewer**: `endReason()` reads the last words and the close code (closed / frozen / hidden / unanswered / vanished
+  / unknown); `offlineModel()` + `offlineLines()` make the box shown while the reader is away: since when (date, time,
+  how long ago), how it ended, the last reading, the phone's battery. Tap it, or **Reader phone** under More, for the
+  'reader' sheet with every fact. Each status received and each change of the box is logged on the viewer, so a
+  viewer's log tells the reader's story when the reader's own log cannot be uploaded.
+- **Boot trail**: an inline script in index.html writes the stages of each page load to `batray_boot` before any
+  module loads (the previous load moves to `batray_boot_prev`), records load errors, and after 12 s without the app
+  module shows `#bootFail` (close every Chrome tab, open again). app.js adds `module` and `ready`; `bootReport()` logs
+  a previous load that never finished starting, with its error.
+- **Upload any stored log** from Browse (each log file has Upload next to Delete); a file without the header line gets
+  one on top (`uploadBody`), since the relay takes only text starting with "BatRay v".
+
+Tests: `batray_status.test.js` (snapshot, change, due, the h46 and n11 endings replayed, the box in EN/TH, the sheet,
+the boot report, the last-run status, the upload header), browser `batray_status.mjs` (status over a fake socket,
+last words, the record and the next start, a blocked app module -> the on-screen notice and the next start's report,
+Browse upload, the viewer box and sheet at 500 / 1440 px), relay unit + live tests for `gone`.
+
 ## 0.9.70 (2026-10-05): the time lines under "updated" stay clear of the battery on phones
 
 The owner's phone screenshot showed `reader 16:20:53.596` running into the battery's side: Android's monospace font

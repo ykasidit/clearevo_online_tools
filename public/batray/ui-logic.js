@@ -17,7 +17,7 @@
 // tab tap, a tile tap, a sheet choice or the Back button does, and build the
 // plain-language sheet contents from a reading. No DOM, no history API here.
 import { fmtVersion, OS_LABEL, canTryAnyway } from './compat-logic.js';
-import { fmt, flowModel, etaModel, chipList, socClass } from './view-logic.js';
+import { fmt, flowModel, etaModel, chipList, socClass, fmtWhen, fmtAgo, offlineLines } from './view-logic.js';
 
 export const TABS = ['now', 'history', 'more'];
 export function uiState(role) { return { role: role === 'viewer' ? 'viewer' : 'reader', tab: 'now', sheet: null, lowPower: false }; }
@@ -134,8 +134,34 @@ export function sheetModel(kind, ctx, T) {
       const b = ctx.browse || { type: 'hist', items: [] };
       m.title = T.browseTitle(T[{ hist: 'stHistory', set: 'stSettings', log: 'stLogs' }[b.type]] || b.type);
       m.lead = b.items.length ? T.browseLead(b.items.length, b.sizeText || '') : T.browseEmpty;
-      m.items = b.items.map((i) => ({ id: i.id, name: i.name, size: i.sizeText || String(i.bytes), del: !!i.del }));
+      m.items = b.items.map((i) => ({ id: i.id, name: i.name, size: i.sizeText || String(i.bytes), del: !!i.del, up: b.type === 'log' }));
       m.actions = [{ id: 'close', label: T.close, primary: false }];
+      break;
+    }
+    case 'reader': {                                     // the reader phone as the viewer last heard of it (0.9.71)
+      const r = ctx.reader || {}, st = r.status, mm = r.model;
+      m.title = T.readerSheetTitle;
+      const lines = !r.live && mm ? offlineLines(mm, T) : null;
+      m.lead = lines ? `${lines.head}. ${lines.how}.` : st ? T.readerOnline : T.rsNone;
+      if (st) {
+        const now = mm && mm.statusAt ? mm.statusAt : st.t;
+        m.rows.push([T.rsStatusAt, `${fmtWhen(now)} (${T.rsWhy[st.why] || st.why})`]);
+        for (const p of st.packs) m.rows.push([p.name, `${p.conn ? T.rsConnected : T.rsNotConnected}${p.soc !== null ? ` · ${p.soc} %` : ''}${p.v !== null ? ` · ${p.v} V` : ''}${p.a !== null ? ` · ${p.a} A` : ''}${p.at ? ` · ${fmtWhen(p.at)}` : ''}`]);
+        m.rows.push([T.rsPhone, st.bat ? `${st.bat.pct} % · ${st.bat.chg ? T.rsCharging : T.rsNotCharging}` : T.rsUnknown]);
+        m.rows.push([T.rsBrowser, `${st.br || T.rsUnknown}${st.os ? ` · ${OS_LABEL[st.os] || st.os}` : ''}`]);
+        m.rows.push([T.rsHistory, st.hist ? T.rsHist(st.hist.backend, st.hist.days, st.hist.rows, st.hist.pend, st.hist.fails) : T.rsUnknown]);
+        m.rows.push([T.rsMemory, st.mem && st.mem.used !== null ? `${st.mem.used} / ${st.mem.limit ?? '?'} MB` : T.rsUnknown]);
+        m.rows.push([T.rsStorage, st.sto && st.sto.used !== null ? `${st.sto.used} / ${st.sto.quota ?? '?'} MB` : T.rsUnknown]);
+        m.rows.push([T.rsLog, st.log ? (st.log.on ? T.rsLogOn(st.log.files, st.log.kb) : T.rsLogOff) : T.rsUnknown]);
+        m.rows.push([T.rsMissing, st.miss && st.miss.length ? st.miss.map((k) => T.compatFeature[k] || k).join(', ') : T.rsNothingMissing]);
+        m.rows.push([T.rsScreen, `${st.vis ? T.rsVisible : T.rsHidden}${st.wake ? ` · ${T.rsWakeHeld}` : ''}`]);
+        m.rows.push([T.rsNet, st.net ? `${st.net.on ? T.rsOnline : T.rsOffline}${st.net.type ? ` · ${st.net.type}` : ''}` : T.rsUnknown]);
+        m.rows.push([T.rsRunning, st.up !== null ? fmtAgo(st.up * 1000, T) : T.rsUnknown]);
+        if (st.prev) m.rows.push([T.rsPrev, `${st.prev.clean ? T.rsPrevClean : T.rsPrevUnclean}${st.prev.at ? ` · ${fmtWhen(st.prev.at)}` : ''}`]);
+        m.rows.push([T.rsVersion, `BatRay ${st.ver}${st.sid ? ` · ${st.sid}` : ''}`]);
+      }
+      if (mm && mm.code !== null && !r.live) m.rows.push([T.rsCode, String(mm.code)]);
+      m.actions = [{ id: 'ok', label: T.close, primary: true }];
       break;
     }
     case 'compat': {                                     // the browser gate (owner ask 2026-10-05): why it cannot run, where to update

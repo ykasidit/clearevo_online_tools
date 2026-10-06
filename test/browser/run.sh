@@ -9,6 +9,7 @@
 #   batray_ui.mjs   - UI_GUIDELINES.md on the real page: 48 px targets, sheets, Back, tabs, low power
 #   batray_log.mjs  - the debug log header, error capture and Upload log
 #   batray_compat.mjs - the browser gate (old Chrome / Firefox reader / old Firefox viewer) and the time lines under "updated"
+#   batray_status.mjs - the reader status and last words, the viewer's offline box and sheet, the boot trail, Browse upload
 #   clinician.mjs - 24-scenario DICOM viewer suite (measure landing under
 #                   zoom/pan/rotate/flip/hi-DPI, wheel/keys/slider, cine,
 #                   multi-frame US, tags, capture-with-overlay)
@@ -46,6 +47,7 @@ node batray_history.mjs || rc=1
 node batray_tv.mjs || rc=1
 node batray_ui.mjs || rc=1
 node batray_compat.mjs || rc=1
+node batray_status.mjs || rc=1
 node batray_log.mjs || rc=1      # last: it throws deliberate errors that Chrome replays to the next Runtime.enable
 node probe.mjs
 node repro.mjs

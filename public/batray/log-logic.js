@@ -17,6 +17,8 @@
 // and the same session id, the newest LOG_FILES_MAX files kept. Every
 // decision is here; the history worker writes the files; the app shell wires it.
 
+import { statusLine } from './status-logic.js';
+
 export const LOG_FILE_MAX = 10 * 1048576;
 export const LOG_FILES_MAX = 10;
 export const LOG_FLUSH_MS = 3000;
@@ -62,7 +64,8 @@ export function logSummary(files) { return { files: files.length, bytes: files.r
 export function uploadBody({ header, ring, stored, limit = LOG_UPLOAD_MAX }) {
   const head = header.join('\n') + '\n---\n';
   if (stored && stored.length) {
-    if (stored.length <= limit) return { body: stored, source: 'file' };
+    // the relay takes only text that starts with the BatRay header line: a stored file without one gets ours on top
+    if (stored.length <= limit) return stored.startsWith('BatRay v') ? { body: stored, source: 'file' } : { body: head + stored, source: 'file' };
     const room = Math.max(0, limit - head.length - 120);
     const cut = stored.length - room;
     return { body: `${head}(stored log is ${stored.length} B: this is its tail from byte ${cut})\n${stored.slice(cut)}`, source: 'file-tail' };
@@ -72,12 +75,30 @@ export function uploadBody({ header, ring, stored, limit = LOG_UPLOAD_MAX }) {
 /** Copy / Upload while the stored log is off: greyed with a title that says where to turn it on. */
 export function debugButtons(on) { return { disabled: !on }; }
 
+// ---- the boot trail (0.9.71): index.html's inline script keeps the stages of each page load in BOOT_KEY (and moves
+// the one before into BOOT_PREV_KEY) before any module runs; app.js adds 'module' and 'ready'. A load that never
+// reached 'ready' is the blank tab the owner met twice on 2026-10-05, which left no other trace.
+export const BOOT_KEY = 'batray_boot';
+export const BOOT_PREV_KEY = 'batray_boot_prev';
+/** Lines about the previous page load: [] when it started normally or there is no record. */
+export function bootReport(prev) {
+  if (!prev || typeof prev !== 'object' || !Array.isArray(prev.st)) return [];
+  const stages = prev.st.map(([name, ms]) => `${name} +${ms} ms`).join(', ');
+  const when = typeof prev.t === 'number' ? new Date(prev.t).toISOString() : '?';
+  if (prev.st.some(([name]) => name === 'ready') && !prev.err) return [];
+  const last = prev.st.length ? prev.st[prev.st.length - 1][0] : '?';
+  const out = [`PREVIOUS PAGE LOAD at ${when} ${prev.st.some(([name]) => name === 'ready') ? 'started but logged an error' : `NEVER FINISHED STARTING: it got as far as '${last}'`} (${stages})`];
+  if (prev.err) out.push(`  its error: ${prev.err}`);
+  if (!prev.st.some(([name]) => name === 'module')) out.push('  the app module never ran: a script that did not load, or a stuck page process (closing every Chrome tab cleared it on 2026-10-05)');
+  return out;
+}
+
 // ---- the last-run record (owner ask 2026-09-23): Chrome gives a page no tombstone after an "Aw, Snap", so the
 // app writes one itself every MEM_LOG_MS into localStorage and marks it clean on pagehide. The next start reads it
 // and puts what it says at the top of the new log; the previous session's stored log file is the rest of the story.
 export const LASTRUN_KEY = 'batray_lastrun';
-export function lastRunRecord({ sid, now, mem, rows, state, file, clean = false, browser = '' }) {
-  return { sid, at: now, mem: mem ? { used: mem.used, limit: mem.limit } : null, rows: rows || 0, state: state || '', file: file || null, clean: !!clean, browser: browser || '' };
+export function lastRunRecord({ sid, now, mem, rows, state, file, clean = false, browser = '', status = null }) {
+  return { sid, at: now, mem: mem ? { used: mem.used, limit: mem.limit } : null, rows: rows || 0, state: state || '', file: file || null, clean: !!clean, browser: browser || '', status: status || null };
 }
 /** Lines for the top of a new log about the previous run: null when there was none. */
 // `browser` = "chrome 96" (name and version, 0.9.69): a Play Store update of Chrome stops it - the open tab goes with it
@@ -93,6 +114,7 @@ export function lastRunReport(prev, now, { wasDiscarded = false, navType = '', b
     lines.push(`  last known: state ${prev.state || '?'}; memory ${prev.mem ? `${Math.round(prev.mem.used / 1048576)} MB of ${Math.round(prev.mem.limit / 1048576)} MB` : 'unknown'}; ${prev.rows} rows in memory${prev.file ? `; its log file: ${prev.file} (Browse in the History card)` : ''}`);
   }
   if (prev.browser && browser && prev.browser !== browser) lines.push(`  the browser changed since: ${prev.browser} -> ${browser}${prev.clean ? '' : ' - an update closes the browser and every tab in it, the likely end of that session'}`);
+  if (prev.status) lines.push(`  its last status (${Math.max(0, Math.round((now - (prev.status.t || prev.at)) / 1000))} s before this start): ${statusLine(prev.status)}`);
   lines.push(`  this start: ${navType || 'navigate'}${wasDiscarded ? '; Chrome had DISCARDED the tab (memory pressure) and this is its reload' : ''}`);
   return lines;
 }

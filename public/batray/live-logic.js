@@ -72,7 +72,7 @@ export function envelope(kind, pack, v, extra = null) {
   return { k: kind, p: { id: pack.id, name: pack.label || pack.name }, v, t: Date.now(), ...(extra || {}) };   // extra: { r: the stored row } on a live reading
 }
 export function validEnvelope(m) {
-  return !!m && typeof m === 'object' && ['data', 'info', 'settings', 'packs', 'hello', 'hist-file'].includes(m.k)
+  return !!m && typeof m === 'object' && ['data', 'info', 'settings', 'packs', 'hello', 'hist-file', 'status'].includes(m.k)
     && m.p && typeof m.p.id === 'string' && m.p.id.length <= 64 && typeof m.t === 'number';
 }
 

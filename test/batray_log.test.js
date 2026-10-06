@@ -57,7 +57,7 @@ test('the last-run record is the tombstone: a start after an unclean end says so
   assert.equal(LASTRUN_KEY, 'batray_lastrun');
   const t0 = Date.UTC(2026, 8, 23, 1, 0, 0);
   const rec = lastRunRecord({ sid: 'abc123', now: t0, mem: { used: 50e6, limit: 2000e6, total: 60e6 }, rows: 28800, state: 'connected, sharing', file: 'log-x-abc123.txt' });
-  assert.deepEqual(rec, { sid: 'abc123', at: t0, mem: { used: 50e6, limit: 2000e6 }, rows: 28800, state: 'connected, sharing', file: 'log-x-abc123.txt', clean: false, browser: '' });
+  assert.deepEqual(rec, { sid: 'abc123', at: t0, mem: { used: 50e6, limit: 2000e6 }, rows: 28800, state: 'connected, sharing', file: 'log-x-abc123.txt', clean: false, browser: '', status: null });
   const r = lastRunReport(rec, t0 + 7 * 60000, { wasDiscarded: true, navType: 'reload' });
   assert.equal(r.length, 3);
   assert.match(r[0], /^previous session abc123 ENDED WITHOUT A CLEAN EXIT .* last seen 2026-09-23T01:00:00.000Z \(7 min before this start\)$/);

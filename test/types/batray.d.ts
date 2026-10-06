@@ -17,6 +17,8 @@ interface Document { wasDiscarded: boolean; }
 interface Window {
   __batrayTest: any;
   __onGCastApiAvailable: any;
+  __batrayBoot: any;
+  __batrayStarted: any;
   cast: any;
   chrome: any;
 }

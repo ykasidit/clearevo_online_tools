@@ -144,6 +144,10 @@ body.demo #demoBadge{display:block}
 #demoBadge button{margin-left:12px;background:transparent;border:1px solid #ffd24a;color:#ffd24a;border-radius:5px;padding:2px 9px;font:600 11px Tahoma,sans-serif;cursor:pointer;vertical-align:middle}
 #demoBadge button:hover{background:#ffd24a;color:#1a1200}
 .chipbar[hidden],#packBar[hidden],#shareLink[hidden],#qrPanel[hidden],#qrShow[hidden]{display:none!important}
+.bootFail{margin:12px;padding:12px;border:2px solid #ffd24a;border-radius:8px;background:#2a2410;color:#ffe9a8;font:14px/1.5 'Segoe UI',Tahoma,sans-serif}
+.readerOff{margin:8px 12px 0;padding:10px 12px;border:1px solid #6b4d1e;border-radius:8px;background:#22190a;color:#ffd99a;font:13px/1.45 'Segoe UI',Tahoma,sans-serif;cursor:pointer}
+.readerOff b{color:#ffe9a8}
+.readerOff .more{color:#9fc6e8;text-decoration:underline}
 .chname{font:600 18px 'Segoe UI',Tahoma,sans-serif;color:#eaf4ff;text-align:center;letter-spacing:.3px}
 #viewName{margin:2px 0 8px;color:#8fe3ff;font-size:20px}#viewName[hidden]{display:none}
 .qrpanel .chname{color:#123}
@@ -246,8 +250,21 @@ body.view[data-tab=now] [data-tab=now]:not([hidden]),body.view[data-tab=history]
 body.view[data-tab=now] details[data-tab=now]:not([hidden]),body.view[data-tab=more] details[data-tab=more]:not([hidden]){display:block}
 body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,body.lowpower #loading .bar,body.lowpower .sheetBox{animation:none}
 </style>
+<script>
+/* BatRay boot trail (0.9.71): each page load's stages go to localStorage before any module runs (the one before is
+   kept as batray_boot_prev); app.js adds its own and reads the previous load's at start. A load that never gets past
+   'html' (a script that did not load, a stuck page process) says so on screen after 12 s and in the next log. */
+(function () { try {
+  var k = 'batray_boot', prev = localStorage.getItem(k); if (prev) localStorage.setItem('batray_boot_prev', prev);
+  var b = { t: Date.now(), st: [['html', 0]], err: null }; localStorage.setItem(k, JSON.stringify(b));
+  window.__batrayBoot = function (stage, err) { try { var r = JSON.parse(localStorage.getItem(k) || 'null') || b; r.st.push([stage, Date.now() - r.t]); if (r.st.length > 20) r.st.splice(1, r.st.length - 20); if (err) r.err = String(err).slice(0, 300); localStorage.setItem(k, JSON.stringify(r)); } catch (x) { /* storage full or blocked */ } };
+  addEventListener('error', function (e) { var t = e.target, src = t && t.src ? ' ' + String(t.src).split('/').pop() : '', f = (e.filename || '').split('/').pop(); window.__batrayBoot('error', (e.message || 'load failed') + (f ? ' @' + f + ':' + e.lineno : '') + src); }, true);
+  setTimeout(function () { if (!window.__batrayStarted) { window.__batrayBoot('stuck'); var d = document.getElementById('bootFail'); if (d) d.hidden = false; } }, 12000);
+} catch (x) { /* no storage: nothing to keep */ } })();
+</script>
 </head>
 <body>
+<div id="bootFail" class="bootFail" role="alert" hidden><b>BatRay did not start.</b> Close every Chrome tab (or restart Chrome), then open clearevo.com/batray again. The next start writes what happened into the debug log.<br><b>BatRay ไม่เริ่มทำงาน</b> ปิดแท็บ Chrome ทั้งหมด (หรือเปิด Chrome ใหม่) แล้วเปิด clearevo.com/batray อีกครั้ง ครั้งถัดไปจะบันทึกสิ่งที่เกิดขึ้นไว้ในบันทึกดีบัก</div>
 <div id="app">
   <div class="title-bar"><div class="title-bar-text"><svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect width="64" height="64" rx="13" fill="#0c2035"/><path d="M32 14 C24 14 12 20 5 29 C15 29 23 34 28 41 L32 46 L36 41 C41 34 49 29 59 29 C52 20 40 14 32 14 Z" fill="#1c5680" stroke="#5bb6e6" stroke-width="3" stroke-linejoin="round"/><path d="M32 46 C33.5 51 30.5 55 33 60" fill="none" stroke="#5bb6e6" stroke-width="3" stroke-linecap="round"/><path d="M27 15 C25 12.5 24 10 25.5 7.5 M37 15 C39 12.5 40 10 38.5 7.5" fill="none" stroke="#5bb6e6" stroke-width="3" stroke-linecap="round"/><g fill="#cdefff"><circle cx="27.5" cy="21" r="2"/><circle cx="36.5" cy="21" r="2"/></g><path d="M23 28 H29 M35 28 H41 M25 32 H29 M35 32 H39" stroke="#0a2338" stroke-width="2" stroke-linecap="round"/></svg><span id="titleText">BatRay by ClearEvo.com</span></div>
     <div class="title-bar-controls"><button class="fontbtn" id="bAbout" type="button" title="about BatRay" style="width:auto;padding:0 6px" data-i18n="about">About</button><button class="fontbtn" id="fMinus" type="button" title="smaller text">A-</button><button class="fontbtn" id="fPlus" type="button" title="larger text">A+</button></div>
@@ -289,6 +306,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
     </div>
     <div class="panel">
       <div id="viewName" class="chname" data-tab="now" hidden></div>
+      <div id="readerOff" class="readerOff" data-tab="now" role="button" tabindex="0" hidden></div>
       <details class="card" id="sharePanel" data-tab="more" hidden open>
         <summary><span data-i18n="shareH">Share live</span> <span class="note" data-i18n="shareSetupNote">a name for the viewers, and whether to keep the earlier link</span></summary>
         <div class="tvpanel">
@@ -404,6 +422,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
         <div class="card" data-tab="more" id="moreCard">
           <h2><span data-i18n="moreH">More</span> <span class="note" data-i18n="moreNote">same frame as the meters, not covered by the cell-sum check; offsets verified against captured frames from 24-cell, 32-cell and JK-PB firmware (see how to use)</span></h2>
           <div class="grid" id="secondary"></div>
+          <button type="button" id="readerPhone" class="linkbtn" data-i18n="readerPhoneBtn" hidden>Reader phone</button>
         </div>
         <div class="card" id="settingsCard" data-tab="more" hidden>
           <h2><span data-i18n="settingsH">BMS settings</span> <span class="note" data-i18n="settingsNote">as configured in the BMS (read-only here)</span></h2>

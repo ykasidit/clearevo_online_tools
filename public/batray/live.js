@@ -221,7 +221,8 @@ export class Viewer {
     this.key = null; this.sock = null;
     // sig: our socket is up; reader: the reader is there (its socket is in the room, or its readings still arrive);
     // live: both; net: this device has internet
-    this.state = { viewers: 0, live: false, reader: null, retryIn: null, error: null, received: 0, stale: 0, sig: null, net: true };   // null = not known yet
+    // gone: how the reader's socket ended, while it is away ({ at (this clock), code, reason }, from the relay, 0.9.71)
+    this.state = { viewers: 0, live: false, reader: null, retryIn: null, error: null, received: 0, stale: 0, sig: null, net: true, gone: null };   // null = not known yet
     this.lastRxAt = null; this.serverLive = null; this.lastStatusKey = null;
     this.now = () => Date.now();
     this.stopped = false;
@@ -275,9 +276,11 @@ export class Viewer {
     if (m.type === 'd' && typeof m.b === 'string') await this.onData(m);
   }
   onStatus(m) {
-    const key = `${m.viewers}|${m.live}`;
-    if (key !== this.lastStatusKey) { this.lastStatusKey = key; this.log(`status: viewers=${m.viewers} live=${m.live} lastRx=${this.lastRxAt ? Math.round((this.now() - this.lastRxAt) / 1000) + 's' : '-'}`); }
+    const g = m.gone && typeof m.gone.ago === 'number' ? m.gone : null;
+    const key = `${m.viewers}|${m.live}|${g ? g.code : '-'}`;
+    if (key !== this.lastStatusKey) { this.lastStatusKey = key; this.log(`status: viewers=${m.viewers} live=${m.live} lastRx=${this.lastRxAt ? Math.round((this.now() - this.lastRxAt) / 1000) + 's' : '-'}${g ? ` reader socket ended ${Math.round(g.ago / 1000)} s ago code=${g.code}${g.reason ? ` "${g.reason}"` : ''}` : ''}`); }
     this.state.viewers = m.viewers; this.serverLive = !!m.live;
+    this.state.gone = g ? { at: this.now() - g.ago, code: g.code, reason: String(g.reason || '') } : null;
     this.judgeReader(true);
   }
   /** Freshness first: readings still arriving prove the reader is there, whatever the room says (2026-09-17); once
