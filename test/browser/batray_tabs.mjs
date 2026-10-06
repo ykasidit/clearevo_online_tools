@@ -91,9 +91,9 @@ check('Browse in B lists A\'s store as open in another tab, without Delete', leg
 await B.eval(`document.getElementById('sheetBack') ? document.getElementById('sheetBack').click() : null; 1`); await sleep(300);
 
 // ---- 3. logs: each tab its own; Browse lists them all ----
-await B.eval(`document.getElementById('logKeep').checked || document.getElementById('logKeep').click(); 1`); await sleep(300);
+await B.eval(`window.__batrayTest.logState().on || document.getElementById('debugBtn').click(); 1`); await sleep(300);
 await B.eval('window.__batrayTest.flushLog()'); await sleep(500);
-await A.eval(`document.getElementById('logKeep').checked || document.getElementById('logKeep').click(); 1`); await sleep(300);
+await A.eval(`window.__batrayTest.logState().on || document.getElementById('debugBtn').click(); 1`); await sleep(300);
 await A.eval('window.__batrayTest.flushLog()'); await sleep(500);
 await A.eval(`void window.__batrayTest.openBrowse('log'); 1`); await sleep(800);
 br = await A.eval('window.__batrayTest.browseState().items');

@@ -183,7 +183,7 @@ export function sheetModel(kind, ctx, T) {
         m.rows.push([T.rsLog, st.log ? (st.log.on ? T.rsLogOn(st.log.files, st.log.kb) : T.rsLogOff) : T.rsUnknown]);
         m.rows.push([T.rsMissing, st.miss && st.miss.length ? st.miss.map((k) => T.compatFeature[k] || k).join(', ') : T.rsNothingMissing]);
         m.rows.push([T.rsScreen, `${st.vis ? T.rsVisible : T.rsHidden}${st.wake ? ` · ${T.rsWakeHeld}` : ''}`]);
-        m.rows.push([T.rsLocation, st.loc ? T.rsLocVal(locCoords(st.loc), st.loc.acc, fmtWhen(st.loc.at)) : T.rsLocNone]);
+        if (st.loc) m.rows.push([T.rsLocation, T.rsLocVal(locCoords(st.loc), st.loc.acc, fmtWhen(st.loc.at))]);   // location parked since 0.9.79: a row only if a reader sends one
         m.rows.push([T.rsNet, st.net ? `${st.net.on ? T.rsOnline : T.rsOffline}${st.net.type ? ` · ${st.net.type}` : ''}` : T.rsUnknown]);
         m.rows.push([T.rsRunning, st.up !== null ? fmtAgo(st.up * 1000, T) : T.rsUnknown]);
         if (st.setup) m.rows.push([T.rsSetup, T.rsSetupVal(st.setup.ready, st.setup.total, [...st.setup.missing, ...st.setup.todo].map((k) => T.setupItem[k] || k).join(', '))]);

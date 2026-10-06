@@ -50,7 +50,8 @@ test('the newest 10 files are kept; the summary counts bytes; Upload sends the s
   const tail = uploadBody({ header, ring: 'r', stored: big, limit: 1000 });
   assert.equal(tail.source, 'file-tail'); assert.ok(tail.body.startsWith('BatRay v0.9.32 · x\nua: y\n---\n(stored log is 5019 B: this is its tail from byte '), tail.body.slice(0, 90)); assert.ok(tail.body.length <= 1000, tail.body.length);
   assert.equal(LOG_UPLOAD_MAX, 4 * 1048576);
-  assert.deepEqual(debugButtons(true), { disabled: false }); assert.deepEqual(debugButtons(false), { disabled: true });
+  assert.deepEqual(debugButtons(true), { pressed: true, upload: true, disabled: false }, 'the bug button pressed, Upload log beside it');
+  assert.deepEqual(debugButtons(false), { pressed: false, upload: false, disabled: true }, 'the button up, no Upload log, the Debug card buttons greyed');
 });
 
 test('the last-run record is the tombstone: a start after an unclean end says so at the top of the new log, with the last known state', () => {

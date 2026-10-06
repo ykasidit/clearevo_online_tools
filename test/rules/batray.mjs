@@ -59,7 +59,7 @@ export default {
     },
     // hand-rolled `new Promise(`: sync.js has Flag / Channel / sleep / select; what remains wraps a platform event
     promise: {
-      'app.js': [9, 'rAF, file reads, sheet results, timers in the app shell: round 3; getCurrentPosition takes callbacks only (0.9.74)'],
+      'app.js': [8, 'rAF, file reads, sheet results, timers in the app shell: round 3'],
       'jkbms.js': [2, 'GATT connect timeout and the handshake wait'],
       'history.js': [2, 'the worker reply wait with its deadline, the pool reopen'],
       'history-worker.js': [2, 'the sync access handle waits'],

@@ -1,4 +1,4 @@
-// BatRay by ClearEvo.com - tests (batray_location.mjs): the reader's location in its status; history greyed out when nothing can be kept
+// BatRay by ClearEvo.com - tests (batray_location.mjs): location parked (none taken); history greyed out when nothing can be kept
 // Copyright (C) 2026 Kasidit Yusuf
 //
 // This program is free software; you can redistribute it and/or modify it
@@ -12,9 +12,9 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 //
-// Owner asks 2026-10-06: (1) "a location checkbox under the logging checkbox in the History tab, default on; the
-// checklist checks it is on and approved"; (2) "without SQLite file storage, drop and grey out with the reason instead
-// of risking the RAM limit". The position is emulated over CDP and the permission granted; the share runs over a fake
+// Owner asks 2026-10-06: (1) location in the reader's status (0.9.74), then "remove the location thing for now" (0.9.79):
+// this checks that none is taken even with Chrome allowing it; (2) "without SQLite file storage, drop and grey out with
+// the reason instead of risking the RAM limit". The position is emulated over CDP and the permission granted; the share runs over a fake
 // relay socket and its status envelopes are decrypted with the link key. The memory-only store is forced with the
 // store's own lock-out (what a stuck pool does on a phone).
 const PORT = +(process.env.PORT || 8077), CDP = +(process.env.CDP || 9333);
@@ -48,45 +48,21 @@ const decryptStatus = `(async () => {
   return out;
 })()`;
 
-// ---- 1. location: off by default, read once ticked and allowed, into the encrypted status, never into a log line ----
+// ---- 1. location PARKED (owner 2026-10-06, 0.9.79: "remove the location thing for now, it is not used yet"): even with
+// Chrome allowing it and an old '1' stored from 0.9.74-0.9.78, no checkbox, no position read, none in the status ----
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(1500);
-await evalJs(`localStorage.removeItem('batray_location'); localStorage.removeItem(window.__batrayTest.tabKey('share_last')); 1`);
+await evalJs(`localStorage.setItem('batray_location', '1'); localStorage.removeItem(window.__batrayTest.tabKey('share_last')); 1`);
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `window.__geoCalls = 0; if (navigator.geolocation) { const g = navigator.geolocation; for (const m of ['getCurrentPosition', 'watchPosition']) { const f = g[m].bind(g); g[m] = (...a) => { window.__geoCalls++; return f(...a); }; } }` });
 await send('Page.navigate', { url: `${BASE}/batray/?test&n=1` }); await sleep(3000);
-let st = await evalJs(`({ box: document.getElementById('locKeep').checked, inHistory: !!document.getElementById('locKeep').closest('#trendCard'), afterLog: document.getElementById('logKeep').closest('.check').nextElementSibling.contains(document.getElementById('locKeep')), loc: window.__batrayTest.locState() })`);
-check('the checkbox is OFF by default (consent first, 0.9.75), right under "keep debug logs" in the History card', !st.box && st.inHistory && st.afterLog, st);
-check('...so no fix is read, even with Chrome already allowing it', st.loc.on === false && st.loc.fix === null, st.loc);
-check('...and the log says nothing about a fix', (await logs('/location: fix/')).length === 0);
-await evalJs(`document.getElementById('locKeep').click(); 1`); await sleep(1500);
-st = await evalJs(`({ stored: localStorage.getItem('batray_location'), loc: window.__batrayTest.locState() })`);
-check('ticked: saved as 1, the fix is read (Chrome allows it already)', st.stored === '1' && st.loc.perm === 'granted' && st.loc.fix && st.loc.fix.lat === 13.75633 && st.loc.fix.lon === 100.50177 && st.loc.fix.acc === 18, st);
-await send('Page.navigate', { url: `${BASE}/batray/?test&n=2` }); await sleep(3000);
-check('after a reload the choice holds and a fix is read at start', !!(await evalJs(`document.getElementById('locKeep').checked && window.__batrayTest.locState().fix`)));
+let st = await evalJs(`({ box: !!document.getElementById('locKeep'), calls: window.__geoCalls, hook: typeof window.__batrayTest.locState })`);
+check('no location checkbox anywhere, and the position is never asked for (an old "on" is ignored)', !st.box && st.calls === 0 && st.hook === 'undefined', st);
 await evalJs(`document.getElementById('share').click(); 1`); await sleep(300);
 await evalJs(`document.getElementById('shareGo').click(); 1`); await sleep(2000);
-let sent = await evalJs(decryptStatus);
-check('the status sent to viewers carries the position (encrypted with the link key)', sent.length >= 1 && sent[0].loc && sent[0].loc.lat === 13.75633 && sent[0].loc.lon === 100.50177, sent.map((x) => x.loc));
-const all = (await evalJs(`window.__batrayTest.logLines().join('\\n')`));
-check('no log line holds the coordinates', !all.includes('13.756') && !all.includes('100.50'), (all.match(/.*13\.756.*|.*100\.50.*/g) || []).slice(0, 3));
-check('...the log says a fix was taken and how good', (await logs('/location: fix ±18 m/')).length >= 1 && (await logs('/status: .*loc=fix ±18 m/')).length >= 1);
-let setup = await evalJs(`(() => { window.__batrayTest.statusTick('tick'); return window.__batrayTest.statusState().last.setup; })()`);
-check('the checklist counts location as on and allowed', setup && !setup.missing.includes('location'), setup);
-
-// ---- 2. turned off: no position anywhere, the checklist names it ----
-await evalJs(`document.getElementById('locKeep').click(); 1`); await sleep(300);
-st = await evalJs(`({ stored: localStorage.getItem('batray_location'), loc: window.__batrayTest.locState() })`);
-check('unticked: saved off, the fix dropped', st.stored === '0' && st.loc.on === false && st.loc.fix === null, st);
-await evalJs(`(() => { window.__batrayTest.statusTick('visible'); return 1; })()`); await sleep(600);
-sent = await evalJs(decryptStatus);
-check('the next status carries no position', sent.length >= 2 && sent[sent.length - 1].loc === null, sent.map((x) => x.loc));
-setup = await evalJs(`window.__batrayTest.statusState().last.setup`);
-check('...and the checklist takes it as the person\'s choice: not missing, "off", no warning for it (0.9.76)', !setup.missing.includes('location') && setup.off.includes('location'), setup);
-await evalJs(`document.getElementById('locKeep').click(); 1`); await sleep(1500);
-check('ticked again: a fix at once (the tap)', !!(await evalJs('window.__batrayTest.locState().fix')));
-// ticked but Chrome blocks it: that is the one case worth the warning
-await send('Browser.setPermission', { origin: BASE, permission: { name: 'geolocation' }, setting: 'denied' }); await sleep(800);
-setup = await evalJs(`(() => { window.__batrayTest.statusTick('tick'); return window.__batrayTest.statusState().last.setup; })()`);
-check('ticked but blocked in Chrome: the checklist says location is missing', setup.missing.includes('location'), { setup, loc: await evalJs('window.__batrayTest.locState()') });
-await send('Browser.setPermission', { origin: BASE, permission: { name: 'geolocation' }, setting: 'granted' }); await sleep(500);
+const sent = await evalJs(decryptStatus);
+check('the status sent to viewers carries no position, and starting a share asks for none', sent.length >= 1 && sent.every((x) => x.loc === null) && (await evalJs('window.__geoCalls')) === 0, sent.map((x) => x.loc));
+check('the log has no location lines', (await logs('/location:/')).length === 0, await logs('/location:/'));
+const setup = await evalJs(`(() => { window.__batrayTest.statusTick('tick'); return window.__batrayTest.statusState().last.setup; })()`);
+check('the checklist has no location row (13 rows)', setup && setup.total === 13 && !setup.missing.includes('location') && !(setup.off || []).includes('location'), setup);
 
 // ---- 3. no file storage: nothing kept, the card greyed with the reason ----
 await send('Page.navigate', { url: `${BASE}/batray/?test&n=3` }); await sleep(2500);

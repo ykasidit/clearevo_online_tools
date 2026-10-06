@@ -135,6 +135,26 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.79 (2026-10-06): the bug button is the debug-log switch; location parked
+
+Owner: "I could not enable debug and location before connecting - people who cannot connect could never enable debug
+logs. Put it in the top bar: the bug button, pressed means debug on, pressed again it pops up and saving is off. Remove
+the location thing for now, it is not used yet."
+- **`#debugBtn`** replaces the toolbar's Copy log (same bug icon): `aria-pressed` + `.on` while the log is kept
+  (`debugButtons(on)` -> {pressed, upload, disabled}); a tap = `setLogKeep(!on, true)` (log line `ui: Debug log button
+  -> on|off`, toast `T.debugOnToast` / `T.debugOffToast`, cookie for Chrome's crash report as before). `#upload` sits
+  next to it and shows only while on; the Debug card keeps Copy / Upload (greyed while off, tooltip names the button).
+  Works on the reader and on viewers, before any BMS is connected. The History card's "keep debug logs" checkbox is gone.
+- **Location parked**: no `#locKeep`, no position read (an old stored '1' is ignored), no checklist row (13 items),
+  the reader sheet shows a location row only if a reader ever sends one. `location-logic.js` and its unit test stay
+  for when there is a way to show it.
+
+Tests: `batray_log.test.js` (debugButtons); browser `batray_log.mjs` (first visit: button up, no Upload, Debug card
+greyed, no checkboxes, no Copy log in the toolbar; press -> pressed, cookie 1, Upload shown, toast; press -> off; press
+-> on; both buttons fit and do not overlap at 500 and 1440 px), `batray_location.mjs` (with Chrome allowing it and an
+old '1' stored: no checkbox, zero geolocation calls, statuses carry no position, no log lines, 13-row checklist),
+`batray_resume` counts 13, `batray_tabs` presses the button.
+
 ## 0.9.78 (2026-10-06): one reader per browser
 
 Owner: "for reader only one can open at a time - ensure that lock is in and tell the user to close all other tabs if

@@ -75,7 +75,9 @@ export function uploadBody({ header, ring, stored, limit = LOG_UPLOAD_MAX }) {
   return { body: head + ring, source: 'ring' };
 }
 /** Copy / Upload while the stored log is off: greyed with a title that says where to turn it on. */
-export function debugButtons(on) { return { disabled: !on }; }
+/** The debug controls (0.9.79): the toolbar's bug button shows the choice (pressed = the log is kept), Upload log
+ *  shows next to it only while kept, and the Debug card's Copy / Upload are disabled while not. */
+export function debugButtons(on) { return { pressed: !!on, upload: !!on, disabled: !on }; }
 
 // ---- the boot trail (0.9.71): index.html's inline script keeps the stages of each page load in BOOT_KEY (and moves
 // the one before into BOOT_PREV_KEY) before any module runs; app.js adds 'module' and 'ready'. A load that never

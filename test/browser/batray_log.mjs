@@ -69,10 +69,14 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(1500);
 await evalJs(`localStorage.removeItem('batray_debuglog'); document.cookie = 'batray_debuglog=; Path=/batray/; Max-Age=0'; 1`);
 await send('Page.navigate', { url: `${BASE}/batray/?test&first=1` }); await sleep(2500);
-const fresh = await evalJs(`({ box: document.getElementById('logKeep').checked, on: window.__batrayTest.logState().on, pending: window.__batrayTest.logState().pending, cookie: document.cookie, copy: document.getElementById('copy').disabled })`);
-check('first visit: "keep debug logs" is unticked, nothing queued for a file, the crash-report cookie says 0, Copy log disabled', !fresh.box && !fresh.on && fresh.pending === 0 && /batray_debuglog=0/.test(fresh.cookie) && fresh.copy, fresh);
-await evalJs(`document.getElementById('logKeep').click(); 1`); await sleep(300);
-check('ticking it keeps the log from then on and sets the cookie to 1', (await evalJs(`localStorage.getItem('batray_debuglog') === '1' && /batray_debuglog=1/.test(document.cookie) && window.__batrayTest.logState().on`)));
+// 0.9.79 (owner): the toolbar's bug button IS the switch - pressed = on - so it works before any BMS is connected
+const btnState = `(() => { const b = document.getElementById('debugBtn'); return { pressed: b.getAttribute('aria-pressed'), on: b.classList.contains('on'), title: b.title, upload: !document.getElementById('upload').hidden, copy2: document.getElementById('copy2').disabled, upload2: document.getElementById('upload2').disabled, keepBox: !!document.getElementById('logKeep'), locBox: !!document.getElementById('locKeep'), copyBtn: !!document.getElementById('copy') }; })()`;
+const fresh = await evalJs(`({ on: window.__batrayTest.logState().on, pending: window.__batrayTest.logState().pending, cookie: document.cookie, btn: ${btnState} })`);
+check('first visit: the Debug log button is up (aria-pressed false), nothing queued, the crash-report cookie says 0, no Upload log in the toolbar, the Debug card buttons greyed', !fresh.on && fresh.pending === 0 && /batray_debuglog=0/.test(fresh.cookie) && fresh.btn.pressed === 'false' && !fresh.btn.on && !fresh.btn.upload && fresh.btn.copy2 && fresh.btn.upload2 && /OFF/.test(fresh.btn.title), fresh);
+check('...no debug or location checkbox in the History card, no Copy log button in the toolbar (replaced by the switch)', !fresh.btn.keepBox && !fresh.btn.locBox && !fresh.btn.copyBtn, fresh.btn);
+await evalJs(`document.getElementById('debugBtn').click(); 1`); await sleep(300);
+const pressed = await evalJs(`({ pref: localStorage.getItem('batray_debuglog'), cookie: document.cookie, on: window.__batrayTest.logState().on, btn: ${btnState}, toast: document.getElementById('toast').textContent, logged: window.__batrayTest.logLines().filter((l) => /ui: Debug log button -> on/.test(l)).length })`);
+check('pressing it (no BMS connected) turns the log on: pressed, the cookie says 1, Upload log appears next to it, the Debug card buttons work, a toast says so', pressed.pref === '1' && /batray_debuglog=1/.test(pressed.cookie) && pressed.on && pressed.btn.pressed === 'true' && pressed.btn.on && pressed.btn.upload && !pressed.btn.copy2 && !pressed.btn.upload2 && /ON/.test(pressed.btn.title) && /Debug log on/.test(pressed.toast) && pressed.logged === 1, pressed);
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 
 const head = await evalJs(`window.__batrayTest.logHeaderLines()`);
@@ -145,15 +149,21 @@ await evalJs('window.__batrayTest.flushLog()'); await sleep(200);               
 ls = await evalJs('window.__batrayTest.logState()'); lf = await evalJs('window.__batrayTest.logList()');
 const mine = lf.filter((f) => f.name.includes(ls.sid));
 check('when a file would pass the limit the next flush rolls to a new timestamp with the same session id, and only the newest files are kept', mine.length >= 2 && lf.length <= 2 && ls.file !== first.name, { ls: { file: ls.file, fileBytes: ls.fileBytes }, lf });
-const noteTxt = await evalJs(`({ note: document.getElementById('stLogSize').textContent, keep: document.getElementById('logKeep').checked, dl: !document.getElementById('logDownload').hidden, del: !document.getElementById('logClear').hidden })`);
+const noteTxt = await evalJs(`({ note: document.getElementById('stLogSize').textContent, keep: document.getElementById('debugBtn').getAttribute('aria-pressed') === 'true', dl: !document.getElementById('logDownload').hidden, del: !document.getElementById('logClear').hidden })`);
 check('the Storage box row says how many debug log files and KB are stored, with Back up and Delete', /^\d+ KB · \d+ files? · this session \d+ KB \(id [a-z0-9]{6}\)$/.test(noteTxt.note) && noteTxt.keep && noteTxt.dl && noteTxt.del, noteTxt);
-// opt-out greys Copy / Upload with a tooltip that says where to turn it back on
-await evalJs(`document.getElementById('logKeep').click(); 1`); await sleep(200);
-const off = await evalJs(`({ pref: localStorage.getItem('batray_debuglog'), cookie: document.cookie, on: window.__batrayTest.logState().on, btns: ['copy', 'upload', 'copy2', 'upload2'].map((id) => [document.getElementById(id).disabled, document.getElementById(id).title]) })`);
-check('unticking "keep debug logs" disables Copy log and Upload log with a tooltip naming the History card, and sets the cookie that stops Chrome\'s crash report', off.pref === '0' && /batray_debuglog=0/.test(off.cookie) && !off.on && off.btns.every(([d, t]) => d && /History card/.test(t)), off);
-await evalJs(`document.getElementById('logKeep').click(); 1`); await sleep(200);
-const on = await evalJs(`({ pref: localStorage.getItem('batray_debuglog'), btns: ['copy', 'upload'].map((id) => [document.getElementById(id).disabled, document.getElementById(id).title]) })`);
-check('ticking it again restores the buttons and their normal titles', on.pref === '1' && on.btns.every(([d, t]) => !d && !/History card/.test(t)), on);
+// pressing it again turns it off: the button pops up, Upload log goes, the Debug card's buttons grey with a tooltip naming the bug button
+await evalJs(`document.getElementById('debugBtn').click(); 1`); await sleep(200);
+const off = await evalJs(`({ pref: localStorage.getItem('batray_debuglog'), cookie: document.cookie, on: window.__batrayTest.logState().on, btn: ${btnState}, cardTitles: ['copy2', 'upload2'].map((id) => document.getElementById(id).title), toast: document.getElementById('toast').textContent })`);
+check('pressed again: off - the button pops up, Upload log hides, the cookie stops Chrome\'s crash report, the Debug card buttons point at the bug button, a toast says so', off.pref === '0' && /batray_debuglog=0/.test(off.cookie) && !off.on && off.btn.pressed === 'false' && !off.btn.on && !off.btn.upload && off.btn.copy2 && off.btn.upload2 && off.cardTitles.every((t) => /Debug log button/.test(t)) && /Debug log off/.test(off.toast), off);
+await evalJs(`document.getElementById('debugBtn').click(); 1`); await sleep(200);
+const on = await evalJs(`({ pref: localStorage.getItem('batray_debuglog'), btn: ${btnState}, cardTitles: ['copy2', 'upload2'].map((id) => document.getElementById(id).title) })`);
+check('pressed once more: on again, Upload log back, the Debug card buttons with their own titles', on.pref === '1' && on.btn.pressed === 'true' && on.btn.upload && !on.btn.copy2 && on.cardTitles.every((t) => !/Debug log button/.test(t)), on);
+for (const [w, h] of [[500, 900], [1440, 900]]) {
+  await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: w < 700 }); await sleep(300);
+  const r = await evalJs(`(() => { const b = document.getElementById('debugBtn').getBoundingClientRect(), u = document.getElementById('upload').getBoundingClientRect(); return { bw: b.width, bh: b.height, uw: u.width, overlap: !(b.right <= u.left || u.right <= b.left), sw: document.documentElement.scrollWidth, vw: innerWidth }; })()`);
+  check(`${w}px: the Debug log button and Upload log are both in the toolbar, not overlapping, page not wider than the screen`, r.bw > 20 && r.bh >= 30 && r.uw > 20 && !r.overlap && r.sw <= r.vw, r);
+}
+await send('Emulation.clearDeviceMetricsOverride');
 // download = a .tar of gzipped log files; delete through a sheet
 await evalJs(`const cou = URL.createObjectURL.bind(URL); URL.createObjectURL = (b) => { window.__logBlob = b; return cou(b); }; HTMLAnchorElement.prototype.click = function () { window.__dlName = this.download; }; 1`);
 const dl = await evalJs('window.__batrayTest.downloadLogs()');
