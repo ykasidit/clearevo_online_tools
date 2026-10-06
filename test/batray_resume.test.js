@@ -71,13 +71,14 @@ test('the checklist: each item checked where the page can, manual steps by the p
   let items = checklist(h46);
   assert.deepEqual(items.map((i) => i.id), ITEMS);
   const st = Object.fromEntries(items.map((i) => [i.id, i.state]));
-  assert.deepEqual(st, { compat: 'ok', bluetooth: 'ok', remember: 'missing', known: 'unknown', notify: 'missing', persist: 'ok', history: 'ok', wake: 'ok', charging: 'ok', resume: 'ok', chromeUpdate: 'todo', chromeBattery: 'todo' });
+  assert.deepEqual(st, { compat: 'ok', bluetooth: 'ok', remember: 'missing', known: 'unknown', notify: 'missing', push: 'unknown', persist: 'ok', history: 'ok', wake: 'ok', charging: 'ok', resume: 'ok', chromeUpdate: 'todo', chromeBattery: 'todo' });
   let sum = checklistSummary(items);
-  assert.deepEqual([sum.ready, sum.total, sum.missing, sum.todo, sum.ok], [7, 12, ['remember', 'notify'], ['chromeUpdate', 'chromeBattery'], false]);
-  assert.equal(checklistLine(items), 'setup: 7/12 ready - missing: remember, notify - not confirmed: chromeUpdate, chromeBattery - cannot tell: known');
-  items = checklist({ ...h46, getDevices: true, knownPermitted: true, notifications: 'granted', done: [...MANUAL] });
+  assert.deepEqual([sum.ready, sum.total, sum.missing, sum.todo, sum.ok], [7, 13, ['remember', 'notify'], ['chromeUpdate', 'chromeBattery'], false]);
+  assert.equal(checklistLine(items), 'setup: 7/13 ready - missing: remember, notify - not confirmed: chromeUpdate, chromeBattery - cannot tell: known, push');
+  items = checklist({ ...h46, getDevices: true, knownPermitted: true, notifications: 'granted', push: true, done: [...MANUAL] });
   sum = checklistSummary(items);
-  assert.deepEqual([sum.ready, sum.ok], [12, true]);
+  assert.deepEqual([sum.ready, sum.ok], [13, true]);
+  assert.equal(checklist({ ...h46, push: false }).find((i) => i.id === 'push').state, 'missing', 'sharing, but the sign-up failed or notifications are off');
   assert.ok(checklistLine(items).endsWith('confirmed by the user: chromeUpdate, chromeBattery'), 'the log says which were the person\'s word');
   const bare = checklistSummary(checklist({}));
   assert.ok(!bare.ok && bare.unknown.includes('charging') && bare.unknown.includes('notify'), 'nothing known is never "ok"');
@@ -94,7 +95,7 @@ test('manual steps: Done toggles and survives storage; the warning sign shows on
   assert.equal(setupWarn({ items, reader: true, running: true }), true);
   assert.equal(setupWarn({ items, reader: true, running: false }), false, 'not before it runs');
   assert.equal(setupWarn({ items, reader: false, running: true }), false, 'never on a viewer');
-  const all = checklist({ compatOk: true, bluetooth: true, getDevices: true, notifications: 'granted', persisted: true, history: 'opfs', wakeLock: true, charging: true, done: [...MANUAL] });
+  const all = checklist({ compatOk: true, bluetooth: true, getDevices: true, notifications: 'granted', push: true, persisted: true, history: 'opfs', wakeLock: true, charging: true, done: [...MANUAL] });
   assert.equal(setupWarn({ items: all, reader: true, running: true }), false, 'nothing left: no sign');
 });
 
@@ -120,8 +121,26 @@ test('the checklist sheet: on Connect "Continue anyway" + Cancel, from the sign 
 test('the status carries the checklist summary to the viewers and the log', () => {
   const sum = checklistSummary(checklist({ compatOk: true, bluetooth: true, getDevices: false }));
   const s = statusSnapshot({ now: 1, setup: sum });
-  assert.deepEqual([s.setup.ready, s.setup.total], [sum.ready, 12]);
-  assert.match(statusLine(s), /setup=\d+\/12 missing:remember/);
+  assert.deepEqual([s.setup.ready, s.setup.total], [sum.ready, 13]);
+  assert.match(statusLine(s), /setup=\d+\/13 missing:remember/);
   const m = sheetModel('reader', { reader: { status: s, live: true, model: null } }, I18N.en);
-  assert.ok(m.rows.some(([k, v]) => k === 'Reader setup' && v.startsWith(`${sum.ready} of 12 ready · not ready: `) && v.includes('Chrome remembers the BMS')), JSON.stringify(m.rows));
+  assert.ok(m.rows.some(([k, v]) => k === 'Reader setup' && v.startsWith(`${sum.ready} of 13 ready · not ready: `) && v.includes('Chrome remembers the BMS')), JSON.stringify(m.rows));
+});
+
+test('the "reader stopped" push: sign up only while sharing with notifications allowed, once per room, paced after a failure', async () => {
+  const { pushDecision, pushState, b64uBytes, PUSH_RETRY_MS } = await import('../public/batray/push-logic.js');
+  const base = { supported: true, permission: 'granted', sharing: true, room: 'R1', subscribedRoom: null };
+  assert.equal(pushDecision(base).action, 'subscribe');
+  assert.equal(pushDecision({ ...base, supported: false }).why, 'this browser has no push');
+  assert.equal(pushDecision({ ...base, sharing: false }).why, 'not sharing');
+  assert.equal(pushDecision({ ...base, permission: 'default' }).why, 'notifications default');
+  assert.equal(pushDecision({ ...base, subscribedRoom: 'R1' }).why, 'set up');
+  assert.equal(pushDecision({ ...base, subscribedRoom: 'R0' }).action, 'subscribe', 'a new room needs the endpoint again');
+  assert.equal(pushDecision({ ...base, failedAt: 1000, now: 1000 + PUSH_RETRY_MS - 1 }).why, 'waiting after a failure');
+  assert.equal(pushDecision({ ...base, failedAt: 1000, now: 1000 + PUSH_RETRY_MS }).action, 'subscribe');
+  assert.equal(pushState({ sharing: false, permission: 'granted', subscribed: false }), null, 'cannot tell before sharing');
+  assert.equal(pushState({ sharing: true, permission: 'granted', subscribed: true }), true);
+  assert.equal(pushState({ sharing: true, permission: 'default', subscribed: false }), false);
+  const key = b64uBytes('BPm3-_Yz' + 'A'.repeat(80));
+  assert.ok(key instanceof Uint8Array && key[0] === 0x04, 'base64url with - and _, unpadded');
 });

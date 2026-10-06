@@ -20,6 +20,7 @@ import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fm
 import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel } from './status-logic.js';
 import { parseIntent, intentEvent, resumePlan, resumeLine, RESUME_KEY, RESUME_ON_KEY } from './resume-logic.js';
 import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggleDone, SETUP_DONE_KEY } from './setup-logic.js';
+import { pushDecision, pushState, b64uBytes } from './push-logic.js';
 import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
@@ -40,7 +41,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.72';
+export const APP_VERSION = '0.9.73';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -1444,6 +1445,7 @@ function setupCheck() {
     knownPermitted: saved && setupS.permitted !== null ? setupS.permitted.includes(saved.id) : null,
     notifications: typeof Notification === 'undefined' ? 'none' : Notification.permission, persisted: hist.persistent, history: histS.backend,
     wakeLock: 'wakeLock' in navigator, charging: battNow ? !!battNow.charging : null, resumeOn: resumeOn(), done: setupS.done,
+    push: pushState({ sharing: !!publisher, permission: typeof Notification === 'undefined' ? 'none' : Notification.permission, subscribed: !!(publisher && pushS.room === publisher.room) }),
   });
   const line = checklistLine(items);
   if (line !== setupS.line && !viewMode) { setupS.line = line; log(line); }
@@ -1489,6 +1491,41 @@ $('setupOpen').addEventListener('click', openChecklist);
   const cb = $('autoResume'); cb.checked = resumeOn();
   cb.addEventListener('change', () => { try { localStorage.setItem(RESUME_ON_KEY, cb.checked ? '1' : '0'); } catch { /* no storage */ } log(`resume after a reopen: ${cb.checked ? 'on' : 'off'}`); setupCheck(); renderSetupWarn(); });
 })();
+
+// ---- the "reader stopped" push (0.9.73, push-logic.js): while sharing with notifications allowed, this phone's push
+// endpoint goes to the room; if the page stays offline 3 min the relay sends one push with no data and the service
+// worker shows the words left here in the cache. A tap opens the reader page, which resumes after its countdown.
+const pushS = { room: null, failedAt: 0, lastWhy: '', host: '' };
+async function syncPush(why) {
+  if (viewMode) return;
+  const d = pushDecision({ supported: 'serviceWorker' in navigator && typeof PushManager !== 'undefined', permission: typeof Notification === 'undefined' ? 'none' : Notification.permission, sharing: !!(publisher && publisher.room), room: publisher ? publisher.room : null, subscribedRoom: pushS.room, failedAt: pushS.failedAt, now: Date.now() });
+  if (d.action !== 'subscribe') { if (d.why !== pushS.lastWhy && d.why !== 'set up') { pushS.lastWhy = d.why; log(`push: not set up (${d.why})`); } return; }
+  const pub = publisher;
+  try {
+    const reg = await navigator.serviceWorker.register('/batray/sw.js'); await navigator.serviceWorker.ready;
+    const r = await fetch('/batray/api/push/key'); const k = await r.json().catch(() => ({}));
+    if (!k.key) throw new Error(`no server key (${r.status})`);
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uBytes(k.key) });
+    if (publisher !== pub) return;                                     // the share stopped meanwhile
+    const cfg = { title: T.pushTitle(shareS.name), body: T.pushBody, url: '/batray/?from=push' };
+    await (await caches.open('batray-push')).put('/batray/push-config', new Response(JSON.stringify(cfg), { headers: { 'Content-Type': 'application/json' } }));
+    const res = await fetch(`/batray/api/room/${pub.room}/push?token=${pub.pubToken}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) });
+    if (!res.ok) throw new Error(`relay ${res.status}`);
+    if (publisher !== pub) return;
+    pushS.room = pub.room; pushS.failedAt = 0; pushS.lastWhy = ''; pushS.host = new URL(sub.endpoint).host;
+    log(`push: set up (${why}) - if this page stays offline 3 min, ${pushS.host} wakes Chrome here with "${cfg.title}"`);
+    setupCheck();
+  } catch (e) { pushS.failedAt = Date.now(); log(`push: setup failed (${why}): ${e.message}`); }
+}
+/** The person stopped sharing: the room forgets this phone's endpoint (no "stopped" push for a deliberate stop). */
+function dropPush(room, token) {
+  if (!room || pushS.room !== room) return;
+  pushS.room = null;
+  void fetch(`/batray/api/room/${room}/push?token=${token}`, { method: 'DELETE' }).catch(() => {});
+  log('push: the room forgets this phone (sharing stopped)');
+}
+if (new URLSearchParams(location.search).get('from') === 'push') log('start: opened from the "reader stopped" notification');
 
 // Connect a BMS: into `p` (reconnect of a known pack) or a new pack (+ Add BMS).
 async function startConnect(p) {
@@ -1630,7 +1667,7 @@ async function beginShare() {
   let wasLive = false;
   publisher = new Publisher({ log, onState: (s) => {
     renderLiveChip(); void syncWake(); watchReach(s);
-    if (s.live && !wasLive) { statusS.sent = null; statusTick('online'); }   // each time the socket comes up (first open, every reopen): the room gets a fresh status
+    if (s.live && !wasLive) { statusS.sent = null; statusTick('online'); void syncPush('share'); }   // each time the socket comes up (first open, every reopen): the room gets a fresh status, and the push endpoint
     wasLive = s.live;
     const v = viewersChange(shareS, s.viewers);
     if (v && alerts) alerts.notify('viewers', v.joined ? T.evViewerJoined : T.evViewerLeft, T.evWatching(v.viewers));
@@ -1718,6 +1755,7 @@ async function stopShare(why = 'chip') {
   log(`share: stop (${why})`);
   clearInterval(publisher.snapshotTimer);
   const pub = publisher; publisher = null; shareStopped(shareS); histS.xfer = null; statusS.sent = null;
+  dropPush(pub.room, pub.pubToken);
   intentNote('share-off');   // the next share sends its status at once
   renderLiveChip(); void syncWake();
   await pub.stop();
@@ -2444,6 +2482,7 @@ setInterval(() => {
   const rate = histS.hbDay === histS.day && histS.hbRows !== undefined ? `${histS.todayRows - histS.hbRows}/min` : '-'; histS.hbDay = histS.day; histS.hbRows = histS.todayRows;
   if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) void syncWake();   // watchdog
   if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now() }).action === 'request') void requestHistory();
+  if (publisher && pushS.room !== publisher.room) void syncPush('minute');   // notifications allowed later, or a failed sign-up retried (push-logic paces it)
   log(hist.statsLine()); hist.statsReset(Date.now());
   log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} hist=${histS.backend}/${histS.days.length}d/${histS.todayRows}r/${rate}/${histS.contig}c/${pendingRows()}pend${histS.gap ? '/' + histS.gap : ''}/${Math.round(histS.usage / 1048576)}of${Math.round(histS.quota / 1048576)}MB${histS.xfer ? '/xfer' : ''} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
 }, 60000);

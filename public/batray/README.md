@@ -135,6 +135,29 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.73 (2026-10-06): "reader stopped - tap to reopen", a Web Push from the relay
+
+- **Page** (`push-logic.js` decides, app.js `syncPush`): while sharing, with Chrome notifications allowed, the reader
+  registers sw.js, subscribes (`userVisibleOnly`, the relay's VAPID public key from `GET /batray/api/push/key`),
+  leaves the notification's words in the cache (`batray-push` / `/batray/push-config`: title with the channel name,
+  body, `/batray/?from=push`) and gives the room its endpoint (`PUT /room/:id/push?token=PUB`). Each time the share's
+  socket comes up, and from the minute heartbeat while not set up (a failure waits `PUSH_RETRY_MS` 5 min). A share
+  stopped by the person deletes it (`DELETE`): no push for a deliberate stop. Checklist row `push` (13 items now).
+- **sw.js**: `push` shows the cached words (tag `batray-reader-stopped`, requireInteraction); a tap on it focuses a
+  reader page (not a `view=` one) or opens `/batray/?from=push`, which logs that and runs the normal resume countdown.
+- **Relay** (`push.rs`, pure + tested; Room): the endpoint must be a push service (FCM, Mozilla, Apple, WNS - the
+  room never posts anywhere else); on the publisher's socket end the room sets an alarm for `PUSH_AFTER_MS` (3 min);
+  the alarm sends ONE push with no payload per outage (`push_due`, `pushedFor` = the end it was sent for), signed
+  with VAPID (ES256 JWT over the push service's origin, `p256` crate), TTL 1 day, Urgency high; a 404 / 410 forgets
+  the subscription. The key is the Worker secret `VAPID_PRIVATE` (the 32-byte scalar, base64url; a copy in the
+  private site repo's `_private/`).
+
+Tests: push-logic in `batray_resume.test.js`; browser `batray_push.mjs` (sign-up over a stubbed push service and
+relay, the REAL service worker shows the notification from `ServiceWorker.deliverPushMessage`, a stop deletes the
+endpoint, `?from=push` logged); relay unit tests and a live test that closes a reader socket, waits for the alarm and
+checks FCM accepted the VAPID signature (it refuses only the made-up token). UNVERIFIED on a phone: the push arriving
+on the owner's Android after a real outage.
+
 ## 0.9.72 (2026-10-06): a reopened reader resumes after a 30 s countdown; the reader setup checklist
 
 - **Resume** (`resume-logic.js`): the intent - what the person last asked for - is kept in localStorage `batray_resume`
