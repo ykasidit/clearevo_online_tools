@@ -66,7 +66,7 @@ export default {
       'history-worker.js': [2, 'the sync access handle waits'],
     },
     // timers belong to sync.js (sleep / select); a shell that sets its own is a lifecycle written as callbacks
-    timers: { 'app.js': [32, 'the app shell: round 3'], 'tv.js': [2, 'encoder cadence and upload retry: round 2'], 'jkbms.js': [3, 'GATT attempt pacing and the silence nudge'], 'history.js': [2, 'the per-call deadline and restart pacing'], 'history-worker.js': [2, 'pool retry pacing'], 'alerts.js': [1, 'the evaluator tick'] },
+    timers: { 'app.js': [32, 'the app shell: round 3'], 'tv.js': [2, 'encoder cadence and upload retry: round 2'], 'jkbms.js': [4, 'GATT attempt pacing, the silence nudge, the stuck-connect watch (0.9.81: a connect the browser cannot finish)'], 'history.js': [2, 'the per-call deadline and restart pacing'], 'history-worker.js': [2, 'pool retry pacing'], 'alerts.js': [1, 'the evaluator tick'] },
     // innerHTML built with interpolated values: BatRay's are language-table strings and numbers, never a BMS string
     innerHtml: { 'app.js': [6, 'sheet and chip templates filled from T (the language table) and formatted numbers; the BMS name goes through textContent'] },
     logic: (f) => /-logic\.js$/.test(f) || f === 'trend.js',          // the pure modules

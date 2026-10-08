@@ -42,7 +42,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.80';
+export const APP_VERSION = '0.9.81';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -299,6 +299,8 @@ class Pack {
       if (this.isActive) { setStatus(() => (stalled ? T.stalled(this.label, age) : T.disconnectedFrom(this.label)), 'bad'); $('oneApp').hidden = true; $('btNote').hidden = true; }
       connAct(this, 'gatt-disconnected');
     });
+    b.addEventListener('stuck', () => connAct(this, 'connect-stuck'));       // jkbms STUCK_MS: Bluetooth was off when the connect ran
+    b.addEventListener('settled', () => connAct(this, 'connect-settled'));
     b.addEventListener('data', (e) => this.onData(e.detail));
     b.addEventListener('device', (e) => {
       this.onInfo(e.detail);
@@ -1376,6 +1378,10 @@ function connAct(p, ev, inp = {}) {
     case 'disconnect-gatt': clearConnTimers(p); p.countThunk = null; try { if (p.device && p.device.gatt.connected) p.device.gatt.disconnect(); } catch { /* nothing to drop */ } break;
     case 'disconnect-bms': clearConnTimers(p); p.countThunk = null; p.bms.disconnect(); break;
     case 'drop-link': p.bms.drop(`no data for ${d.ageS} s`); break;
+    case 'stuck':                                                             // only closing Chrome completely clears it: say so
+      clearConnTimers(p); p.countThunk = null; p.offlineThunk = () => T.btStuckShort;
+      if (p.isActive) setStatus(() => T.btStuckShort, 'bad');
+      void openSheet('btStuck'); break;
     default: break;
   }
   if (p.isActive) refreshCard();

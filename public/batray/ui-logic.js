@@ -192,6 +192,10 @@ export function sheetModel(kind, ctx, T) {
       m.actions = [{ id: 'ok', label: T.close, primary: true }];
       break;
     }
+    case 'btStuck':                                      // a connect the browser cannot finish (0.9.81): Bluetooth was off when it ran
+      m.title = T.btStuckTitle; m.tone = 'act'; m.lead = T.btStuckLead;
+      m.actions = [{ id: 'ok', label: T.close, primary: true }];
+      break;
     case 'compat': {                                     // the browser gate (owner ask 2026-10-05): why it cannot run, where to update
       const c = ctx.compat; if (!c) break;
       const name = T.compatName[c.browser.name] || T.compatName.unknown;

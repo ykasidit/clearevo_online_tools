@@ -384,6 +384,11 @@ export function feedFrames(buf, chunk) {
 // means the link is gone even while the GATT flag still says connected. Pure
 // so both rules stay under test.
 export const STALE_MS = 12000;
+// A gatt.connect() still pending this long was issued with Bluetooth off (or still turning on): Android itself settles
+// a direct connect within ~30 s when the adapter is on. Chrome Android then holds a null GATT handle for the device
+// for the life of the browser process (crash 2026-10-07, Chromium BluetoothDeviceWrapper.connectGatt wraps Android's
+// null without a check): any disconnect() on it, or the handle's own eviction, kills the whole browser.
+export const STUCK_MS = 45000;
 
 /** Has this link gone quiet for longer than a working link ever does? */
 export function isStale(lastFrameAt, now = Date.now(), limitMs = STALE_MS) {
@@ -510,12 +515,12 @@ export class JkBms extends EventTarget {
     return navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [JK_SERVICE] });
   }
 
-  // Connect with a real timeout: on expiry gatt.disconnect() is called, which
-  // aborts the pending connect inside the browser (a merely abandoned promise
-  // leaves it queued, and every later connect on the same device - even a
-  // fresh chooser pick - waits behind it). A stale attempt that resolves after
-  // a newer one started is dropped, not reported as connected.
-  async connect(device, { timeoutMs = 20000 } = {}) {
+  // Connect with a timeout on OUR side only. The pending browser connect is never cancelled with gatt.disconnect():
+  // that call crashes Chrome Android when the connect ran with Bluetooth off (see STUCK_MS). The abandoned promise
+  // stays queued and later connects on the device wait behind it - with Bluetooth on at most ~30 s, until Android
+  // settles it; with Bluetooth off for ever, which _gattConnect reports as 'stuck'. A stale attempt that resolves
+  // after a newer one started is dropped, not reported as connected.
+  async connect(device, { timeoutMs = 20000, stuckMs = STUCK_MS } = {}) {
     const token = (this._attempt = (this._attempt || 0) + 1);
     const stale = () => this._attempt !== token;
     this.device = device;
@@ -535,15 +540,12 @@ export class JkBms extends EventTarget {
 
     let timer = null;
     const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        try { device.gatt.disconnect(); } catch { /* nothing to abort */ }
-        reject(new Error(`no answer in ${Math.round(timeoutMs / 1000)} s`));
-      }, timeoutMs);
+      timer = setTimeout(() => reject(new Error(`no answer in ${Math.round(timeoutMs / 1000)} s`)), timeoutMs);
     });
     const work = (async () => {
       this._log(`connecting to ${device.name || device.id}`);
       const t0 = Date.now();
-      const server = await device.gatt.connect();
+      const server = await this._gattConnect(device, stuckMs);
       if (stale()) throw new Error('superseded');
       this._log(`gatt: server connected in ${Date.now() - t0} ms`);
       const service = await server.getPrimaryService(JK_SERVICE);
@@ -565,6 +567,7 @@ export class JkBms extends EventTarget {
       this._rxOther = 0;
       await this._write(buildCommand(CMD_DEVICE_INFO));
     })();
+    work.catch(() => {});                                 // a late outcome of a timed-out attempt is nobody's business
     try {
       await Promise.race([work, timeout]);
     } catch (err) {
@@ -578,6 +581,29 @@ export class JkBms extends EventTarget {
     this._startNudge();
     this._emit('connected', device);
     void this._handshake(token);
+  }
+
+  /** gatt.connect() watched for the browser hang: 'stuck' once when the oldest unsettled connect passes stuckMs
+   *  (later ones queue behind it in the browser), 'settled' if a stuck one settles after all (a slow stack, not a
+   *  dead handle). Only closing the browser completely clears a stuck one: app.js tells the user. */
+  async _gattConnect(device, stuckMs) {
+    const p = device.gatt.connect();
+    this._pending = (this._pending || 0) + 1;
+    if (!this._stuckTimer && !this._stuck) {
+      this._stuckTimer = setTimeout(() => {
+        this._stuckTimer = null; this._stuck = true;
+        this._log(`gatt: connect still pending after ${Math.round(stuckMs / 1000)} s - it ran with Bluetooth off; only closing the browser clears it`);
+        this._emit('stuck');
+      }, stuckMs);
+    }
+    try {
+      return await p;
+    } finally {
+      if (--this._pending === 0) {
+        if (this._stuckTimer) { clearTimeout(this._stuckTimer); this._stuckTimer = null; }
+        if (this._stuck) { this._stuck = false; this._log('gatt: the pending connect settled after all'); this._emit('settled'); }
+      }
+    }
   }
 
   /** After the device-info answer (or HANDSHAKE_WAIT_MS without it) ask for

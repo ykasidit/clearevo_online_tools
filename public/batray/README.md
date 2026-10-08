@@ -135,6 +135,29 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.81 (2026-10-08): a reconnect with Bluetooth off no longer crashes Chrome - it says what to do
+
+- **Why** (owner's reader phone, 2026-10-07 21:36, Chrome 154 on Android 14): airplane mode was toggled while the
+  link was down; the 10 s auto reconnect ran `gatt.connect()` while Bluetooth was still coming up; Android's
+  `connectGatt` returns null when the adapter is not ON (every release, 9 through 16), and Chromium's
+  `BluetoothDeviceWrapper.connectGatt` wraps that null without a check; 15 s later our connect timeout called
+  `gatt.disconnect()` to cancel the pending connect and Chrome died with a NullPointerException in the browser
+  process (dropbox `system_app_crash`, `ChromeBluetoothDevice.disconnectGatt`). Same code in Chromium main today. The
+  page has no way to see adapter power on Chrome Android: `getAvailability()` is presence (always true),
+  `availabilitychanged` is not implemented, `getDevices` / `watchAdvertisements` are absent.
+- **jkbms.js**: the connect timeout rejects on our side only and never cancels the browser's pending connect (the
+  one unguarded `gatt.disconnect()` is gone; every other one already checked `gatt.connected`, false while pending).
+  `_gattConnect` watches the oldest pending connect: past `STUCK_MS` (45 s, Android itself settles a connect within
+  ~30 s with the adapter on) it emits `stuck`; `settled` if it ends after all. Retries queue behind the pending one in
+  the browser, so they stay harmless.
+- **conn-logic.js** phase `stuck`: no retries, no countdown, a tap shows the sheet again; `gatt-connected` or
+  `connect-settled` leaves it. **ui-logic.js** sheet `btStuck`: close all Chrome tabs (or the multitask button and
+  close Chrome), then open BatRay again with Bluetooth on - a reload or a new tab talks to the same dead handle, and
+  Chrome crashes by itself later when that handle is evicted or the last Web Bluetooth tab closes. Tests in `batray_conn.test.js`,
+  `batray_jkbms.test.js`.
+- Upstream: crbug draft with the two-line fix (`BluetoothDeviceWrapper.connectGatt` returns null when Android does,
+  `createGattConnectionImpl` reports GATT_FAILURE) - the only thing that removes the crash for good.
+
 ## 0.9.80 (2026-10-06): no location at all; the reader phone's charger
 
 - **Location removed** (owner: "drop all location stuff - more coherent and trustable; we can do it when we have a map

@@ -19,7 +19,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCommand, decodeCellInfo, decodeDeviceInfo, decodeSettings, errorLabels, feedFrames, swMajor, JkBms,
-  isStale, STALE_MS, queuedAfterGap, linkGone, nudgeDecision, NUDGE_MS, HANDSHAKE_WAIT_MS,
+  isStale, STALE_MS, queuedAfterGap, linkGone, nudgeDecision, NUDGE_MS, HANDSHAKE_WAIT_MS, STUCK_MS,
   startupAskDecision, STARTUP_QUICK_MS, STARTUP_QUICK_ASKS } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
 
@@ -520,4 +520,23 @@ test('handshake: no device-info answer -> cell-info asked anyway after HANDSHAKE
   await new Promise((r) => { setTimeout(r, HANDSHAKE_WAIT_MS + 150); });
   assert.deepEqual(writes, [0x97, 0x96], 'asked after the wait');
   b.drop('test end');
+});
+
+test('2026-10-07 crash: a timed-out connect is never cancelled with gatt.disconnect(); one still pending past stuckMs emits stuck, and settled if it ends after all', async () => {
+  assert.equal(STUCK_MS, 45000, 'Android settles a direct connect at ~30 s with the adapter on: a connect pending longer ran with it off');
+  const b = new JkBms();
+  const seen = []; b.addEventListener('stuck', () => seen.push('stuck')); b.addEventListener('settled', () => seen.push('settled'));
+  let disconnects = 0; const resolvers = [];
+  const device = { name: 'offBt', gatt: { connected: false, connect: () => new Promise((r) => { resolvers.push(r); }), disconnect() { disconnects++; } }, addEventListener() {} };
+  await assert.rejects(b.connect(device, { timeoutMs: 40, stuckMs: 150 }), /no answer in 0 s/);
+  assert.equal(disconnects, 0, 'the pending connect is left alone: disconnect() on it crashes Chrome Android');
+  await assert.rejects(b.connect(device, { timeoutMs: 40, stuckMs: 150 }), /no answer/);      // the retry queues behind it, no second watch
+  assert.deepEqual(seen, [], 'not stuck yet');
+  await new Promise((r) => { setTimeout(r, 200); });
+  assert.deepEqual(seen, ['stuck'], 'one stuck for the oldest pending connect, not one per retry');
+  assert.equal(disconnects, 0);
+  for (const r of resolvers) r({ getPrimaryService: async () => { throw new Error('gone'); } });   // the stack answers after all: the browser settles every queued connect together
+  await new Promise((r) => { setTimeout(r, 20); });
+  assert.deepEqual(seen, ['stuck', 'settled'].concat(seen.slice(2)), 'settled once the oldest settles');
+  assert.equal(seen.filter((x) => x === 'settled').length, 1);
 });

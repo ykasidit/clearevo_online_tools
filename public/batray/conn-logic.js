@@ -21,7 +21,9 @@
 // for STALE_MS is gone whatever gatt.connected says (2026-09-16); a tap while a
 // countdown is pending must make exactly one attempt (2026-09-17).
 //
-// phases: idle | choosing | connecting | connected | countdown
+// phases: idle | choosing | connecting | connected | countdown | stuck
+// stuck (0.9.81): a gatt.connect() the browser cannot finish (it ran with Bluetooth off, jkbms STUCK_MS); nothing
+// but closing the browser clears it, so no retries, no countdown; a tap shows the sheet again.
 
 export const CONNECT_TRIES = 3, CONNECT_GAP_MS = 1500, CONNECT_S = 15;
 export const RECONNECT_S = { auto: 10, chooser: 5, stalled: 3, adapter: 3 };
@@ -41,6 +43,9 @@ function startCountdown(cs, seconds) {
 
 /** One event in, one decision out. inp: { autoRe, now, msg, ageS } as the event needs. */
 export function connEvent(cs, ev, inp = {}) {
+  if (cs.phase === 'stuck' && ev !== 'gatt-connected' && ev !== 'connect-settled' && ev !== 'disconnect') {
+    return /^(tap-connect|known|reconnect-now)$/.test(ev) ? { action: 'stuck', why: 'tap while a connect is stuck in the browser' } : { action: 'ignore', why: 'a connect is stuck in the browser' };
+  }
   switch (ev) {
     case 'tap-connect':                                   // Connect, Connect again, Add BMS
       if (cs.phase === 'connecting') return { action: 'ignore', why: 'an attempt is in progress' };
@@ -104,6 +109,14 @@ export function connEvent(cs, ev, inp = {}) {
     case 'auto-off':                                      // auto reconnect unticked
       if (cs.phase === 'countdown') { cs.phase = 'idle'; cs.count = 0; return { action: 'idle' }; }
       return { action: 'noop' };
+    case 'connect-stuck':                                 // jkbms 'stuck': the browser holds a dead connect for this device
+      cs.phase = 'stuck'; cs.count = 0; cs.attempt = 0; cs.connectedAt = null;
+      return { action: 'stuck' };
+    case 'connect-settled':                               // jkbms 'settled': it was only slow; back to the normal flow
+      if (cs.phase !== 'stuck') return { action: 'noop' };
+      cs.phase = 'idle';
+      if (inp.autoRe && cs.hasDevice && !cs.userDisconnect) return startCountdown(cs, RECONNECT_S.auto);
+      return { action: 'idle' };
     case 'adapter-available':                             // Bluetooth came back: do not wait the full countdown
       if (cs.phase === 'countdown') { cs.count = RECONNECT_S.adapter; return { action: 'countdown', seconds: cs.count }; }
       return { action: 'noop' };

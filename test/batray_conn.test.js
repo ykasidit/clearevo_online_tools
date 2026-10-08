@@ -143,3 +143,25 @@ test('the remembered BMS: a green Connect-to-NAME button only while the browser 
   for (let i = 0; i < 3; i++) connEvent(cs, 'attempt-failed', { msg: 'Connection attempt failed', autoRe: true, now: 1000 * (i + 1) });
   assert.equal(cs.phase, 'countdown'); assert.equal(cs.count, RECONNECT_S.auto, 'a known device counts down the auto 10 s, not the chooser 5 s');
 });
+
+test('2026-10-07 crash: a connect that ran with Bluetooth off is stuck in the browser - no retries, no countdown, a tap shows the sheet again; connected or settled clears it', () => {
+  const cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked');
+  assert.deepEqual(connEvent(cs, 'connect-stuck', { autoRe: true }), { action: 'stuck' });
+  assert.equal(cs.phase, 'stuck'); assert.equal(cs.attempt, 0);
+  assert.equal(A(cs, 'countdown-tick'), 'ignore'); assert.equal(A(cs, 'connect-tick'), 'ignore'); assert.equal(A(cs, 'attempt-failed', { msg: 'no answer in 15 s' }), 'ignore');
+  assert.equal(A(cs, 'adapter-available'), 'ignore'); assert.equal(A(cs, 'gatt-disconnected'), 'ignore');
+  assert.equal(A(cs, 'tap-connect'), 'stuck', 'Connect again: the sheet, not the chooser'); assert.equal(A(cs, 'known'), 'stuck'); assert.equal(A(cs, 'reconnect-now'), 'stuck');
+  assert.equal(cs.phase, 'stuck');
+  assert.deepEqual(connCard(cs, { gattConnected: false, hasData: false }), { offline: true, loading: false, countdown: false, idle: true, reNow: false, disconnectEnabled: false });
+  assert.equal(packChipState(cs, false, false), 'offline'); assert.equal(wakeWantedByConn(cs, false), false, 'nothing to keep the screen on for');
+  // it was only a slow stack: settled -> the auto countdown as after any drop
+  assert.deepEqual(connEvent(cs, 'connect-settled', { autoRe: true }), { action: 'countdown', seconds: RECONNECT_S.auto });
+  assert.equal(A(cs, 'connect-settled'), 'noop', 'settled while not stuck is nothing');
+  // a stuck connect that connects after all is simply connected
+  A(cs, 'countdown-tick'); cs.count = 1; A(cs, 'countdown-tick'); A(cs, 'connect-stuck');
+  assert.equal(A(cs, 'gatt-connected', { now: 9000 }), 'connected'); assert.equal(cs.phase, 'connected');
+  // settled with auto reconnect off: idle
+  A(cs, 'connect-stuck'); assert.equal(connEvent(cs, 'connect-settled', { autoRe: false }).action, 'idle');
+  // the Disconnect button still works while stuck (its GATT call is guarded by gatt.connected in the app)
+  A(cs, 'connect-stuck'); assert.equal(A(cs, 'disconnect'), 'disconnect-bms'); assert.equal(cs.phase, 'idle');
+});
