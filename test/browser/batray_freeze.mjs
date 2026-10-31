@@ -54,7 +54,7 @@ const FAKE = `
   char.writeValueWithoutResponse = async () => {};
   const gatt = {
     connected: false,
-    connect: async () => { window.__connects = (window.__connects || 0) + 1; if (window.__failConnects > 0) { window.__failConnects--; throw new Error('Connection Error: Connection attempt failed.'); } gatt.connected = true; return { getPrimaryService: async () => ({ getCharacteristic: async () => char }) }; },
+    connect: async () => { window.__connects = (window.__connects || 0) + 1; if (window.__failConnects > 0) { window.__failConnects--; throw new Error('Connection Error: Connection attempt failed.'); } gatt.connected = true; return { getPrimaryService: async () => { if (window.__serviceMs) await new Promise((r) => { setTimeout(r, window.__serviceMs); }); if (!gatt.connected) throw new Error('GATT Server is disconnected. Cannot retrieve services.'); return { getCharacteristic: async () => char }; } }; },
     disconnect: () => { if (!gatt.connected) return; gatt.connected = false; window.__dev.dispatchEvent(new Event('gattserverdisconnected')); },
   };
   const dev = new EventTarget(); dev.id = 'fake-1'; dev.name = 'n11'; dev.gatt = gatt;
@@ -154,6 +154,22 @@ await notify(OWNER_32S_CELL);
 await sleep(5000);
 s = await state();
 check('...and stays up once its first frame arrives', s.gatt === true && /^connected/i.test(s.stat), s);
+
+// --- the seahut reader's log 2026-10-29: 2561 GATT connects in 13.5 h, 1760 dropped by our own watchdog during service
+// discovery (median 1.7 s after the server connected), judged by the previous link's last frame. Here discovery takes
+// 9 s (two watchdog ticks) and the last frame is 14 s old when the attempt starts: the attempt must own its link. ---
+await evalJs(`window.__dev.gatt.disconnect(); 1`); await sleep(500);
+await evalJs(`document.getElementById('cancelRe').click(); 1`);
+await sleep(STALE_MS + 2000);                                              // the last frame is now older than a live link ever goes quiet
+const wd0 = await evalJs(`({ connects: window.__connects, lines: window.__batrayTest.logLines().length })`);
+await evalJs(`window.__serviceMs = 9000; document.getElementById('connectAgain').click(); 1`);
+await sleep(10500);
+await evalJs(`window.__serviceMs = 0; 1`);
+await notify(OWNER_32S_CELL); await sleep(500);
+s = await state();
+const wd = await evalJs(`({ connects: window.__connects, lines: window.__batrayTest.logLines().slice(${wd0.lines}).filter((l) => /no data for|link-stalled|drop-link|dropping link/.test(l)), phase: window.__batrayTest.connState().phase })`);
+check('a 9 s service discovery after a stale link is not dropped by the watchdog: one attempt, connected', wd.connects - wd0.connects === 1 && wd.lines.length === 0 && wd.phase === 'connected' && s.gatt === true && /^connected/i.test(s.stat), { ...wd, wd0, s });
+await notify(OWNER_32S_CELL); await sleep(300);
 // the History card appears once the pack has been read for 30 s (frames above span more than that); uPlot draws into its own canvas
 const tr = await evalJs(`({ shown: !document.getElementById('trendCard').hidden, energy: document.getElementById('trendEnergy').textContent, w: (document.querySelector('#trend canvas') || {}).width || 0 })`);
 check('the History card shows with an energy line once 30 s of readings exist', tr.shown && /charged .* · discharged/.test(tr.energy) && tr.w > 100, tr);

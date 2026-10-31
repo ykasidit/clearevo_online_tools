@@ -135,6 +135,37 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.82 (2026-10-31): the stall watchdog no longer kills the link a reconnect is still building
+
+- **Why** (owner's seahut reader log, 2026-10-29 20:53 to 10-30 10:28 UTC, 0.9.80, Chrome 156 on Android 10): "very
+  frequently connecting and reconnecting". In 13.5 h the phone got a GATT connection to the BMS 2561 times; 2 of them
+  got as far as the service. 1760 were dropped by BatRay's own stall watchdog (every 4 s) a median 1.7 s after the
+  server connected (p10 0.5 s, p90 3.7 s), while service discovery was still running (1.4-1.8 s when it worked).
+  The watchdog judged the half-built link by the last frame of the link before - 34 h old - because the connect time
+  it compares with had been cleared by the earlier stall and is only set once the attempt finishes. A drop also
+  started a reconnect countdown beside the attempt still in flight (`attempt-failed -> ignore (not connecting)` 2220
+  times). Once in that state, a link survived only when no watchdog tick fell inside its discovery window. The other
+  6509 failures are Android's own `Connection attempt failed` (status 133): the radio, not this code.
+- **One owner per link**: while an attempt runs, the link it builds is the attempt's alone; it ends it itself (ok,
+  failed, its 15 s timeout). `conn-logic.js`: `link-stalled` acts only in phase connected on a link with its own
+  connect time (`watchDecision()` for the watchdog), an attempt starts with no connect time, and `gatt-disconnected`
+  while choosing or connecting is left to the attempt (its GATT call rejects and `attempt-failed` retries or counts
+  down). `jkbms.js`: `linkGone()` never judges a link without a connect time; `connect()` does not report a link that
+  dropped during setup as connected.
+- **The debug log lost lines**: lines logged while a log write was in flight were emptied with the batch after it
+  (`logTake()` now takes the batch before the write). The same reader log lacked exactly the lines that showed which
+  flow started an attempt.
+- **A reload kept its own store only by luck** (0.9.77 bug, found by the resume browser test reloading 1.5 s apart): the
+  page being replaced still holds the tab's lock for a moment while it unloads, so the reload took itself for a copy
+  of an open tab and every reload of the reader alternated between two stores (two histories, two share links, two
+  resume plans). A tab that kept its id now waits up to 3 s for its own lock (`RELOAD_WAIT_MS`); a copied tab's
+  original never lets go, so the copy still gets a store of its own. `batray_tabs.mjs` reloads the reader four times
+  1.5 s apart.
+- Tests: replays of the log's timing in `batray_conn.test.js` (every discovery time from the log at every watchdog
+  offset; a drop during discovery), `linkGone` in `batray_jkbms.test.js`, `logTake` in `batray_log.test.js`; browser
+  `batray_freeze.mjs` connects with a 9 s service discovery after a stale link (the 0.9.80 code drops it every 4 s,
+  exactly as in the log).
+
 ## 0.9.81 (2026-10-08): a reconnect with Bluetooth off no longer crashes Chrome - it says what to do
 
 - **Why** (owner's reader phone, 2026-10-07 21:36, Chrome 154 on Android 14): airplane mode was toggled while the

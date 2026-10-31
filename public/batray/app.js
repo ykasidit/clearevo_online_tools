@@ -21,7 +21,7 @@ import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel, pho
 import { parseIntent, intentEvent, resumePlan, resumeLine, RESUME_ON_KEY } from './resume-logic.js';
 import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggleDone, SETUP_DONE_KEY } from './setup-logic.js';
 import { pushDecision, pushState, b64uBytes } from './push-logic.js';
-import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
+import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, watchDecision, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, tvPreviewToggle, previewState, previewEvent, previewSource } from './tv-logic.js';
@@ -32,17 +32,17 @@ import { parseShare, envelope, suggestChannelName, parseSavedShare } from './liv
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
 import { Flag, Channel, select, sleep, TIMEOUT } from './sync.js';
-import { TAB_SS, TAB_PREFIX, LEGACY, LEGACY_DROP, tabLock, tabKey, metaKey, tabMeta, tabRecords, chooseTab, orphanDrops, legacyMoves, storeRows } from './tab-logic.js';
+import { TAB_SS, TAB_PREFIX, LEGACY, validTabId, LEGACY_DROP, tabLock, tabKey, metaKey, tabMeta, tabRecords, chooseTab, orphanDrops, legacyMoves, storeRows } from './tab-logic.js';
 import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
-import { logState, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, logKeepOn } from './log-logic.js';
+import { logState, logQueue, flushPlan, logTake, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, logKeepOn } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.81';
+export const APP_VERSION = '0.9.82';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -83,12 +83,16 @@ async function liveTabs() {
   } catch { /* unknown */ }
   return ids;
 }
-/** Hold this tab's lock for as long as the page lives; false when another page holds it already. */
-async function holdTabLock(id) {
+/** Hold this tab's lock for as long as the page lives; false when another page holds it already (waitMs > 0: when it
+ *  still holds it after that long). */
+const RELOAD_WAIT_MS = 3000;
+async function holdTabLock(id, waitMs = 0) {
   if (!navigator.locks) return true;
   const got = new Channel();
-  navigator.locks.request(tabLock(id), { mode: 'exclusive', ifAvailable: true }, (lock) => { got.push(!!lock); return lock ? new Flag().wait(true) : null; }).catch(() => got.push(true));
-  const r = await got.next({ ms: 2000 });
+  /** @type {LockOptions} */
+  const opts = waitMs > 0 ? { mode: 'exclusive', signal: AbortSignal.timeout(waitMs) } : { mode: 'exclusive', ifAvailable: true };
+  navigator.locks.request(tabLock(id), opts, (lock) => { got.push(!!lock); return lock ? new Flag().wait(true) : null; }).catch((e) => got.push(!(e && (e.name === 'AbortError' || e.name === 'TimeoutError'))));
+  const r = await got.next({ ms: waitMs + 2000 });
   return r === TIMEOUT ? true : r;
 }
 async function legacyStoreExists() {
@@ -126,7 +130,15 @@ if (!viewMode && !(await holdReaderLock())) {
 async function pickTab() {
   const role = viewMode ? 'viewer' : 'reader', room = viewMode ? viewMode.room : null;
   let sessionId = null; try { sessionId = sessionStorage.getItem(TAB_SS); } catch { /* no session storage */ }
-  const records = tabRecords(tabEntries()), live = await liveTabs();
+  const records = tabRecords(tabEntries());
+  // A reload: the page it replaces may still hold this tab's lock for a moment while it unloads. Wait for it (a copied
+  // tab's original never lets go): before 0.9.82 a reload took that for "a copy of an open tab" and every reload of the
+  // reader alternated between two stores - two histories, two share links, two resume plans.
+  if (sessionId && validTabId(sessionId) && await holdTabLock(sessionId, RELOAD_WAIT_MS)) {
+    try { sessionStorage.setItem(TAB_SS, sessionId); } catch { /* no session storage */ }
+    return { id: sessionId, how: 'same', from: null, why: 'this tab, as before', role, room, others: records.filter((r) => r.id !== sessionId) };
+  }
+  const live = await liveTabs();
   const legacy = role === 'reader' ? await legacyStoreExists() : false;
   for (let i = 0; i < 3; i++) {
     const c = chooseTab({ sessionId, live, role, room, records, legacy });
@@ -893,13 +905,13 @@ async function flushLog() {
   if (histS.backend === 'memory') { logS.pending = []; logS.pendBytes = 0; return; }   // no file storage: the 4000-line ring buffer is all (Copy / Upload send it)
   const plan = flushPlan(logS, Date.now()); if (plan.action !== 'write') return;
   logFlushing = true;
-  const lines = logS.pending, text = (plan.roll ? logHeaderLines().join('\n') + '\n---\n' : '') + lines.join('\n') + '\n';
+  const { lines } = logTake(logS), text = (plan.roll ? logHeaderLines().join('\n') + '\n---\n' : '') + lines.join('\n') + '\n';
   try {
     const r = await hist.logAppend(plan.file, text);
     flushDone(logS, plan.file, r.bytes, text.length);
     // eslint-disable-next-line house/ui-after-await -- paints the file list just read; flushLog is single-flight (logFlushing)
     if (plan.roll) { logS.files = await hist.logList(); for (const f of logRetention(logS.files, logS.filesMax)) { await hist.logRemove(f.name); } logS.files = await hist.logList(); renderLogNote(); }
-  } catch (e) { logS.pending = []; logS.pendBytes = 0; if (!logS.failedOnce) { logS.failedOnce = true; console.warn('debug log write failed', e); } }
+  } catch (e) { if (!logS.failedOnce) { logS.failedOnce = true; console.warn('debug log write failed', e); } }
   finally { logFlushing = false; }
 }
 setInterval(flushLog, LOG_FLUSH_MS);
@@ -1295,11 +1307,15 @@ function schedulePackBar() {
 // gone even while Chrome still reports the GATT connection up (seen after an
 // hour with the phone locked: "connected", then an hour of queued readings
 // replayed, then a disconnect two minutes later). Freshness decides instead.
+// Only a link conn-logic calls connected is judged (watchDecision, 0.9.82): one an attempt is still building is the
+// attempt's, and its last frame time belongs to the link before.
 function watchLinks(why) {
   for (const p of packs.values()) {
-    if (p.demo || p.remote || !p.bms || !p.bms.connected) continue;
-    if (!linkGone(p.lastFrameAt, p.cs.connectedAt)) continue;
-    const age = Math.round((Date.now() - (p.lastFrameAt || p.cs.connectedAt)) / 1000);
+    if (p.demo || p.remote || !p.bms) continue;
+    const now = Date.now();
+    const w = watchDecision(p.cs, { gattUp: p.bms.connected, gone: linkGone(p.lastFrameAt, p.cs.connectedAt, now), lastFrameAt: p.lastFrameAt, now });
+    if (!w.drop) continue;
+    const age = w.ageS;
     p.plog(`no data for ${age} s (${why}) - dropping the link and reconnecting`);
     if (p.isActive) setStatus(() => T.stalled(p.label, age), 'bad');
     connAct(p, 'link-stalled', { ageS: age });

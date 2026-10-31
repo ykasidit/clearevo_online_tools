@@ -13,7 +13,8 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, CONNECT_TRIES, CONNECT_GAP_MS, RECONNECT_S, CONNECT_S, knownDevice } from '../public/batray/conn-logic.js';
+import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, CONNECT_TRIES, CONNECT_GAP_MS, RECONNECT_S, CONNECT_S, knownDevice, watchDecision } from '../public/batray/conn-logic.js';
+import { linkGone, STALE_MS } from '../public/batray/jkbms.js';
 
 const A = (cs, ev, inp) => connEvent(cs, ev, { autoRe: true, now: 1000, ...inp }).action;
 
@@ -58,9 +59,10 @@ test('2026-09-16 frozen tab: a quiet link is dropped, the disconnect that follow
   const cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked'); A(cs, 'gatt-connected', { now: 100 });
   assert.equal(A(cs, 'data'), 'noop'); assert.equal(cs.gotData, true);
   assert.deepEqual(connEvent(cs, 'link-stalled', { ageS: 14 }), { action: 'drop-link', ageS: 14 });
-  assert.equal(cs.connectedAt, null);
+  assert.equal(cs.connectedAt, 100, 'the dropped link keeps its connect time until the next attempt starts');
   assert.deepEqual(connEvent(cs, 'gatt-disconnected', { autoRe: true }), { action: 'countdown', seconds: RECONNECT_S.stalled });
   A(cs, 'countdown-tick'); A(cs, 'countdown-tick'); assert.equal(A(cs, 'countdown-tick'), 'connect');
+  assert.equal(cs.connectedAt, null, 'the link the attempt builds has no connect time yet');
   A(cs, 'gatt-connected', { now: 9000 });
   assert.equal(cs.stalled, false);
   cs.stalled = true; assert.equal(A(cs, 'data'), 'back');    // amber "no data" goes back to green on the first frame
@@ -164,4 +166,67 @@ test('2026-10-07 crash: a connect that ran with Bluetooth off is stuck in the br
   A(cs, 'connect-stuck'); assert.equal(connEvent(cs, 'connect-settled', { autoRe: false }).action, 'idle');
   // the Disconnect button still works while stuck (its GATT call is guarded by gatt.connected in the app)
   A(cs, 'connect-stuck'); assert.equal(A(cs, 'disconnect'), 'disconnect-bms'); assert.equal(cs.phase, 'idle');
+});
+
+// The seahut reader, 0.9.80, 2026-10-29 20:53 - 2026-10-30 10:28 (owner: "connecting and reconnecting very frequently"):
+// 2561 GATT server connects, 2 reached the service. 1760 were dropped by the stall watchdog (every 4 s) a median 1.7 s
+// (p10 0.5 s, p90 3.7 s) after the server connected, judged by the last frame of the link before - 34 h old:
+//   20:53:43.333 connecting to n11 / 43.638 gatt: server connected in 304 ms
+//   20:53:45.159 no data for 122196 s (watchdog) / conn: link-stalled -> drop-link [connecting]
+//   20:53:45.159 conn: gatt-disconnected -> countdown 3 s [countdown]   (a countdown beside the attempt still in flight)
+//   20:53:45.172 connect: attempt 2 failed: GATT Server is disconnected / conn: attempt-failed -> ignore (not connecting)
+// Successful discovery on that phone took 1.4-1.8 s, so a link survived only when no watchdog tick fell in its window.
+const H = 3600e3;
+function seahut(t0) {
+  // a link that streamed, went quiet, was dropped; the reconnect attempt is building a new one
+  const lastFrameAt = t0 - 122196e3, quiet = lastFrameAt + 30e3;
+  const cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked'); A(cs, 'gatt-connected', { now: lastFrameAt - H });
+  const w = watchDecision(cs, { gattUp: true, gone: linkGone(lastFrameAt, cs.connectedAt, quiet), lastFrameAt, now: quiet });
+  assert.equal(w.drop, true, 'a connected link that went quiet IS dropped');
+  assert.equal(connEvent(cs, 'link-stalled', { ageS: w.ageS }).action, 'drop-link');
+  assert.equal(A(cs, 'gatt-disconnected'), 'countdown');
+  while (cs.phase === 'countdown') A(cs, 'countdown-tick');
+  assert.equal(cs.phase, 'connecting');
+  return { cs, lastFrameAt };
+}
+
+test('2026-10-29 seahut reader: the watchdog never judges a link an attempt is still building, at any tick offset in any discovery time from the log', () => {
+  const t0 = Date.UTC(2026, 9, 29, 20, 53, 43, 333);
+  for (const discoveryMs of [497, 1694, 1822, 3678, 14000]) {           // the log's kill times, the real 1.8 s discovery, a slow one
+    for (let offset = 0; offset < 4000; offset += 250) {                // the 4 s watchdog tick lands anywhere in the window
+      const { cs, lastFrameAt } = seahut(t0);
+      for (let t = t0 + 305 + offset; t < t0 + 305 + discoveryMs; t += 4000) {
+        assert.equal(linkGone(lastFrameAt, cs.connectedAt, t), false, 'no connect time of its own: not stale');
+        const w = watchDecision(cs, { gattUp: true, gone: true, lastFrameAt, now: t });  // even if a caller thought it gone
+        assert.equal(w.drop, false, `discovery ${discoveryMs} ms, tick +${offset} ms: the attempt owns the link`);
+        assert.equal(connEvent(cs, 'link-stalled', { ageS: 122196 }).action, 'ignore');
+      }
+      const now = t0 + 305 + discoveryMs;
+      assert.equal(A(cs, 'gatt-connected', { now }), 'connected');
+      // its own startup grace now: the 34 h old frame is the link before's
+      assert.equal(watchDecision(cs, { gattUp: true, gone: linkGone(lastFrameAt, cs.connectedAt, now + 4000), lastFrameAt, now: now + 4000 }).drop, false);
+      // and a link of its own that goes silent is still dropped (the 2026-09-16 rule stands)
+      const own = now + 1000;
+      const later = own + STALE_MS + 1;
+      const w = watchDecision(cs, { gattUp: true, gone: linkGone(own, cs.connectedAt, later), lastFrameAt: own, now: later });
+      assert.deepEqual(w, { drop: true, ageS: Math.round((later - own) / 1000) });
+    }
+  }
+});
+
+test('2026-10-29 seahut reader: a link that drops during discovery is the attempt\'s to report - no countdown beside it, the attempt retries', () => {
+  const { cs } = seahut(Date.UTC(2026, 9, 29, 20, 53, 43, 333));
+  assert.equal(cs.attempt, 1);
+  assert.deepEqual(connEvent(cs, 'gatt-disconnected', { autoRe: true }), { action: 'ignore', why: 'the attempt in flight owns the link' });
+  assert.equal(cs.phase, 'connecting', 'no second flow started');
+  assert.deepEqual(connEvent(cs, 'attempt-failed', { msg: 'GATT Server is disconnected. Cannot retrieve services.' }), { action: 'retry', attempt: 2, gapMs: CONNECT_GAP_MS });
+  A(cs, 'attempt-failed', { msg: 'Connection Error: Connection attempt failed.' });
+  assert.deepEqual(connEvent(cs, 'attempt-failed', { autoRe: true, msg: 'Connection Error: Connection attempt failed.' }), { action: 'countdown', seconds: RECONNECT_S.auto, final: true });
+  // the chooser drops the old link before it opens: that disconnect is not a reason to count down either
+  const c2 = connState(); A(c2, 'tap-connect'); A(c2, 'picked'); A(c2, 'gatt-connected', { now: 5 });
+  A(c2, 'tap-connect');
+  assert.equal(A(c2, 'gatt-disconnected'), 'ignore'); assert.equal(c2.phase, 'choosing');
+  // outside an attempt the disconnect still counts down as before
+  const c3 = connState(); A(c3, 'tap-connect'); A(c3, 'picked'); A(c3, 'gatt-connected', { now: 5 });
+  assert.deepEqual(connEvent(c3, 'gatt-disconnected', { autoRe: true }), { action: 'countdown', seconds: RECONNECT_S.auto });
 });

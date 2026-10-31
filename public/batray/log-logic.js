@@ -51,9 +51,16 @@ export function flushPlan(ls, now) {
   const roll = !ls.file || ls.fileBytes + ls.pendBytes > ls.fileMax;
   return { action: 'write', file: roll ? logFileName(now, ls.sid) : ls.file, roll, bytes: ls.pendBytes, lines: ls.pending.length };
 }
+/** Take the queued lines out BEFORE the write is awaited (0.9.82): lines logged while a write was in flight went into
+ *  the same array and flushDone emptied it after the write - each lost for good (the seahut reader's log 2026-10-29
+ *  missed the very lines that told which flow started an attempt). */
+export function logTake(ls) {
+  const lines = ls.pending, bytes = ls.pendBytes; ls.pending = []; ls.pendBytes = 0;
+  return { lines, bytes };
+}
 /** After the write landed. */
 export function flushDone(ls, file, fileBytes, wrote) {
-  ls.file = file; ls.fileBytes = fileBytes; ls.sessionBytes += wrote; ls.pending = []; ls.pendBytes = 0;
+  ls.file = file; ls.fileBytes = fileBytes; ls.sessionBytes += wrote;
 }
 /** Files beyond the newest `max`, oldest first (names sort by time). */
 export function logRetention(files, max = LOG_FILES_MAX) {

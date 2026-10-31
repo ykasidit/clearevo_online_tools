@@ -417,6 +417,8 @@ test('linkGone: a frame from before this link\'s connect does not count against 
   assert.equal(linkGone(t - 3_600_000, t - 2_000, t), false, 'fresh reconnect must survive until its own first frame (live bug 2026-09-17)');
   assert.equal(linkGone(t - 3_600_000, t - 25_000, t), true, 'reconnected 25 s ago and still no frame of its own');
   assert.equal(linkGone(t - 1_000, t - 5_000, t), false, 'a frame after the connect is this link\'s own');
+  // 0.9.82, seahut reader 2026-10-29: no connect time = an attempt is still building the link; the 34 h old frame is not its
+  assert.equal(linkGone(t - 122_196_000, null, t), false, 'mid-connect: not ours to judge');
 });
 
 // ---- no poll: the BMS streams by itself; nudges only while it is quiet ----

@@ -402,10 +402,12 @@ export function linkGone(lastFrameAt, connectedAt, now = Date.now(), limitMs = S
   // A frame older than this link's own connect belongs to the previous link:
   // right after a reconnect the fresh link gets the startup grace, or the
   // watchdog kills it before its first frame (live bug, 2026-09-17).
-  const ownFrame = lastFrameAt && (!connectedAt || lastFrameAt >= connectedAt) ? lastFrameAt : null;
+  // No connect time = no link of ours to judge (an attempt still building it, 0.9.82: the old frame time had been
+  // taken as this link's and the link was dropped mid service discovery, over and over).
+  if (!connectedAt) return false;
+  const ownFrame = lastFrameAt && lastFrameAt >= connectedAt ? lastFrameAt : null;
   if (ownFrame) return isStale(ownFrame, now, limitMs);
-  if (connectedAt) return now - connectedAt > startupMs;
-  return false;
+  return now - connectedAt > startupMs;
 }
 
 
@@ -578,6 +580,9 @@ export class JkBms extends EventTarget {
     } finally {
       clearTimeout(timer);
     }
+    // the link can drop during the last write without that write failing: never report a dead link as connected
+    if (stale()) throw new Error('superseded');
+    if (!device.gatt.connected) throw new Error('GATT Server is disconnected (the link dropped during setup)');
     this._startNudge();
     this._emit('connected', device);
     void this._handshake(token);

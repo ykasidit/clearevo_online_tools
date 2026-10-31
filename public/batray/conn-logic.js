@@ -24,6 +24,14 @@
 // phases: idle | choosing | connecting | connected | countdown | stuck
 // stuck (0.9.81): a gatt.connect() the browser cannot finish (it ran with Bluetooth off, jkbms STUCK_MS); nothing
 // but closing the browser clears it, so no retries, no countdown; a tap shows the sheet again.
+//
+// One owner per link (0.9.82, the seahut reader's log 2026-10-29/30: 2561 GATT connects in 13.5 h, 2 got as far as the
+// service): while an attempt runs (phase connecting) the link it is building is the attempt's alone - the attempt ends
+// it (ok, failed, its own timeout). The stall watchdog judged that half-built link by the PREVIOUS link's last frame
+// (34 h old) and dropped 1760 of them, a median 1.7 s after the GATT connect, before service discovery could finish;
+// a drop while choosing or connecting also started a countdown beside the attempt still in flight. Now 'link-stalled'
+// acts only in phase connected on a link with its own connect time, and 'gatt-disconnected' while choosing or
+// connecting is left to the attempt (getPrimaryService & co reject, attempt-failed retries or counts down).
 
 export const CONNECT_TRIES = 3, CONNECT_GAP_MS = 1500, CONNECT_S = 15;
 export const RECONNECT_S = { auto: 10, chooser: 5, stalled: 3, adapter: 3 };
@@ -34,7 +42,7 @@ export function connState() {
 export const retryableConnectError = (msg) => !/cancel|not found|no such|permission/i.test(String(msg || ''));
 export const cancelledError = (msg) => /cancel/i.test(String(msg || ''));
 
-function beginAttempt(cs) { cs.phase = 'connecting'; cs.attempt = 1; cs.left = CONNECT_S; cs.count = 0; return { action: 'connect', attempt: 1 }; }
+function beginAttempt(cs) { cs.phase = 'connecting'; cs.attempt = 1; cs.left = CONNECT_S; cs.count = 0; cs.connectedAt = null; return { action: 'connect', attempt: 1 }; }
 function startCountdown(cs, seconds) {
   if (cs.phase === 'connecting' || cs.phase === 'connected') return { action: 'ignore', why: 'an attempt is already in progress' };
   cs.phase = 'countdown'; cs.count = seconds;
@@ -81,13 +89,15 @@ export function connEvent(cs, ev, inp = {}) {
       cs.phase = 'connected'; cs.userDisconnect = false; cs.stalled = false; cs.connectedAt = inp.now || 0; cs.attempt = 0; cs.count = 0;
       return { action: 'connected' };
     case 'gatt-disconnected': {
+      if (cs.phase === 'connecting' || cs.phase === 'choosing') return { action: 'ignore', why: `the ${cs.phase === 'connecting' ? 'attempt in flight' : 'chooser'} owns the link` };
       const wasStalled = cs.stalled, byUser = cs.userDisconnect;
       cs.phase = 'idle'; cs.userDisconnect = false;
       if (inp.autoRe && cs.hasDevice && !byUser) return startCountdown(cs, wasStalled ? RECONNECT_S.stalled : RECONNECT_S.auto);
       return { action: 'idle' };
     }
     case 'link-stalled':                                  // silence past STALE_MS: the link is gone, whatever GATT says
-      cs.stalled = true; cs.stalledAge = inp.ageS || 0; cs.connectedAt = null;
+      if (cs.phase !== 'connected' || !cs.connectedAt) return { action: 'ignore', why: 'not a connected link (an attempt owns it)' };
+      cs.stalled = true; cs.stalledAge = inp.ageS || 0;
       return { action: 'drop-link', ageS: cs.stalledAge };
     case 'data': {
       const back = cs.stalled; cs.stalled = false; cs.gotData = true;
@@ -122,6 +132,15 @@ export function connEvent(cs, ev, inp = {}) {
       return { action: 'noop' };
     default: return { action: 'ignore', why: `unknown event ${ev}` };
   }
+}
+
+/** Should the stall watchdog judge this pack's link? Only a link conn-logic calls connected, with its own connect time:
+ *  a link an attempt is still building belongs to that attempt (it has its own timeout). `gone` is linkGone() over
+ *  (lastFrameAt, cs.connectedAt). Returns { drop, ageS }. */
+export function watchDecision(cs, { gattUp, gone, lastFrameAt, now }) {
+  if (cs.phase !== 'connected' || !cs.connectedAt || !gattUp || !gone) return { drop: false };
+  const since = lastFrameAt && lastFrameAt >= cs.connectedAt ? lastFrameAt : cs.connectedAt;
+  return { drop: true, ageS: Math.round((now - since) / 1000) };
 }
 
 /** What the offline / loading / reconnect card shows for a BLE pack. */

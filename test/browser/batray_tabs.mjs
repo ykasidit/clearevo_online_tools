@@ -162,6 +162,13 @@ for (let i = 1; i <= 3; i++) {
   const r = await R.eval(`({ t: window.__batrayTest ? window.__batrayTest.tab() : null, busy: !document.getElementById('readerBusy').hidden })`);
   check(`reload ${i} of the reader: starts as the reader at once, same store`, r.t && r.t.id === 'legacy' && r.t.how === 'same' && !r.busy, r);
 }
+// quick reloads, as a person tapping reload (0.9.82: the leaving page still held the tab lock, so a reload took itself
+// for a copy of an open tab and alternated between two stores - found by batray_resume.mjs reloading 1.5 s apart)
+for (let i = 1; i <= 4; i++) {
+  await R.go(`${BASE}/batray/?test&q=${i}`, 1500);
+  const r = await R.eval(`({ t: window.__batrayTest ? window.__batrayTest.tab() : null })`);
+  check(`quick reload ${i} of the reader: the same store`, r.t && r.t.id === 'legacy' && r.t.how === 'same', r);
+}
 
 const thrown = [...B.thrown(), ...R.thrown()];
 check('no page exceptions', thrown.length === 0, thrown);

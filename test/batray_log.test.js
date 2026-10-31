@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LASTRUN_KEY, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX, logKeepOn } from '../public/batray/log-logic.js';
+import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, logTake, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LASTRUN_KEY, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX, logKeepOn } from '../public/batray/log-logic.js';
 
 test('one file per session, rolled at 10 MB with the same session id; names sort by time and parse back', () => {
   const ls = logState(true, 'abc123');
@@ -27,7 +27,11 @@ test('one file per session, rolled at 10 MB with the same session id; names sort
   assert.equal(logQueue(ls, '01:02:03.400  hello'), true); assert.equal(ls.pendBytes, '01:02:03.400  hello'.length + 1);
   let plan = flushPlan(ls, t0);
   assert.deepEqual(plan, { action: 'write', file: 'log-2026-09-23T01-02-03Z-abc123.txt', roll: true, bytes: ls.pendBytes, lines: 1 }, 'the first flush opens the session file');
-  flushDone(ls, plan.file, 22, 22); assert.equal(ls.pending.length, 0); assert.equal(ls.sessionBytes, 22);
+  let batch = logTake(ls); assert.deepEqual(batch.lines, ['01:02:03.400  hello']); assert.equal(ls.pending.length, 0);
+  // 0.9.82: a line logged while the write is in flight waits for the next flush (it was emptied with the batch before)
+  logQueue(ls, 'during the write');
+  flushDone(ls, plan.file, 22, 22); assert.deepEqual(ls.pending, ['during the write']); assert.equal(ls.sessionBytes, 22);
+  batch = logTake(ls); assert.deepEqual(batch.lines, ['during the write']);
   logQueue(ls, 'x'); plan = flushPlan(ls, t0 + 5000); assert.equal(plan.file, 'log-2026-09-23T01-02-03Z-abc123.txt'); assert.equal(plan.roll, false, 'later flushes append');
   flushDone(ls, plan.file, 24, 2);
   ls.fileBytes = LOG_FILE_MAX - 1; logQueue(ls, 'yy'); plan = flushPlan(ls, t0 + 3600e3);
