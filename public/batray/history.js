@@ -129,7 +129,8 @@ export class HistoryStore {
       } catch (e) {
         this.log('history: no SQLite store (' + (e && e.message) + '), keeping this session in memory only - trying again in the background');
         if (this.pending) { try { this.pending.stop(); } catch { /* gone */ } this.pending = null; }   // a worker whose ping failed must not stay running
-        void this.retryLater();
+        this.b = new MemoryBackend(); this.backend = 'memory';
+        void this.retryLater();                                             // after the backend says memory: the retry loop runs only while it does (it had seen 'none' and never tried - Fable review 2026-11-01)
       }
     }
     if (!this.b) { this.b = new MemoryBackend(); this.backend = 'memory'; }

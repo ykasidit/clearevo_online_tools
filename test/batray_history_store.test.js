@@ -170,3 +170,14 @@ test('2026-11-01 review: a SLOW worker (it still answers other calls) is not res
   assert.equal(h2.backend, 'opfs'); assert.deepEqual(seen, ['memory', 'opfs']);
   assert.ok(s2.logs.some((l) => /the store opened on a later try \(\d\)/.test(l)), s2.logs);
 });
+
+test('Fable review 2026-11-01: a store whose FIRST open fails and that opens on a later try - `ready` keeps saying memory, `backend` says opfs (the app reads backend after ready; it had read ready and dropped every row for the session)', async () => {
+  const st = { logs: [], workers: [], locked: true, hang: true }; const h = store(st, { rows: 40, days: 40 }, { retryTries: 3, retryMs: 20 });
+  const seen = []; h.onBackend = (b) => seen.push(b);
+  assert.equal(await h.ready, 'memory', 'the first open went memory-only');
+  st.locked = false; st.hang = false;
+  for (let i = 0; i < 200 && h.backend !== 'opfs'; i++) await new Promise((r) => { setTimeout(r, 10); });
+  assert.equal(h.backend, 'opfs', 'opened on a later try');
+  assert.equal(await h.ready, 'memory', 'ready is the first open\'s answer for good - never the live state');
+  assert.ok(seen.includes('opfs'), seen);
+});

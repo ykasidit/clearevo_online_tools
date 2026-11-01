@@ -108,6 +108,11 @@ export default {
           assert.deepEqual(bad, [], `${f}: a Channel.next() as a select arm`);
         }
       });
+      test('app.js reads the store\'s backend after `await hist.ready`, never the ready value (a store that opened on a later try was dropped for the session - Fable review 2026-11-01)', () => {
+        const src = h.strip(h.read('app.js'));
+        assert.ok(!/=\s*await hist\.ready/.test(src), 'a backend taken from hist.ready');
+        assert.ok(/histS\.backend = hist\.backend/.test(src) && /logS\.backend = hist\.backend/.test(src), 'both inits read hist.backend');
+      });
       test('alerts.js: settings strings from storage are escaped in the form (a restored settings file must not script the page - Fable review 2026-11-01)', () => {
         const src = h.strip(h.read('alerts.js'));
         assert.ok(!/value="\$\{(n|w|settings)\./.test(src), 'a settings value into markup without esc()');

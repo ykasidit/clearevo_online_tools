@@ -98,6 +98,14 @@ export function viewPacks(vs, list) { vs.packIds = Array.isArray(list) ? list.ma
  *  'use' a pack we have; 'add' an unknown one when it is live news (the reader's next list confirms or drops it)
  *  or when no list has come yet; 'ignore' a retained message of an id the reader's list does not name. `log` is
  *  true the first time an id is ignored. */
+/** Is a viewer's pack live now? The reader's socket and its own word on the pack (connected), AND a reading
+ *  that is fresh - or none yet (still waiting for the first). A frozen reader keeps its socket in the room for up
+ *  to SILENT_MS: without the freshness test the chip said live over an hours-old retained picture (Fable review
+ *  2026-11-01). freshMs is live-logic's FRESH_MS, passed in by the shell. */
+export function remoteLiveDecision({ live, readerConnected, lastFrameAt, now, freshMs }) {
+  if (!live || readerConnected === false) return false;
+  return lastFrameAt === null || lastFrameAt === undefined || now - lastFrameAt <= freshMs;
+}
 export function remotePackDecision(vs, { id, known, retained }) {
   if (known) return { action: 'use' };
   if (retained && vs.packIds && !vs.packIds.includes(id)) {

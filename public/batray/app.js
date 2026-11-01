@@ -23,13 +23,13 @@ import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggl
 import { pushDecision, pushState, b64uBytes } from './push-logic.js';
 import { connState, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES } from './conn-logic.js';
 import { BleConn } from './conn.js';
-import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision } from './share-logic.js';
+import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, tvPreviewToggle, previewState, previewEvent, previewSource } from './tv-logic.js';
 import { startDemo } from './demo.js';
 import { I18N, detectLang } from './i18n.js';
 import { Publisher, Viewer } from './live.js';
-import { parseShare, envelope, suggestChannelName, parseSavedShare } from './live-logic.js';
+import { parseShare, envelope, suggestChannelName, parseSavedShare, FRESH_MS } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
 import { Flag, Channel, select, sleep, every, isAbort, TIMEOUT } from './sync.js';
@@ -656,7 +656,7 @@ function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 // from bucket queries and logs what happened. ----
 const histS = historyState();
 const hist = new HistoryStore({ log, store: TAB.id });
-hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') dropMemoryRows(); renderHistOff(); if (name === 'opfs') { histMem.ready = false; void initHistory(); } };   // memory-only after a locked pool: the Storage box says so; the store back on a later try: today's counters again   // memory-only after a locked pool: the Storage box says so
+hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') dropMemoryRows(); renderHistOff(); if (name === 'opfs') { histMem.ready = false; void initHistory(); void initLogStore(); } };   // memory-only after a locked pool: the Storage box says so; the store back on a later try: today's counters and the stored log again
 const histMem = { ready: false, inflight: null, failAt: 0, pending: new Map(), plot: null, plotParams: '', cursorIdx: null, series: null, drawAt: 0, drawing: false, redraw: false, spanAt: 0, demoId: 0 };
 const utf8 = new TextEncoder();
 function pendingRows() { let n = 0; for (const l of histMem.pending.values()) n += l.length; return n; }
@@ -836,7 +836,8 @@ function renderHistOff() {
   el.textContent = why === 'old' ? T.histOffOld(`${T.compatName[browserInfo.name] || browserInfo.name} ${fmtVersion(browserInfo.version)}`) : T.histOffStuck;
 }
 async function initHistory() {
-  histS.backend = await hist.ready;
+  await hist.ready;
+  histS.backend = hist.backend;                                               // the store's backend NOW: a store that opened on a later try is 'opfs' although its first open said 'memory' (Fable review 2026-11-01)
   if (histS.backend === 'memory') dropMemoryRows();
   const now = Date.now(), today = dayKey(now);
   histS.day = today;
@@ -857,6 +858,7 @@ async function initHistory() {
   histMem.ready = true;
   for (const l of histMem.pending.values()) for (const r of l) if (r.id === null) r.id = nextRowId(histS);   // a failed load: number them anyway
   await maintainHistory();
+  if (viewer && viewer.state.live) void requestHistory();   // the link came up while the store was starting: that ask was held back, this is it
   if (active) renderTrend(active);
 }
 // ---- backup: one .tar of the day databases (7-Zip / Windows 11 / tar open the tar, DB Browser for SQLite, Python
@@ -932,7 +934,8 @@ void every(LOG_FLUSH_MS, flushLog, { onError: jobError('log flush') });
 window.addEventListener('pageshow', (e) => { if (e.persisted) { log('page shown again from the back/forward cache'); hist.rejoin(); } });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void flushLog(); });
 async function initLogStore() {
-  logS.backend = await hist.ready;
+  await hist.ready;
+  logS.backend = hist.backend;
   try { logS.files = await hist.logList(); } catch { logS.files = []; }
   const sum = logSummary(logS.files);
   log(`debug log: ${logS.on ? 'kept on this device' : 'not kept (the Debug log button is off)'}, ${sum.files} files, ${Math.round(sum.bytes / 1024)} KB, session ${logS.sid}`);
@@ -1984,7 +1987,9 @@ function watchReach(s) {
 // the viewer's own copy: ask the reader for the day files this device lacks (share-logic never sees rows, only files)
 // the viewer's own copy: ask the reader for the rows this device lacks, per day by id (share-logic never sees rows)
 async function requestHistory() {
-  if (!viewer || histS.backend === 'memory') return;
+  // not before initHistory has read today's counters (contig 0 asked for the whole day on every open - Fable review
+  // 2026-11-01), and not without a file store (nothing would be kept); the 10 min rhythm asks again
+  if (!viewer || !histMem.ready || histS.backend !== 'opfs') { if (viewer) log(`history: not asking the reader yet (${histMem.ready ? `store ${histS.backend}` : 'history store still starting'})`); return; }
   try { await flushHistory(); histS.days = await hist.days(); } catch (e) { log(`history: asking the reader with the old listing (the store failed: ${e.message})`); }
   const have = [];
   for (const d of histS.days) {
@@ -2091,11 +2096,12 @@ async function startView() {
     setStatus(() => T.compatViewBlocked, 'bad'); return;
   }
   setStatus(() => T.viewWaiting);
+  const packLiveNow = (p, live) => remoteLiveDecision({ live, readerConnected: p.readerConnected, lastFrameAt: p.lastFrameAt, now: Date.now(), freshMs: FRESH_MS });
   viewer = new Viewer({
     room: viewMode.room, keyB64: viewMode.key, log,
     onState: (s) => {
       renderViewChip(); watchReach(s);
-      for (const p of packs.values()) { p.remoteLive = s.live && p.readerConnected !== false; }   // the reader's own word on each pack stands (a BMS it lost stays offline)
+      for (const p of packs.values()) p.remoteLive = packLiveNow(p, s.live);   // the reader's own word on each pack stands (a BMS it lost stays offline), and an old reading is not live
       if (histReqDecision(histS, { live: s.live, now: Date.now() }).action === 'request') void requestHistory();
       const ve = viewerEvent(viewS, s);           // the reader's presence: share-logic.js decides what is worth an alert
       if (ve && alerts) alerts.notify('reader', ve.readerAlert === 'on' ? T.evReaderOn : T.evReaderOff, ve.readerAlert === 'on' ? T.evReaderOnBody : T.evReaderOffBody);
@@ -2112,7 +2118,7 @@ async function startView() {
         viewPacks(viewS, env.v);
         const ids = new Set(env.v.map((x) => x.id));
         for (const p of [...packs.values()]) if (!ids.has(p.id)) { log(`live: pack "${p.label}" removed (the reader no longer lists it)`); removePack(p); }
-        for (const x of env.v) { const p = packs.get(x.id) || addRemotePack(x.id, x.name, 'listed'); p.name = x.name; if (x.demo && !p.demo) p.demo = { stop() {} }; p.readerConnected = !!x.connected; p.remoteLive = viewer.state.live && p.readerConnected; }
+        for (const x of env.v) { const p = packs.get(x.id) || addRemotePack(x.id, x.name, 'listed'); p.name = x.name; if (x.demo && !p.demo) p.demo = { stop() {} }; p.readerConnected = !!x.connected; p.remoteLive = packLiveNow(p, viewer.state.live); }
         renderPackBar(); return;
       }
       if (env.k === 'hist-file') { rxHistFile(env); return; }

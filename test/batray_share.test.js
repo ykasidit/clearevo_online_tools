@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, REACH_HOLD_MS, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision } from '../public/batray/share-logic.js';
+import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, REACH_HOLD_MS, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision } from '../public/batray/share-logic.js';
 import { suggestChannelName } from '../public/batray/live-logic.js';
 
 test('the Share button: opens the setup, is sunk and stops on the next press, greyed while starting', () => {
@@ -116,4 +116,16 @@ test('viewer packs: an old retained slot of a pack the reader no longer lists is
   assert.equal(have.size, 1, 'one chip for one bank');
   assert.deepEqual(take('bt-ADDED', false), { action: 'add' }, 'live news of a pack the reader just added comes before its next list');
   viewPacks(vs, null); assert.deepEqual(vs.packIds, [], 'a junk list names nothing');
+});
+
+test('Fable review 2026-11-01: a viewer pack is live only with the reader there, the pack connected AND a fresh reading (a frozen reader with its socket up must not paint an hours-old picture as live)', () => {
+  const now = 10_000_000, freshMs = 15000;
+  const d = (o) => remoteLiveDecision({ live: true, readerConnected: true, lastFrameAt: now - 1000, now, freshMs, ...o });
+  assert.equal(d({}), true, 'fresh reading, reader there');
+  assert.equal(d({ lastFrameAt: now - 2 * 3600e3 }), false, 'the retained picture is two hours old');
+  assert.equal(d({ lastFrameAt: now - freshMs }), true, 'at the edge');
+  assert.equal(d({ lastFrameAt: null }), true, 'no reading yet: waiting for the first, live by the socket');
+  assert.equal(d({ live: false }), false, 'no socket');
+  assert.equal(d({ readerConnected: false }), false, 'the reader lost that BMS');
+  assert.equal(d({ readerConnected: undefined }), true, 'not listed yet: the socket decides');
 });

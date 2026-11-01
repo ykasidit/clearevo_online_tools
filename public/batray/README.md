@@ -180,6 +180,15 @@ when the screen repaints.
   first open stops its worker; memory-only tries the store again every 2 min for an hour; after pagehide the store
   refuses calls (a log flush there had started a fresh worker) and reopens through its gate on a back/forward-cache
   return. Lines of a failed debug-log write go back to the queue (the newest MB).
+- **Second review (Fable, against the purpose and the house rules)**: a store whose FIRST open failed never tried
+  again (the retry loop ran only while the backend said memory, and it still said none), and a store that opened on
+  a later try was thrown away by the app (it read the first open's answer, `hist.ready`, instead of `hist.backend`):
+  the History card said "not stored" and the debug log was dropped for the session while SQLite was open. Both fixed,
+  a store test and a gate hold them. A viewer asked for today from id 0 on every open (history not started yet): it
+  now asks once the store is ready. A pack on a viewer is live only with a fresh reading (a frozen reader keeps its
+  socket for up to 35 s; the chip had said live over an hours-old picture). Restored settings strings are escaped in
+  the alerts form. The flush in flight is a promise, a second viewer's history request queues beside the first one's,
+  the share's 10 s snapshots and the TV start are loops / one handle each.
 - **Not changed, on purpose**: a viewer judges a live reading's age by the reader phone's clock (a phone more than
   15 s wrong would see every reading as stale - phones on Wi-Fi keep NTP time; a relay timestamp would fix it, a relay
   change for later); the reader's "last words" on freeze / pagehide go through async encryption and rarely leave a
