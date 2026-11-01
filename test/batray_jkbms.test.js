@@ -19,8 +19,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCommand, decodeCellInfo, decodeDeviceInfo, decodeSettings, errorLabels, feedFrames, swMajor, JkBms,
-  isStale, STALE_MS, queuedAfterGap, linkGone, nudgeDecision, NUDGE_MS, HANDSHAKE_WAIT_MS, STUCK_MS,
-  startupAskDecision, STARTUP_QUICK_MS, STARTUP_QUICK_ASKS } from '../public/batray/jkbms.js';
+  isStale, STALE_MS, queuedAfterGap, linkGone, nudgeDecision, NUDGE_MS, HANDSHAKE_WAIT_MS,
+  startupAskDecision, STARTUP_QUICK_MS, STARTUP_QUICK_ASKS, linkStep } from '../public/batray/jkbms.js';
+import { sleep } from '../public/batray/sync.js';
 import * as F from './batray_frames.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
@@ -383,23 +384,37 @@ test('queuedAfterGap: a chunk after a long silence is a flush of stale data', ()
   assert.equal(queuedAfterGap(1_000_000, 1_000_000 + STALE_MS + 1), true);
 });
 
-test('drop(): voids the link so queued notifications are ignored and the UI hears about it', () => {
+test('drop(): voids the link so queued notifications are ignored, and a link that was not up reports itself down', () => {
   const b = new JkBms();
-  const seen = [];
-  b.addEventListener('disconnected', () => seen.push('disconnected'));
   b.device = { gatt: { connected: false } };          // link already gone: nothing to disconnect
+  b.down.set(false);
   b.buf = new Uint8Array([1, 2, 3]);
   b.lastRxAt = 1_000_000;
-  const before = b._attempt || 0;
+  const before = b._link;
   b.drop('test');
-  assert.deepEqual(seen, ['disconnected'], 'emits disconnected when GATT is already down');
+  assert.equal(b.down.v, true, 'down: no event will come for a link that was not up');
   assert.equal(b.buf.length, 0, 'reassembly buffer cleared');
   assert.equal(b.lastRxAt, null);
-  assert.ok((b._attempt || 0) > before, 'attempt token bumped, so late notifications are no-ops');
+  assert.ok(b._link > before, 'link token bumped, so late notifications are no-ops');
   const frames = [];
   b.addEventListener('frame', () => frames.push(1));
   b._onNotify(new Uint8Array([0x55, 0xAA, 0xEB, 0x90]), before);   // flushed from the dead link
   assert.deepEqual(frames, [], 'notifications from the superseded link are dropped');
+});
+
+test('the boundary only sets Flags: a chunk after a long gap voids a GATT link (the loop drops it); the demo, fed without a link, is never voided', () => {
+  const b = new JkBms();
+  b._link = 7; b.lastRxAt = Date.now() - STALE_MS - 5000;
+  const frames = []; b.addEventListener('frame', () => frames.push(1));
+  b._onNotify(F.OWNER_32S_CELL, 7);
+  assert.equal(b.voided.v, true); assert.ok(b.voidGapS >= 17, String(b.voidGapS)); assert.deepEqual(frames, [], 'the queued chunk is not decoded');
+  b._onNotify(F.OWNER_32S_CELL, 7); assert.deepEqual(frames, [], 'nor anything after it on that link');
+  const demo = new JkBms(); demo.lastRxAt = Date.now() - STALE_MS - 5000;
+  const df = []; demo.addEventListener('frame', () => df.push(1));
+  demo._onNotify(F.OWNER_32S_CELL);
+  assert.equal(demo.voided.v, false); assert.equal(df.length, 1, 'the demo (no token) keeps painting after a frozen tab');
+  assert.equal(demo.lastDataAt !== null && demo.firstCellAt !== null, true, 'this link\'s data times');
+  const ev = new JkBms(); ev._onNotify(F.AIO_32S_DEV); assert.equal(ev.infoSeen.v, true, 'the device-info answer sets its Flag');
 });
 
 test('linkGone: also catches a link that connected but never answered', () => {
@@ -489,56 +504,48 @@ test('startupAskDecision: replay of the n11 log 2026-10-05 07:36 - an unserved a
   assert.equal(STARTUP_QUICK_MS, 1000);
 });
 
-test('handshake: 0x97 first, 0x96 only after the device-info answer (JK app order)', async () => {
+
+test('open(): every step re-checks the link; the browser connect is tracked until it settles and never cancelled (2026-10-07: gatt.disconnect() on a pending connect crashed Chrome Android)', async () => {
   const b = new JkBms();
-  const writes = [];
-  let onValue = null;
-  const char = {
-    addEventListener: (_, fn) => { onValue = fn; },
-    startNotifications: async () => {},
-    writeValueWithoutResponse: async (bytes) => {
-      writes.push({ cmd: bytes[4], at: Date.now() });
-      if (bytes[4] === 0x97) setTimeout(() => onValue({ target: { value: new DataView(F.AIO_32S_DEV.buffer) } }), 30);   // the answer, a little later
-    },
-  };
-  const device = { name: 'fake', gatt: { connected: true, connect: async () => ({ getPrimaryService: async () => ({ getCharacteristic: async () => char }) }), disconnect() { this.connected = false; } }, addEventListener() {} };
-  const seen = []; b.addEventListener('log', (e) => seen.push(e.detail));
-  await b.connect(device);
-  assert.deepEqual(writes.map((w) => w.cmd), [0x97], 'connect() resolves with only the device-info command sent');
-  await new Promise((r) => { setTimeout(r, 120); });
-  assert.deepEqual(writes.map((w) => w.cmd), [0x97, 0x96], 'cell-info follows once the device-info frame arrived');
-  assert.ok(writes[1].at - writes[0].at >= 25, 'not back to back');
-  assert.ok(seen.some((l) => /handshake: device info in \d+ ms/.test(l)), seen.join('\n'));
-  b.drop('test end');
+  let disconnects = 0; const pending = [];
+  const device = new EventTarget();
+  Object.assign(device, { name: 'offBt', id: 'x', gatt: { connected: false, connect: () => new Promise((resolve, reject) => { pending.push({ resolve, reject }); }), disconnect() { disconnects++; } } });
+  const ac = new AbortController();
+  const p1 = b.open(device, ac.signal).catch((e) => e.message);
+  const p2 = b.open(device, ac.signal).catch((e) => e.message);      // a retry queues behind it in the browser
+  assert.equal(b.pending.n, 2); const since = b.pending.since, done = b.pending.done;
+  ac.abort(); b.close();
+  assert.equal(disconnects, 0, 'close() leaves a pending connect alone (gatt.connected is false while pending)');
+  assert.equal(done.v, false, 'still pending'); assert.ok(since <= Date.now());
+  pending[0].reject(new Error('gone')); await sleep(5);
+  assert.equal(done.v, false, 'settled only when every queued connect has');
+  pending[1].reject(new Error('gone')); await sleep(5);
+  assert.equal(done.v, true); assert.equal(b.pending, null);
+  assert.deepEqual([await p1, await p2], ['gone', 'gone']);
+  // a link that falls during setup is never reported as up (0.9.82)
+  const d2 = new EventTarget(); let svc = null;
+  Object.assign(d2, { name: 'n11', id: 'y', gatt: { connected: false, connect: async () => { d2.gatt.connected = true; return { getPrimaryService: () => new Promise((r) => { svc = r; }) }; }, disconnect() { d2.gatt.connected = false; } } });
+  const p3 = b.open(d2, new AbortController().signal).catch((e) => e.message);
+  await sleep(5); assert.equal(b.down.v, false, 'the server connected: up');
+  d2.gatt.connected = false; d2.dispatchEvent(new Event('gattserverdisconnected'));
+  assert.equal(b.down.v, true, 'the browser says it fell: the Flag');
+  svc({ getCharacteristic: async () => ({}) });
+  assert.match(await p3, /GATT Server is disconnected \(the link dropped during setup\)/);
 });
 
-test('handshake: no device-info answer -> cell-info asked anyway after HANDSHAKE_WAIT_MS', async () => {
-  const b = new JkBms();
-  const writes = [];
-  const char = { addEventListener() {}, startNotifications: async () => {}, writeValueWithoutResponse: async (bytes) => writes.push(bytes[4]) };
-  const device = { name: 'mute', gatt: { connected: true, connect: async () => ({ getPrimaryService: async () => ({ getCharacteristic: async () => char }) }), disconnect() { this.connected = false; } }, addEventListener() {} };
-  await b.connect(device);
-  assert.deepEqual(writes, [0x97]);
-  await new Promise((r) => { setTimeout(r, HANDSHAKE_WAIT_MS + 150); });
-  assert.deepEqual(writes, [0x97, 0x96], 'asked after the wait');
-  b.drop('test end');
-});
-
-test('2026-10-07 crash: a timed-out connect is never cancelled with gatt.disconnect(); one still pending past stuckMs emits stuck, and settled if it ends after all', async () => {
-  assert.equal(STUCK_MS, 45000, 'Android settles a direct connect at ~30 s with the adapter on: a connect pending longer ran with it off');
-  const b = new JkBms();
-  const seen = []; b.addEventListener('stuck', () => seen.push('stuck')); b.addEventListener('settled', () => seen.push('settled'));
-  let disconnects = 0; const resolvers = [];
-  const device = { name: 'offBt', gatt: { connected: false, connect: () => new Promise((r) => { resolvers.push(r); }), disconnect() { disconnects++; } }, addEventListener() {} };
-  await assert.rejects(b.connect(device, { timeoutMs: 40, stuckMs: 150 }), /no answer in 0 s/);
-  assert.equal(disconnects, 0, 'the pending connect is left alone: disconnect() on it crashes Chrome Android');
-  await assert.rejects(b.connect(device, { timeoutMs: 40, stuckMs: 150 }), /no answer/);      // the retry queues behind it, no second watch
-  assert.deepEqual(seen, [], 'not stuck yet');
-  await new Promise((r) => { setTimeout(r, 200); });
-  assert.deepEqual(seen, ['stuck'], 'one stuck for the oldest pending connect, not one per retry');
-  assert.equal(disconnects, 0);
-  for (const r of resolvers) r({ getPrimaryService: async () => { throw new Error('gone'); } });   // the stack answers after all: the browser settles every queued connect together
-  await new Promise((r) => { setTimeout(r, 20); });
-  assert.deepEqual(seen, ['stuck', 'settled'].concat(seen.slice(2)), 'settled once the oldest settles');
-  assert.equal(seen.filter((x) => x === 'settled').length, 1);
+test('linkStep (the connected loop, every tick): handshake after the device info or the wait, quick re-asks before cell info, a nudge only when streaming went quiet, the stall by this link\'s own data', () => {
+  const t0 = 1_000_000, at = (s) => t0 + s * 1000;
+  const l = (x) => ({ now: t0, connectedAt: t0, askedAt: null, asks: 0, info: false, firstCellAt: null, settingsAt: null, lastRxAt: null, lastDataAt: null, ...x });
+  assert.deepEqual(linkStep(l({ now: at(0.2) })), { act: null }, 'waiting for the device info');
+  assert.deepEqual(linkStep(l({ now: at(0.2), info: true })), { act: 'handshake' });
+  assert.deepEqual(linkStep(l({ now: at(HANDSHAKE_WAIT_MS / 1000) })), { act: 'handshake' }, 'no answer: ask anyway');
+  assert.deepEqual(linkStep(l({ now: at(1.6), askedAt: at(0.5), info: true })), { act: 'ask' }, 'not served after 1 s: ask again');
+  assert.deepEqual(linkStep(l({ now: at(1.6), askedAt: at(0.5), info: true, settingsAt: at(0.7) })), { act: null }, 'served: the stream is starting');
+  const streaming = { askedAt: at(0.5), info: true, firstCellAt: at(1), lastDataAt: at(10), lastRxAt: at(10) };
+  assert.deepEqual(linkStep(l({ ...streaming, now: at(11) })), { act: null }, 'frames flow: no poll');
+  assert.deepEqual(linkStep(l({ ...streaming, now: at(13.1) })), { act: 'nudge', quietS: 3 });
+  assert.deepEqual(linkStep(l({ ...streaming, now: at(22.5) })), { act: 'stall', ageS: 13 }, 'quiet past STALE_MS');
+  assert.deepEqual(linkStep(l({ now: at(19), askedAt: at(18.5), asks: 3 })), { act: null }, 'never answered: the startup grace (asks 3 s apart by now)');
+  assert.deepEqual(linkStep(l({ now: at(21), askedAt: at(18) })), { act: 'stall', ageS: 21 });
+  assert.notEqual(linkStep(l({ now: at(5), askedAt: at(4.5), asks: 3, lastDataAt: t0 - 122196e3 })).act, 'stall', 'the seahut case: a 34 h old frame of the link before is not this link\'s');
 });

@@ -75,9 +75,8 @@ The tests, all in `test/`, all in `./test.sh`:
 | `batray_i18n.test.js` | EN and TH have the same keys, types and arities |
 | `test/browser/*.mjs` | the real page in headless Chrome over fake Bluetooth, a fake relay and real OPFS / SQLite / uPlot / WebCodecs: the I/O shells are covered here, not by unit tests |
 
-Rounds still to come, one per release with a phone test between: the TV
-upload chain and the BLE connect flow as loops, then the app shell's
-handlers.
+Done as loops: the live link (0.9.53, `live.js`) and the Bluetooth connection (0.9.83, `conn.js`). Rounds still to
+come, one per release with a phone test between: the TV upload chain, then the app shell's handlers.
 
 ## Code layout: functional core, imperative shell
 
@@ -97,8 +96,8 @@ passed to every function) is the house style here:
   a kernel `struct foo *ctx` handed to `foo_do_thing(ctx, ...)`.
 - **`app.js` is the shell**: it owns the timers, the chooser, the sockets,
   the encoder, the DOM; it asks the decision function, acts on the answer,
-  and logs it (`conn: attempt-failed -> retry attempt 2 [connecting]`,
-  `cast: tap -> request`). Buttons render from the state object too: the
+  and logs it (`cast: tap -> request`; a loop logs its own phase changes,
+  `conn: connecting -> connected`). Buttons render from the state object too: the
   Share and Show on TV toolbar buttons are sunk while running, pressing them
   (or Close on the card) stops the thing with a toast.
 - **File names**: `<flow>-logic.js` is the functional core (no imports of
@@ -112,7 +111,7 @@ passed to every function) is the house style here:
 
 | flow | state object | functional core | I/O shell | replay test |
 |---|---|---|---|---|
-| BLE connect / retry / countdown | `p.cs` = `connState()` | `conn-logic.js` | `jkbms.js`, `app.js` | `batray_conn.test.js`, `browser/batray_freeze.mjs` |
+| BLE connection: choose, connect / retry, serve (handshake, asks, nudge, stall), countdown, stuck | `p.cs` = `connState()`, written only by the loop | `conn-logic.js` (`cmdIn`, `retryDecision`, `afterEnd`, the card/button views), `jkbms.js` `linkStep` | `conn.js` (the loop), `jkbms.js` (GATT port), `app.js` (hooks: paints, chooser) | `batray_conn.test.js` (the loop over a fake device), `browser/batray_freeze.mjs` |
 | Share live (reader) | `shareS` | `share-logic.js`, `live-logic.js` | `live.js`, `app.js` | `batray_share.test.js`, `batray_presence.test.js`, `browser/batray_log.mjs` |
 | Viewer + reachability | `viewS`, `reachS` | `share-logic.js`, `live-logic.js` | `live.js`, `app.js` | `batray_share.test.js`, `batray_presence.test.js` |
 | Show on TV card and button | `tvS` | `tv-logic.js` | `tv.js`, `app.js` | `batray_tv.test.js`, `browser/batray_tv.mjs` |
@@ -123,7 +122,7 @@ passed to every function) is the house style here:
 | Storage box: usage percent, the three rows, settings file checks | facts in | `storage-logic.js` | `app.js` | `batray_storage.test.js`, `browser/batray_history.mjs` |
 | Stored debug log: session files, rolling, retention, what Upload sends | `logS` | `log-logic.js` | the history worker, `app.js` | `batray_log.test.js`, `browser/batray_log.mjs` |
 | Backup / restore (.tar of the daily gz) | bytes in, bytes out | `backup-logic.js` | `app.js` (download, file input), the worker | `batray_backup.test.js` (round trip through system tar) |
-| Remembered BMS button | saved id + name, getDevices | `conn-logic.js` `knownDevice`, event `known` | `app.js` | `batray_conn.test.js`, `browser/batray_history.mjs` |
+| Remembered BMS button | saved id + name, getDevices | `conn-logic.js` `knownDevice`, command `known` | `app.js` | `batray_conn.test.js`, `browser/batray_history.mjs` |
 | The picture, chips, cell line, "updated", TV frame model | a decoded reading | `view-logic.js` | `app.js` paints, `tv-draw.js` draws | `batray_view.test.js` (the owner's real frame) |
 | UI chrome: tabs, bottom sheets, Back, low power, sheet contents | `uiS` | `ui-logic.js` | `app.js` (history API, DOM) | `batray_ui.test.js`, `browser/batray_ui.mjs` (48 px audit, sheets, tabs) |
 | BMS frames (reassembly, CRC, decoding by variant) | a byte buffer | `jkbms.js` pure half | `jkbms.js` GATT half | `batray_jkbms.test.js` (real frames from 6 units), `browser/batray_freeze.mjs` |
@@ -134,6 +133,47 @@ The look and the interaction rules are in [UI_GUIDELINES.md](UI_GUIDELINES.md).
 No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
+
+## 0.9.83 (2026-11-01): the Bluetooth connection is one loop per pack
+
+- **Why** (owner, after 0.9.82 worked: "do the restructure of the Bluetooth code as per house rules - Linux kernel style,
+  one loop, countdown latch"). 0.9.82 fixed the seahut race with a guard; the structure that allowed it was still
+  there: the GATT callbacks, a 4 s watchdog interval, a countdown interval, an attempt ticker and a retry timeout each
+  fed events into one state object (`connEvent`), so two of them could act on one link at once. Now there is nothing
+  to guard: one loop owns the link.
+- **`conn.js`** (new): `BleConn.run(signal)`, one per pack, started by the first command (`p.conn.tell(cmd)`):
+  idle -> choosing -> connecting (up to 3 tries) -> connected -> countdown, and stuck. The phase is where the loop
+  is; it is the only writer of `p.cs`. Every wait is `select()` over the stop signal, a `sleep` and the command
+  channel - the countdown is a latch waited with a timeout each second (Java's `CountDownLatch.await(1 s)`, the
+  kernel's `wait_event_timeout`). The connected phase looks at its own link every 250 ms and on the device-info
+  answer: the handshake, the startup re-asks, the silence nudge and the stall check are one pure step,
+  `jkbms.js` `linkStep()`; the stall check cannot judge a link that is still being built, because it runs only
+  inside the loop that is serving a connected one. `start()` refuses a second loop, `stop()` aborts it.
+- **`jkbms.js`**: the GATT port of one link plus the frame codec, no timers and no hand-rolled promises. `open(device,
+  signal)` sets one link up step by step, each step re-checking the signal and that the link is up; the browser's
+  connect is tracked (`pending`, settled when every queued connect has) and never cancelled (0.9.81). At the
+  boundary the browser's callbacks only set Flags: `down` (gattserverdisconnected), `voided` (a chunk after a gap no
+  live link has: queued while the tab was frozen), `infoSeen`. `drop()` / `close()` close a link that is up, never a
+  pending connect.
+- **`conn-logic.js`**: the pure tables - `cmdIn(phase, cmd)` (what a tap means in each phase), `retryDecision`,
+  `afterEnd` (what follows a failed round, a fall, a stall, a frozen tab's queue, a settled stuck connect) - and
+  the views (card, chip, button, wake). The event machine `connEvent` and `watchDecision` are gone.
+- **`app.js`**: hooks only (paint the card and status, the chooser, toasts, the stuck sheet); no Bluetooth timers
+  (27 timers left in the shell, from 32), no `connAct`. Buttons, the adapter, the auto-reconnect switch and the
+  resume call `p.conn.tell()`.
+- **Gate** (`test/rules/batray.mjs`): one `run(signal)` in conn.js, `start()` refuses a second loop, app.js writes no
+  connection state (any `cs.x =`, `++`, `--` fails), no event machine names left, no timers or `new Promise` in
+  conn.js / jkbms.js, the disconnect callback only sets its Flag. Ratchets lowered: jkbms.js 0 timers / promises /
+  async callbacks.
+- **Tests**: `batray_conn.test.js` drives the real loop over the real `JkBms` port and a fake Web Bluetooth device on
+  a fast clock, one replay per log: 2026-09-18 (two refusals, one chooser, three attempts; 0x97 then 0x96), 0.9.42 /
+  0.9.69 (no device info, the startup re-asks), 2026-09-16 (a quiet link dropped, 3 s countdown, back), 2026-10-29
+  (a service discovery three times the stall limit is never dropped; a link that falls during discovery is retried by
+  its attempt, no countdown beside it), 2026-09-17 (Reconnect now = exactly one attempt), the picked device that
+  refuses (5 s countdown, never the chooser again), the remembered BMS, Cancel / auto-off / Bluetooth back, the
+  person's Disconnect, Connect while connected, a frozen tab's queue, 2026-10-07 stuck (no gatt.disconnect() on a
+  pending connect, no retries, a tap explains it again, settled -> on). `batray_jkbms.test.js`: the port's Flags,
+  `open()` re-checks and pending tracking, `linkStep`.
 
 ## 0.9.82 (2026-10-31): the stall watchdog no longer kills the link a reconnect is still building
 
@@ -366,7 +406,7 @@ on the owner's Android after a real outage.
   decides: a reader that was sharing or connected counts down `RESUME_S` = 30 s in the 'resume' sheet (Now / Cancel,
   a bar), one loop selecting the clock against the sheet's answer (`runResume`); then `doResume()` shares again on
   the last link (the share setup filled from the saved name and link) and reconnects each remembered BMS that
-  `getDevices()` still lists (`connAct(p, 'known')`, no chooser). Without getDevices (the Chrome flag "Use the new
+  `getDevices()` still lists (`p.conn.tell('known')`, no chooser). Without getDevices (the Chrome flag "Use the new
   permissions backend for Web Bluetooth" off - both phones today) the share resumes and a toast names the BMS that
   needs a tap. Notes: `#autoResume` (localStorage `batray_auto_resume`, default on). Browser tests skip it unless
   `?resumetest[=seconds]`.

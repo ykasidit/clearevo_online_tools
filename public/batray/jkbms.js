@@ -11,6 +11,7 @@
 // FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
+import { Flag } from './sync.js';
 
 // JK BMS (JiKong) BLE protocol - Web Bluetooth.
 //
@@ -42,8 +43,8 @@
 export const JK_SERVICE = '0000ffe0-0000-1000-8000-00805f9b34fb';
 export const JK_CHAR = '0000ffe1-0000-1000-8000-00805f9b34fb';
 
-const CMD_DEVICE_INFO = 0x97;
-const CMD_CELL_INFO = 0x96;
+export const CMD_DEVICE_INFO = 0x97;
+export const CMD_CELL_INFO = 0x96;
 
 const RESP_HDR = [0x55, 0xaa, 0xeb, 0x90];
 const FRAME_LEN = 300;
@@ -452,53 +453,61 @@ export function nudgeDecision(lastRxAt, connectedAt, nudgedAt, now = Date.now(),
  *  "AT\r\n" chatter for seconds (each one bumped lastRxAt, so the silence nudge came only at +7 s and +10 s,
  *  which it ignored, then dropped the link), while the 0.9.31 poll at +3 s had always started its stream. So
  *  until cell info flows: ask again every NUDGE_MS after the previous ask, whatever else arrives. */
-export function startupAskDecision(firstCellAt, askedAt, now = Date.now(), everyMs = NUDGE_MS, { settingsAt = null, asks = 0 } = {}) {
+export function startupAskDecision(firstCellAt, askedAt, now = Date.now(), everyMs = NUDGE_MS, { settingsAt = null, asks = 0, quickMs = STARTUP_QUICK_MS } = {}) {
   if (firstCellAt || !askedAt) return false;
   const served = settingsAt !== null && settingsAt >= askedAt;      // the settings frame came: the stream is starting, no second ask (a beep)
-  return now - askedAt >= (!served && asks < STARTUP_QUICK_ASKS ? STARTUP_QUICK_MS : everyMs);
+  return now - askedAt >= (!served && asks < STARTUP_QUICK_ASKS ? quickMs : everyMs);
 }
 
+/** One look at a connected link (conn.js asks every SERVE_TICK_MS and when the device-info answer arrives): what the
+ *  loop does now. l = { now, connectedAt, askedAt (the last 0x96, null before the handshake), asks, info (the device
+ *  info came), firstCellAt, settingsAt, lastRxAt, lastDataAt } of THIS link. Returns { act: 'stall', ageS } (quiet past
+ *  the limit, or never answered: drop it) | { act: 'handshake' } (the first 0x96: after the device info, or after
+ *  HANDSHAKE_WAIT_MS without it - 0.9.34) | { act: 'ask' } (no cell info yet - 0.9.42 / 0.9.69) | { act: 'nudge', quietS }
+ *  (streaming went quiet - 0.9.33: never a periodic poll, the BMS beeps at each one) | { act: null }. */
+export function linkStep(l, { staleMs = STALE_MS, startupMs = 20000, handshakeMs = HANDSHAKE_WAIT_MS, nudgeMs = NUDGE_MS, quickMs = STARTUP_QUICK_MS } = {}) {
+  const { now, connectedAt } = l;
+  if (linkGone(l.lastDataAt, connectedAt, now, staleMs, startupMs)) return { act: 'stall', ageS: Math.round((now - (l.lastDataAt || connectedAt)) / 1000) };
+  if (l.askedAt === null) return l.info || now - connectedAt >= handshakeMs ? { act: 'handshake' } : { act: null };
+  if (startupAskDecision(l.firstCellAt, l.askedAt, now, nudgeMs, { settingsAt: l.settingsAt, asks: l.asks, quickMs })) return { act: 'ask' };
+  if (l.firstCellAt !== null && nudgeDecision(l.lastRxAt, connectedAt, l.askedAt, now, nudgeMs)) return { act: 'nudge', quietS: Math.round((now - (l.lastRxAt || connectedAt)) / 1000) };
+  return { act: null };
+}
+
+/** The GATT port of ONE link at a time, and the frame codec on its notifications (0.9.83). No lifecycle in here: the
+ *  connect / serve / reconnect flow is the pack's loop in conn.js, the only writer of the connection state. This
+ *  class does the GATT calls when the loop asks, and at the boundary (the browser's callbacks) it only sets Flags:
+ *  `down` (no GATT link), `voided` (a notification after a gap no live link has: queued while the tab was frozen),
+ *  `infoSeen` (the device-info answer of this link). The per-frame decode stays synchronous (the hot path) and emits
+ *  'frame' / 'device' / 'settings' / 'data' / 'log' for the app to paint. */
 export class JkBms extends EventTarget {
   constructor() {
     super();
     this.device = null;
     this.char = null;
     this.buf = new Uint8Array(0);
-    this.nudgeTimer = null;
-    this.nudgeCheckMs = 250;                                         // the quick startup re-ask is 1 s
-    this.nudgedAt = null;
-    this.connectedAt = null;
-    this._infoWaiters = [];
-    this._rxOther = 0;          // non-frame notifications logged this link (capped)
-    this.info = null; // last decoded device-info frame
-    this._listened = null;
-    this._attempt = 0;
+    this.info = null;                 // last decoded device-info frame
     this.settings = null;
+    this._listened = null;
+    this._link = 0;                   // the link token: notifications of an older link are no-ops
+    this.down = new Flag(true);
+    this.voided = new Flag(false);
+    this.voidGapS = 0;
+    this.infoSeen = new Flag(false);
+    this.pending = null;              // the oldest browser connect still unsettled: { since, n, done: Flag }
+    this._resetLink();
   }
 
   get connected() {
     return !!(this.device && this.device.gatt && this.device.gatt.connected);
   }
 
-  /**
-   * Void this link: anything the BLE stack still has queued for it is history.
-   * Bumping the attempt token makes late notifications no-ops. Emits
-   * 'disconnected' itself when the GATT link is already down, so the UI never
-   * sits on a dead "connected".
-   */
-  drop(reason) {
-    this._attempt = (this._attempt || 0) + 1;
-    this._stopNudge();
+  _resetLink() {
     this.buf = new Uint8Array(0);
-    this.lastRxAt = null;
-    const dev = this.device;
-    this._log(`dropping link: ${reason}`);
-    if (dev && dev.gatt && dev.gatt.connected) {
-      this.char = null;
-      try { dev.gatt.disconnect(); return; } catch { /* fall through to the manual emit */ }
-    }
-    this.char = null;
-    this._emit('disconnected');
+    this.lastRxAt = null; this.lastDataAt = null; this.firstCellAt = null; this.settingsAt = null;
+    this.rxOther = 0; this.rxOtherAll = 0; this.rxOtherAt = null;     // non-frame notifications: logged (capped), counted
+    this.voided.set(false); this.voidGapS = 0;
+    this.infoSeen.set(false);
   }
 
   _emit(type, detail) {
@@ -517,128 +526,76 @@ export class JkBms extends EventTarget {
     return navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [JK_SERVICE] });
   }
 
-  // Connect with a timeout on OUR side only. The pending browser connect is never cancelled with gatt.disconnect():
-  // that call crashes Chrome Android when the connect ran with Bluetooth off (see STUCK_MS). The abandoned promise
-  // stays queued and later connects on the device wait behind it - with Bluetooth on at most ~30 s, until Android
-  // settles it; with Bluetooth off for ever, which _gattConnect reports as 'stuck'. A stale attempt that resolves
-  // after a newer one started is dropped, not reported as connected.
-  async connect(device, { timeoutMs = 20000, stuckMs = STUCK_MS } = {}) {
-    const token = (this._attempt = (this._attempt || 0) + 1);
-    const stale = () => this._attempt !== token;
-    this.device = device;
-    this.info = null;
-    this.settings = null;
-    this.buf = new Uint8Array(0);
-    this.lastRxAt = null;
-    if (this._listened !== device) {
-      // reconnecting to the same device must not stack listeners
-      device.addEventListener('gattserverdisconnected', () => {
-        this._stopNudge();
-        this.char = null;
-        this._emit('disconnected');
-      });
+  /** One link set up, step by step: GATT connect, the service, the characteristic, notifications, then the device-info
+   *  command (0x97: its answer selects the frame layout, and the BMS takes the cell-info ask only after serving it -
+   *  owner's log 2026-09-23). Every step re-checks the signal and that the link is still up (it can drop during the
+   *  last write without that write failing - 0.9.82). The browser's own connect is never cancelled: gatt.disconnect()
+   *  on a connect still pending crashes Chrome Android when it ran with Bluetooth off (2026-10-07, see STUCK_MS); the
+   *  caller stops waiting instead, and the pending connect is tracked in `pending` until the browser settles it. */
+  async open(device, signal) {
+    const token = ++this._link;
+    const own = () => { signal.throwIfAborted(); if (token !== this._link) throw new Error('superseded'); };
+    this.device = device; this.info = null; this.settings = null; this.char = null;
+    this._resetLink();
+    if (this._listened !== device) {                                  // one listener per device: reconnects must not stack them
+      device.addEventListener('gattserverdisconnected', () => { if (device.gatt.connected) return; this.char = null; this.down.set(true); });   // a late event of an older link while a new one is up: not ours
       this._listened = device;
     }
-
-    let timer = null;
-    const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`no answer in ${Math.round(timeoutMs / 1000)} s`)), timeoutMs);
-    });
-    const work = (async () => {
-      this._log(`connecting to ${device.name || device.id}`);
-      const t0 = Date.now();
-      const server = await this._gattConnect(device, stuckMs);
-      if (stale()) throw new Error('superseded');
-      this._log(`gatt: server connected in ${Date.now() - t0} ms`);
-      const service = await server.getPrimaryService(JK_SERVICE);
-      if (stale()) throw new Error('superseded');
-      this._log(`gatt: service found in ${Date.now() - t0} ms`);
-      this.char = await service.getCharacteristic(JK_CHAR);
-      if (stale()) throw new Error('superseded');
-      this.char.addEventListener('characteristicvaluechanged', (e) =>
-        this._onNotify(new Uint8Array(e.target.value.buffer), token)
-      );
-      await this.char.startNotifications();
-      if (stale()) throw new Error('superseded');
-      this._log('notifications on');
-      // Device info first: its firmware version selects the frame layout, and
-      // the BMS only takes the cell-info command once it has served that answer
-      // (a 0x96 written right behind 0x97 was ignored: owner's log 2026-09-23).
-      // These two are the ONLY commands of a healthy session (the JK app does
-      // the same, one beep); see NUDGE_MS for why there is no poll.
-      this._rxOther = 0;
-      await this._write(buildCommand(CMD_DEVICE_INFO));
-    })();
-    work.catch(() => {});                                 // a late outcome of a timed-out attempt is nobody's business
-    try {
-      await Promise.race([work, timeout]);
-    } catch (err) {
-      // a link left half-open must be dropped; a connect that rejected on its own
-      // is not touched again (GATT calls with the adapter off have crashed Chrome)
-      if (!stale() && device.gatt.connected) { try { device.gatt.disconnect(); } catch { /* already down */ } }
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
-    // the link can drop during the last write without that write failing: never report a dead link as connected
-    if (stale()) throw new Error('superseded');
-    if (!device.gatt.connected) throw new Error('GATT Server is disconnected (the link dropped during setup)');
-    this._startNudge();
-    this._emit('connected', device);
-    void this._handshake(token);
-  }
-
-  /** gatt.connect() watched for the browser hang: 'stuck' once when the oldest unsettled connect passes stuckMs
-   *  (later ones queue behind it in the browser), 'settled' if a stuck one settles after all (a slow stack, not a
-   *  dead handle). Only closing the browser completely clears a stuck one: app.js tells the user. */
-  async _gattConnect(device, stuckMs) {
-    const p = device.gatt.connect();
-    this._pending = (this._pending || 0) + 1;
-    if (!this._stuckTimer && !this._stuck) {
-      this._stuckTimer = setTimeout(() => {
-        this._stuckTimer = null; this._stuck = true;
-        this._log(`gatt: connect still pending after ${Math.round(stuckMs / 1000)} s - it ran with Bluetooth off; only closing the browser clears it`);
-        this._emit('stuck');
-      }, stuckMs);
-    }
-    try {
-      return await p;
-    } finally {
-      if (--this._pending === 0) {
-        if (this._stuckTimer) { clearTimeout(this._stuckTimer); this._stuckTimer = null; }
-        if (this._stuck) { this._stuck = false; this._log('gatt: the pending connect settled after all'); this._emit('settled'); }
-      }
-    }
-  }
-
-  /** After the device-info answer (or HANDSHAKE_WAIT_MS without it) ask for
-   *  cell info once: that is what starts the BMS's own stream. */
-  async _handshake(token) {
+    this._log(`connecting to ${device.name || device.id}`);
     const t0 = Date.now();
-    const got = await this._waitInfo(HANDSHAKE_WAIT_MS);
-    if (this._attempt !== token || !this.char) return;                 // link gone or superseded meanwhile
-    this._log(got ? `handshake: device info in ${Date.now() - t0} ms, asking for cell info (0x96)` : `handshake: no device info in ${HANDSHAKE_WAIT_MS} ms, asking for cell info anyway (0x96)`);
-    this.nudgedAt = Date.now(); this._asks = 0;                          // the ask clock starts here
-    await this._write(buildCommand(CMD_CELL_INFO)).catch((e) => this._log(`handshake failed: ${e.message}`));
+    const server = await this._track(device.gatt.connect());
+    own();
+    this._log(`gatt: server connected in ${Date.now() - t0} ms`);
+    this.down.set(!device.gatt.connected);
+    const up = () => { own(); if (!device.gatt.connected) throw new Error('GATT Server is disconnected (the link dropped during setup)'); };
+    const service = await server.getPrimaryService(JK_SERVICE);
+    up();
+    this._log(`gatt: service found in ${Date.now() - t0} ms`);
+    const char = await service.getCharacteristic(JK_CHAR);
+    up();
+    char.addEventListener('characteristicvaluechanged', (e) => this._onNotify(new Uint8Array(e.target.value.buffer), token));
+    await char.startNotifications();
+    up();
+    this.char = char;
+    this._log('notifications on');
+    await this.write(buildCommand(CMD_DEVICE_INFO));
+    up();
   }
 
-  _waitInfo(ms) {
-    if (this.info) return Promise.resolve(true);
-    return new Promise((resolve) => {
-      const t = setTimeout(() => { this._infoWaiters = this._infoWaiters.filter((w) => w !== done); resolve(false); }, ms);
-      const done = () => { clearTimeout(t); resolve(true); };
-      this._infoWaiters.push(done);
-    });
+  /** The browser queues every gatt.connect() behind the oldest unsettled one; that group is `pending` until all of
+   *  them settle (a slow stack settles them together). */
+  _track(p) {
+    if (!this.pending) this.pending = { since: Date.now(), n: 0, done: new Flag(false) };
+    const g = this.pending; g.n++;
+    void this._settle(p, g);
+    return p;
+  }
+  async _settle(p, g) {
+    try { await p; } catch { /* the attempt reports its own failure */ }
+    if (--g.n === 0) { g.done.set(true); if (this.pending === g) this.pending = null; }
   }
 
-  async disconnect() {
-    this._stopNudge();
-    if (this.device && this.device.gatt && this.device.gatt.connected) {
-      this.device.gatt.disconnect();
+  /** Void this link: anything the BLE stack still has queued for it is history (the token makes late notifications
+   *  no-ops). A link that is up is closed - a connected link, never a pending connect. */
+  drop(reason) {
+    this._link++;
+    this.buf = new Uint8Array(0);
+    this.lastRxAt = null;
+    this.char = null;
+    this._log(`dropping link: ${reason}`);
+    this.close();
+  }
+
+  /** Close a link that is up (the person's Disconnect, the chooser, a drop). Nothing to do for a link that is down. */
+  close() {
+    const dev = this.device;
+    if (dev && dev.gatt && dev.gatt.connected) {
+      try { dev.gatt.disconnect(); } catch { /* already down */ }
     }
+    if (!this.connected) { this.char = null; this.down.set(true); }    // no event comes for a link that was not up
   }
 
-  async _write(bytes) {
+  async write(bytes) {
     if (!this.char) return;
     // writeValueWithoutResponse matches what the BMS expects and avoids a round
     // trip, but isn't on every Chrome build.
@@ -649,49 +606,17 @@ export class JkBms extends EventTarget {
     }
   }
 
-  // No periodic command (see NUDGE_MS): the BMS streams by itself, and a
-  // command every 3 s made it re-serve settings + device info and beep.
-  _startNudge() {
-    this._stopNudge();
-    this.nudgedAt = null;
-    this.connectedAt = Date.now();
-    this.firstCellAt = null; this.settingsAt = null; this._rxOtherAll = 0; this._rxOtherAt = null;
-    this.nudgeTimer = setInterval(() => {
-      if (!this.connected) return;
-      const now = Date.now();
-      if (startupAskDecision(this.firstCellAt, this.nudgedAt, now, NUDGE_MS, { settingsAt: this.settingsAt, asks: this._asks || 0 })) {   // no cell info yet
-        const after = ((now - this.nudgedAt) / 1000).toFixed(1), served = this.settingsAt !== null && this.settingsAt >= this.nudgedAt;
-        this.nudgedAt = now; this._asks = (this._asks || 0) + 1;
-        const other = this._rxOtherAll ? `, ${this._rxOtherAll} non-frame notifications so far, last ${((now - this._rxOtherAt) / 1000).toFixed(1)} s ago` : '';
-        this._log(`startup: no cell info ${after} s after the ask (${served ? 'settings came' : 'not served'})${other}, asking again (0x96, ask ${this._asks + 1})`);
-        this._write(buildCommand(CMD_CELL_INFO)).catch((e) => this._log(`startup ask failed: ${e.message}`));
-        return;
-      }
-      if (this.firstCellAt === null) return;
-      if (!nudgeDecision(this.lastRxAt, this.connectedAt, this.nudgedAt, now)) return;
-      this.nudgedAt = now;
-      const quiet = Math.round((now - (this.lastRxAt || this.connectedAt)) / 1000);
-      this._log(`nudge: no frame for ${quiet} s, asking the BMS again (0x96)`);
-      this._write(buildCommand(CMD_CELL_INFO)).catch((e) => this._log(`nudge failed: ${e.message}`));
-    }, this.nudgeCheckMs);
-  }
-
-  _stopNudge() {
-    if (this.nudgeTimer) clearInterval(this.nudgeTimer);
-    this.nudgeTimer = null;
-  }
-
   _onNotify(chunk, token) {
-    if (token !== undefined && token !== this._attempt) return;   // a superseded link
+    if (token !== undefined && token !== this._link) return;    // a superseded link
     const now = Date.now();
     // Android freezes a backgrounded tab: the BLE stack keeps queueing
     // notifications and flushes them all when the tab wakes. Replaying them
     // would paint an hour-old battery as live, so a long gap voids the link
-    // and the app reconnects for fresh readings.
-    if (queuedAfterGap(this.lastRxAt, now)) {
-      const gap = Math.round((now - this.lastRxAt) / 1000);
-      this.lastRxAt = null;
-      this.drop(`${gap} s without data - queued readings dropped`);
+    // (the loop drops it and reconnects for fresh readings).
+    if (this.voided.v) return;
+    if (token !== undefined && queuedAfterGap(this.lastRxAt, now)) {          // a GATT link (the demo feeds frames without one)
+      this.voidGapS = Math.round((now - this.lastRxAt) / 1000);
+      this.voided.set(true);
       return;
     }
     this.lastRxAt = now;
@@ -701,8 +626,8 @@ export class JkBms extends EventTarget {
     // logged in full - the 2026-09-23 log had something arriving 4 s after
     // connect that was not a frame, and nothing said what.
     if (!frames.length && chunk.length <= 40 && findHeader(chunk, 0) < 0) {
-      this._rxOtherAll = (this._rxOtherAll || 0) + 1; this._rxOtherAt = now;
-      if (this._rxOther < 5) { this._rxOther++; this._log(`rx ${chunk.length}B not a frame: ${hex(chunk)}`); }
+      this.rxOtherAll++; this.rxOtherAt = now;
+      if (this.rxOther < 5) { this.rxOther++; this._log(`rx ${chunk.length}B not a frame: ${hex(chunk)}`); }
     }
     this.buf = buf;
     for (const n of notes) this._log(n);
@@ -714,17 +639,17 @@ export class JkBms extends EventTarget {
     switch (frame[4]) {
       case FRAME_DEVICE_INFO:
         this.info = decodeDeviceInfo(frame);
+        this.infoSeen.set(true);
         this._emit('device', this.info);
-        for (const w of this._infoWaiters.splice(0)) w();
         break;
       case FRAME_SETTINGS:
         this.settings = decodeSettings(frame); this.settingsAt = Date.now();
         this._emit('settings', this.settings);
         break;
       case FRAME_CELL_INFO: {
-        if (this.firstCellAt === null) { this.firstCellAt = Date.now(); if (this._asks) this._log(`startup: cell info after ${this._asks + 1} asks${this._rxOtherAll ? `, ${this._rxOtherAll} non-frame notifications` : ''}`); }
+        if (this.firstCellAt === null) this.firstCellAt = Date.now();
         const data = decodeCellInfo(frame, this.info ? this.info.swMajor : null);
-        if (data.ok) this._emit('data', data);
+        if (data.ok) { this.lastDataAt = Date.now(); this._emit('data', data); }
         else this._log(`cell-info decode failed: ${data.reason}`);
         break;
       }

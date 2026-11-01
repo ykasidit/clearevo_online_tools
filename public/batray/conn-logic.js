@@ -12,135 +12,64 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 //
-// Functional core of the connect / retry / reconnect-countdown flow (house rule
-// 2026-09-20: the state is one plain object, `connState()`, that the app owns
-// and passes in; these functions update it and return what to do next; the app shell
-// runs the chooser, the GATT calls, the timers and the card). Facts encoded
-// here come from live logs: Android refuses the first GATT connect (status
-// 133) and takes the next one 1.5 s later (2026-09-18); a link that goes quiet
-// for STALE_MS is gone whatever gatt.connected says (2026-09-16); a tap while a
-// countdown is pending must make exactly one attempt (2026-09-17).
+// The pure half of the Bluetooth connection (house rules 2026-09-20 and 2026-10-01). Since 0.9.83 the flow itself is
+// ONE loop per pack in conn.js (idle -> choosing -> connecting -> connected -> countdown, and stuck): the phase is the
+// loop's program counter, the loop is the only writer of `connState()`, and a person's tap only queues a command.
+// What a command means in each phase, whether a failed attempt is tried again, and what follows the end of a link
+// are decided here, as tables over plain values, so the rules stay replayable in node. Facts encoded here come from
+// live logs: Android refuses the first GATT connect (status 133) and takes the next one 1.5 s later (2026-09-18); a
+// link that goes quiet for STALE_MS is gone whatever gatt.connected says (2026-09-16); a tap while a countdown is
+// pending makes exactly one attempt (2026-09-17); a connect the browser cannot finish (it ran with Bluetooth off) is
+// never cancelled and never retried, only explained (2026-10-07, phase stuck); the link an attempt is building is the
+// attempt's alone - the stall check runs inside the loop that serves a connected link, so it cannot judge a link
+// still being built (the seahut reader, 2026-10-29: 1760 links dropped mid service discovery by a watchdog timer).
 //
 // phases: idle | choosing | connecting | connected | countdown | stuck
-// stuck (0.9.81): a gatt.connect() the browser cannot finish (it ran with Bluetooth off, jkbms STUCK_MS); nothing
-// but closing the browser clears it, so no retries, no countdown; a tap shows the sheet again.
-//
-// One owner per link (0.9.82, the seahut reader's log 2026-10-29/30: 2561 GATT connects in 13.5 h, 2 got as far as the
-// service): while an attempt runs (phase connecting) the link it is building is the attempt's alone - the attempt ends
-// it (ok, failed, its own timeout). The stall watchdog judged that half-built link by the PREVIOUS link's last frame
-// (34 h old) and dropped 1760 of them, a median 1.7 s after the GATT connect, before service discovery could finish;
-// a drop while choosing or connecting also started a countdown beside the attempt still in flight. Now 'link-stalled'
-// acts only in phase connected on a link with its own connect time, and 'gatt-disconnected' while choosing or
-// connecting is left to the attempt (getPrimaryService & co reject, attempt-failed retries or counts down).
 
 export const CONNECT_TRIES = 3, CONNECT_GAP_MS = 1500, CONNECT_S = 15;
 export const RECONNECT_S = { auto: 10, chooser: 5, stalled: 3, adapter: 3 };
+export const SERVE_TICK_MS = 250;          // the connected loop looks at the link this often (the quick startup re-ask is 1 s)
+export const DOWN_WAIT_MS = 2000;          // a closed link reports itself down within this, or the loop marks it down
 
+/** What the UI reads (the loop writes it): the phase, the attempt and its seconds left, the countdown, where the
+ *  device came from, whether the last link went quiet, this link's connect time, whether data has come. */
 export function connState() {
-  return { phase: 'idle', hasDevice: false, attempt: 0, left: 0, count: 0, origin: null, userDisconnect: false, stalled: false, stalledAge: 0, connectedAt: null, gotData: false };
+  return { phase: 'idle', hasDevice: false, attempt: 0, left: 0, count: 0, origin: null, stalled: false, stalledAge: 0, connectedAt: null, gotData: false };
 }
 export const retryableConnectError = (msg) => !/cancel|not found|no such|permission/i.test(String(msg || ''));
 export const cancelledError = (msg) => /cancel/i.test(String(msg || ''));
 
-function beginAttempt(cs) { cs.phase = 'connecting'; cs.attempt = 1; cs.left = CONNECT_S; cs.count = 0; cs.connectedAt = null; return { action: 'connect', attempt: 1 }; }
-function startCountdown(cs, seconds) {
-  if (cs.phase === 'connecting' || cs.phase === 'connected') return { action: 'ignore', why: 'an attempt is already in progress' };
-  cs.phase = 'countdown'; cs.count = seconds;
-  return { action: 'countdown', seconds };
-}
-
-/** One event in, one decision out. inp: { autoRe, now, msg, ageS } as the event needs. */
-export function connEvent(cs, ev, inp = {}) {
-  if (cs.phase === 'stuck' && ev !== 'gatt-connected' && ev !== 'connect-settled' && ev !== 'disconnect') {
-    return /^(tap-connect|known|reconnect-now)$/.test(ev) ? { action: 'stuck', why: 'tap while a connect is stuck in the browser' } : { action: 'ignore', why: 'a connect is stuck in the browser' };
-  }
-  switch (ev) {
-    case 'tap-connect':                                   // Connect, Connect again, Add BMS
-      if (cs.phase === 'connecting') return { action: 'ignore', why: 'an attempt is in progress' };
-      cs.userDisconnect = false; cs.phase = 'choosing'; cs.count = 0;   // an explicit tap lifts an earlier Cancel
-      return { action: 'choose' };
-    case 'picked':
-      cs.hasDevice = true; cs.origin = 'chooser';
-      return beginAttempt(cs);
-    case 'known':                                        // the remembered BMS, no chooser (0.9.30): retries like an auto reconnect
-      if (cs.phase === 'connecting') return { action: 'ignore', why: 'an attempt is in progress' };
-      cs.userDisconnect = false; cs.hasDevice = true; cs.origin = 'known'; cs.count = 0;
-      return beginAttempt(cs);
-    case 'chooser-cancelled':
-      cs.phase = 'idle'; return { action: 'idle' };
-    case 'connect-tick':
-      if (cs.phase !== 'connecting') return { action: 'noop' };
-      cs.left = Math.max(0, cs.left - 1); return { action: 'count', left: cs.left };
-    case 'attempt-failed': {
-      if (cs.phase !== 'connecting') return { action: 'ignore', why: 'not connecting' };
-      const msg = inp.msg || '';
-      if (cs.attempt < CONNECT_TRIES && retryableConnectError(msg) && !cs.userDisconnect) {
-        cs.attempt++; cs.left = CONNECT_S;
-        return { action: 'retry', attempt: cs.attempt, gapMs: CONNECT_GAP_MS };
-      }
-      // this tap or countdown attempt has failed for good: keep trying on the
-      // countdown when a device was picked and auto reconnect is on, never
-      // drop back to the chooser (2026-09-18)
-      cs.phase = 'idle';
-      if (cs.hasDevice && !cancelledError(msg) && inp.autoRe && !cs.userDisconnect) return { ...startCountdown(cs, cs.origin === 'chooser' ? RECONNECT_S.chooser : RECONNECT_S.auto), final: true };
-      return { action: 'idle', final: true };
-    }
-    case 'gatt-connected':
-      cs.phase = 'connected'; cs.userDisconnect = false; cs.stalled = false; cs.connectedAt = inp.now || 0; cs.attempt = 0; cs.count = 0;
-      return { action: 'connected' };
-    case 'gatt-disconnected': {
-      if (cs.phase === 'connecting' || cs.phase === 'choosing') return { action: 'ignore', why: `the ${cs.phase === 'connecting' ? 'attempt in flight' : 'chooser'} owns the link` };
-      const wasStalled = cs.stalled, byUser = cs.userDisconnect;
-      cs.phase = 'idle'; cs.userDisconnect = false;
-      if (inp.autoRe && cs.hasDevice && !byUser) return startCountdown(cs, wasStalled ? RECONNECT_S.stalled : RECONNECT_S.auto);
-      return { action: 'idle' };
-    }
-    case 'link-stalled':                                  // silence past STALE_MS: the link is gone, whatever GATT says
-      if (cs.phase !== 'connected' || !cs.connectedAt) return { action: 'ignore', why: 'not a connected link (an attempt owns it)' };
-      cs.stalled = true; cs.stalledAge = inp.ageS || 0;
-      return { action: 'drop-link', ageS: cs.stalledAge };
-    case 'data': {
-      const back = cs.stalled; cs.stalled = false; cs.gotData = true;
-      return { action: back ? 'back' : 'noop' };
-    }
-    case 'countdown-tick':
-      if (cs.phase !== 'countdown') return { action: 'ignore', why: 'no countdown' };
-      cs.count -= 1;
-      if (cs.count > 0) return { action: 'count', left: cs.count };
-      cs.origin = 'auto'; return beginAttempt(cs);
-    case 'reconnect-now':
-      if (cs.phase === 'connecting') return { action: 'ignore', why: 'double tap' };
-      if (cs.phase === 'connected') return { action: 'ignore', why: 'already connected' };
-      cs.origin = 'manual'; return beginAttempt(cs);
-    case 'cancel':                                        // Cancel on the countdown card
-      cs.phase = 'idle'; cs.userDisconnect = true; cs.count = 0; return { action: 'disconnect-gatt' };
-    case 'disconnect':                                    // the Disconnect button
-      cs.phase = 'idle'; cs.userDisconnect = true; cs.count = 0; return { action: 'disconnect-bms' };
-    case 'auto-off':                                      // auto reconnect unticked
-      if (cs.phase === 'countdown') { cs.phase = 'idle'; cs.count = 0; return { action: 'idle' }; }
-      return { action: 'noop' };
-    case 'connect-stuck':                                 // jkbms 'stuck': the browser holds a dead connect for this device
-      cs.phase = 'stuck'; cs.count = 0; cs.attempt = 0; cs.connectedAt = null;
-      return { action: 'stuck' };
-    case 'connect-settled':                               // jkbms 'settled': it was only slow; back to the normal flow
-      if (cs.phase !== 'stuck') return { action: 'noop' };
-      cs.phase = 'idle';
-      if (inp.autoRe && cs.hasDevice && !cs.userDisconnect) return startCountdown(cs, RECONNECT_S.auto);
-      return { action: 'idle' };
-    case 'adapter-available':                             // Bluetooth came back: do not wait the full countdown
-      if (cs.phase === 'countdown') { cs.count = RECONNECT_S.adapter; return { action: 'countdown', seconds: cs.count }; }
-      return { action: 'noop' };
-    default: return { action: 'ignore', why: `unknown event ${ev}` };
+/** A command in a phase -> what the loop does: 'choose' (the chooser) | 'go' (connect the device it has) | 'stop'
+ *  (back to idle; a link that is up is closed) | 'short' (the countdown to RECONNECT_S.adapter) | 'sheet' (stuck:
+ *  say why again) | 'ignore'. Commands: connect (Connect, Connect again, Add BMS), known (the remembered BMS, the
+ *  resume), now (Reconnect now), cancel (the busy button, Cancel on the countdown), disconnect (the sunk button),
+ *  auto-off (auto reconnect unticked), adapter (Bluetooth came back). */
+export function cmdIn(phase, cmd, { hasDevice = false } = {}) {
+  if (phase === 'stuck') return /^(connect|known|now)$/.test(cmd) ? 'sheet' : cmd === 'disconnect' ? 'stop' : 'ignore';
+  switch (cmd) {
+    case 'connect': return phase === 'connecting' || phase === 'choosing' ? 'ignore' : 'choose';   // while connected: the chooser drops the link first
+    case 'known': return phase === 'idle' || phase === 'countdown' ? 'go' : 'ignore';
+    case 'now': return (phase === 'idle' || phase === 'countdown') && hasDevice ? 'go' : 'ignore';
+    case 'cancel': case 'disconnect': return phase === 'idle' ? 'ignore' : 'stop';
+    case 'auto-off': return phase === 'countdown' ? 'stop' : 'ignore';
+    case 'adapter': return phase === 'countdown' ? 'short' : 'ignore';
+    default: return 'ignore';
   }
 }
 
-/** Should the stall watchdog judge this pack's link? Only a link conn-logic calls connected, with its own connect time:
- *  a link an attempt is still building belongs to that attempt (it has its own timeout). `gone` is linkGone() over
- *  (lastFrameAt, cs.connectedAt). Returns { drop, ageS }. */
-export function watchDecision(cs, { gattUp, gone, lastFrameAt, now }) {
-  if (cs.phase !== 'connected' || !cs.connectedAt || !gattUp || !gone) return { drop: false };
-  const since = lastFrameAt && lastFrameAt >= cs.connectedAt ? lastFrameAt : cs.connectedAt;
-  return { drop: true, ageS: Math.round((now - since) / 1000) };
+/** After a failed attempt: the same tap tries again CONNECT_GAP_MS later, up to CONNECT_TRIES (2026-09-18). */
+export function retryDecision(attempt, msg) {
+  return attempt < CONNECT_TRIES && retryableConnectError(msg) ? { retry: true, gapMs: CONNECT_GAP_MS } : { retry: false };
+}
+
+/** How a round ended -> the next phase. end: 'failed' (every try of this round) | 'down' (the link fell) | 'stalled'
+ *  (quiet past STALE_MS, dropped) | 'gap' (queued readings of a frozen tab, dropped) | 'settled' (a stuck connect
+ *  ended after all). A picked device that refuses goes to the countdown, never back to the chooser (2026-09-18). */
+export function afterEnd(end, { autoRe, hasDevice, origin = null, msg = '' }) {
+  if (!autoRe || !hasDevice) return { next: 'idle' };
+  if (end === 'failed') return cancelledError(msg) ? { next: 'idle' } : { next: 'countdown', seconds: origin === 'chooser' ? RECONNECT_S.chooser : RECONNECT_S.auto };
+  if (end === 'stalled') return { next: 'countdown', seconds: RECONNECT_S.stalled };
+  return { next: 'countdown', seconds: RECONNECT_S.auto };
 }
 
 /** What the offline / loading / reconnect card shows for a BLE pack. */

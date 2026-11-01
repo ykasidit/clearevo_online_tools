@@ -1,4 +1,4 @@
-// BatRay by ClearEvo.com - tests (batray_conn.test.js): the BLE connect / retry / countdown rules replayed from live logs
+// BatRay by ClearEvo.com - tests (batray_conn.test.js): the Bluetooth connection loop replayed from live logs
 // Copyright (C) 2026 Kasidit Yusuf
 //
 // This program is free software; you can redistribute it and/or modify it
@@ -11,222 +11,327 @@
 // FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
-import test from 'node:test';
+//
+// Two halves, as in the code: the pure tables of conn-logic.js, and the loop of conn.js driven over the real JkBms
+// port and a fake Web Bluetooth device, on a fast clock (one "second" is 20 ms). Each replay names the log it came from.
+import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, CONNECT_TRIES, CONNECT_GAP_MS, RECONNECT_S, CONNECT_S, knownDevice, watchDecision } from '../public/batray/conn-logic.js';
-import { linkGone, STALE_MS } from '../public/batray/jkbms.js';
+import { connState, cmdIn, retryDecision, afterEnd, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, CONNECT_TRIES, CONNECT_GAP_MS, RECONNECT_S } from '../public/batray/conn-logic.js';
+import { BleConn } from '../public/batray/conn.js';
+import { JkBms } from '../public/batray/jkbms.js';
+import { sleep } from '../public/batray/sync.js';
+import * as F from './batray_frames.js';
 
-const A = (cs, ev, inp) => connEvent(cs, ev, { autoRe: true, now: 1000, ...inp }).action;
+const REFUSED = 'Connection Error: Connection attempt failed.';
 
-test('2026-09-18 log: one tap, Android refuses twice with status 133, the third attempt connects - one chooser, three attempts', () => {
-  const cs = connState();
-  assert.equal(A(cs, 'tap-connect'), 'choose'); assert.equal(cs.phase, 'choosing');
-  assert.deepEqual(connEvent(cs, 'picked'), { action: 'connect', attempt: 1 });
-  let d = connEvent(cs, 'attempt-failed', { autoRe: true, msg: 'Connection Error: Connection attempt failed.' });
-  assert.deepEqual(d, { action: 'retry', attempt: 2, gapMs: CONNECT_GAP_MS });
-  d = connEvent(cs, 'attempt-failed', { autoRe: true, msg: 'Connection Error: Connection attempt failed.' });
-  assert.deepEqual(d, { action: 'retry', attempt: 3, gapMs: CONNECT_GAP_MS });
-  assert.equal(A(cs, 'gatt-connected', { now: 5000 }), 'connected');
-  assert.equal(cs.phase, 'connected'); assert.equal(cs.connectedAt, 5000); assert.equal(cs.attempt, 0);
-  assert.equal(A(cs, 'tap-connect'), 'choose');            // Connect again while connected: allowed (the chooser drops the link first)
+// ---------------------------------------------------------------- the pure tables
+test('what a command means in each phase: one attempt at a time, the chooser drops a link that is up, a stuck connect only explains itself', () => {
+  const dev = { hasDevice: true }, none = { hasDevice: false };
+  assert.equal(cmdIn('idle', 'connect', none), 'choose');
+  assert.equal(cmdIn('connected', 'connect', dev), 'choose', 'Connect again while connected: the chooser (it closes the link first)');
+  assert.equal(cmdIn('connecting', 'connect', dev), 'ignore', 'a double tap while an attempt runs (2026-09-17)');
+  assert.equal(cmdIn('choosing', 'connect', dev), 'ignore');
+  assert.equal(cmdIn('idle', 'known', none), 'go'); assert.equal(cmdIn('countdown', 'known', dev), 'go'); assert.equal(cmdIn('connected', 'known', dev), 'ignore');
+  assert.equal(cmdIn('countdown', 'now', dev), 'go'); assert.equal(cmdIn('idle', 'now', none), 'ignore', 'nothing to reconnect');
+  assert.equal(cmdIn('connecting', 'now', dev), 'ignore');
+  for (const ph of ['choosing', 'connecting', 'connected', 'countdown']) { assert.equal(cmdIn(ph, 'cancel', dev), 'stop', ph); assert.equal(cmdIn(ph, 'disconnect', dev), 'stop', ph); }
+  assert.equal(cmdIn('idle', 'cancel', dev), 'ignore');
+  assert.equal(cmdIn('countdown', 'auto-off', dev), 'stop'); assert.equal(cmdIn('connected', 'auto-off', dev), 'ignore');
+  assert.equal(cmdIn('countdown', 'adapter', dev), 'short'); assert.equal(cmdIn('idle', 'adapter', dev), 'ignore');
+  // 2026-10-07: only closing the browser clears a stuck connect - a tap says so again, Disconnect ends the wait
+  for (const c of ['connect', 'known', 'now']) assert.equal(cmdIn('stuck', c, dev), 'sheet', c);
+  assert.equal(cmdIn('stuck', 'disconnect', dev), 'stop'); assert.equal(cmdIn('stuck', 'cancel', dev), 'ignore'); assert.equal(cmdIn('stuck', 'adapter', dev), 'ignore');
+  assert.equal(cmdIn('idle', 'whatever', dev), 'ignore');
 });
 
-test('a picked device that refuses all attempts goes to a 5 s countdown, never back to the chooser; the countdown connects', () => {
-  const cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked');
-  for (let i = 1; i < CONNECT_TRIES; i++) assert.equal(A(cs, 'attempt-failed', { msg: 'Connection attempt failed.' }), 'retry');
-  const d = connEvent(cs, 'attempt-failed', { autoRe: true, msg: 'Connection attempt failed.' });
-  assert.deepEqual(d, { action: 'countdown', seconds: RECONNECT_S.chooser, final: true });
-  assert.equal(cs.phase, 'countdown'); assert.equal(cs.count, 5);
-  for (let i = 0; i < 4; i++) assert.equal(A(cs, 'countdown-tick'), 'count');
-  assert.deepEqual(connEvent(cs, 'countdown-tick'), { action: 'connect', attempt: 1 });
-  assert.equal(cs.origin, 'auto');
-  // that attempt fails for good: the countdown restarts at the auto length
-  for (let i = 1; i < CONNECT_TRIES; i++) A(cs, 'attempt-failed', { msg: 'x' });
-  assert.deepEqual(connEvent(cs, 'attempt-failed', { autoRe: true, msg: 'x' }), { action: 'countdown', seconds: RECONNECT_S.auto, final: true });
+test('retries and what follows the end of a round (2026-09-18: two refusals then a link; a picked device that refuses counts down, never back to the chooser)', () => {
+  assert.deepEqual(retryDecision(1, REFUSED), { retry: true, gapMs: CONNECT_GAP_MS });
+  assert.deepEqual(retryDecision(CONNECT_TRIES - 1, REFUSED), { retry: true, gapMs: CONNECT_GAP_MS });
+  assert.deepEqual(retryDecision(CONNECT_TRIES, REFUSED), { retry: false });
+  assert.deepEqual(retryDecision(1, 'User cancelled the requestDevice() chooser.'), { retry: false });
+  assert.deepEqual(retryDecision(1, 'Bluetooth permission denied'), { retry: false });
+  const on = { autoRe: true, hasDevice: true };
+  assert.deepEqual(afterEnd('failed', { ...on, origin: 'chooser', msg: REFUSED }), { next: 'countdown', seconds: RECONNECT_S.chooser });
+  assert.deepEqual(afterEnd('failed', { ...on, origin: 'known', msg: REFUSED }), { next: 'countdown', seconds: RECONNECT_S.auto });
+  assert.deepEqual(afterEnd('failed', { ...on, origin: 'chooser', msg: 'cancelled' }), { next: 'idle' });
+  assert.deepEqual(afterEnd('stalled', on), { next: 'countdown', seconds: RECONNECT_S.stalled });
+  for (const e of ['down', 'gap', 'settled']) assert.deepEqual(afterEnd(e, on), { next: 'countdown', seconds: RECONNECT_S.auto }, e);
+  assert.deepEqual(afterEnd('down', { autoRe: false, hasDevice: true }), { next: 'idle' });
+  assert.deepEqual(afterEnd('down', { autoRe: true, hasDevice: false }), { next: 'idle' });
 });
 
-test('a non-retryable error, a cancelled chooser, or auto reconnect off ends on the idle card', () => {
-  let cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked');
-  assert.deepEqual(connEvent(cs, 'attempt-failed', { autoRe: true, msg: 'User cancelled the requestDevice() chooser.' }), { action: 'idle', final: true });
-  cs = connState(); A(cs, 'tap-connect');
-  assert.equal(A(cs, 'chooser-cancelled'), 'idle'); assert.equal(cs.hasDevice, false);
-  cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked');
-  for (let i = 1; i < CONNECT_TRIES; i++) A(cs, 'attempt-failed', { msg: 'x' });
-  assert.deepEqual(connEvent(cs, 'attempt-failed', { autoRe: false, msg: 'x' }), { action: 'idle', final: true });
+test('the card, the pack chip, the wake lock and the one Bluetooth button follow the phase', () => {
+  const at = (phase, x = {}) => ({ ...connState(), phase, ...x });
+  assert.deepEqual(connCard(at('idle'), { gattConnected: false, hasData: false }), { offline: false, loading: false, countdown: false, idle: true, reNow: false, disconnectEnabled: false });
+  assert.deepEqual(connCard(at('connecting', { hasDevice: true }), { gattConnected: false, hasData: false }), { offline: true, loading: false, countdown: true, idle: false, reNow: false, disconnectEnabled: false });
+  assert.deepEqual(connCard(at('connected', { hasDevice: true }), { gattConnected: true, hasData: false }), { offline: false, loading: true, countdown: false, idle: false, reNow: false, disconnectEnabled: true });
+  assert.deepEqual(connCard(at('countdown', { hasDevice: true }), { gattConnected: false, hasData: true }), { offline: true, loading: false, countdown: true, idle: false, reNow: true, disconnectEnabled: false });
+  assert.deepEqual(connCard(at('idle', { hasDevice: true }), { gattConnected: false, hasData: true }), { offline: true, loading: false, countdown: false, idle: true, reNow: false, disconnectEnabled: false });
+  assert.equal(packChipState(at('connecting'), false, false), 'connecting'); assert.equal(packChipState(at('connected'), true, false), 'waiting');
+  assert.equal(packChipState(at('connected'), true, true), 'live'); assert.equal(packChipState(at('idle'), false, true), 'offline');
+  assert.equal(wakeWantedByConn(at('countdown'), false), true); assert.equal(wakeWantedByConn(at('idle'), false), false);
+  assert.deepEqual(connButton(at('idle'), false), { on: false, busy: false, disabled: false, label: 'connect' });
+  for (const ph of ['choosing', 'connecting', 'countdown']) assert.deepEqual(connButton(at(ph), false), { on: false, busy: true, disabled: false, label: 'connecting' }, ph);
+  assert.deepEqual(connButton(at('connected'), true), { on: true, busy: false, disabled: false, label: 'disconnect' });
+  assert.deepEqual(connButton(at('stuck'), false), { on: false, busy: false, disabled: false, label: 'connect' }, 'a tap while stuck explains it again');
 });
 
-test('2026-09-16 frozen tab: a quiet link is dropped, the disconnect that follows counts down 3 s, a data frame clears the stall', () => {
-  const cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked'); A(cs, 'gatt-connected', { now: 100 });
-  assert.equal(A(cs, 'data'), 'noop'); assert.equal(cs.gotData, true);
-  assert.deepEqual(connEvent(cs, 'link-stalled', { ageS: 14 }), { action: 'drop-link', ageS: 14 });
-  assert.equal(cs.connectedAt, 100, 'the dropped link keeps its connect time until the next attempt starts');
-  assert.deepEqual(connEvent(cs, 'gatt-disconnected', { autoRe: true }), { action: 'countdown', seconds: RECONNECT_S.stalled });
-  A(cs, 'countdown-tick'); A(cs, 'countdown-tick'); assert.equal(A(cs, 'countdown-tick'), 'connect');
-  assert.equal(cs.connectedAt, null, 'the link the attempt builds has no connect time yet');
-  A(cs, 'gatt-connected', { now: 9000 });
-  assert.equal(cs.stalled, false);
-  cs.stalled = true; assert.equal(A(cs, 'data'), 'back');    // amber "no data" goes back to green on the first frame
-});
-
-test('a normal drop counts down 10 s; Reconnect now during the countdown makes exactly one attempt; a double tap is ignored', () => {
-  const cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked'); A(cs, 'gatt-connected');
-  assert.deepEqual(connEvent(cs, 'gatt-disconnected', { autoRe: true }), { action: 'countdown', seconds: RECONNECT_S.auto });
-  assert.equal(A(cs, 'countdown-tick'), 'count');
-  assert.deepEqual(connEvent(cs, 'reconnect-now'), { action: 'connect', attempt: 1 });
-  assert.equal(cs.origin, 'manual');
-  assert.deepEqual(connEvent(cs, 'reconnect-now'), { action: 'ignore', why: 'double tap' });
-  assert.deepEqual(connEvent(cs, 'countdown-tick'), { action: 'ignore', why: 'no countdown' });   // a late timer tick changes nothing
-  assert.equal(A(cs, 'gatt-connected'), 'connected');
-  assert.deepEqual(connEvent(cs, 'reconnect-now'), { action: 'ignore', why: 'already connected' });
-});
-
-test('Cancel and Disconnect are the user\'s word: no countdown follows, and the next Connect tap lifts it', () => {
-  const cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked'); A(cs, 'gatt-connected');
-  A(cs, 'gatt-disconnected'); assert.equal(cs.phase, 'countdown');
-  assert.equal(A(cs, 'cancel'), 'disconnect-gatt'); assert.equal(cs.userDisconnect, true); assert.equal(cs.phase, 'idle');
-  assert.equal(A(cs, 'gatt-disconnected'), 'idle');           // the GATT close that follows our own disconnect
-  assert.equal(cs.userDisconnect, false);
-  A(cs, 'tap-connect'); A(cs, 'picked'); A(cs, 'gatt-connected');
-  assert.equal(A(cs, 'disconnect'), 'disconnect-bms');
-  assert.equal(A(cs, 'gatt-disconnected'), 'idle');
-  A(cs, 'tap-connect'); assert.equal(cs.userDisconnect, false);
-});
-
-test('auto reconnect unticked ends a countdown; the adapter coming back shortens one to 3 s', () => {
-  const cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked'); A(cs, 'gatt-connected'); A(cs, 'gatt-disconnected');
-  assert.deepEqual(connEvent(cs, 'adapter-available'), { action: 'countdown', seconds: RECONNECT_S.adapter });
-  assert.equal(A(cs, 'auto-off'), 'idle'); assert.equal(cs.phase, 'idle');
-  assert.equal(A(cs, 'auto-off'), 'noop'); assert.equal(A(cs, 'adapter-available'), 'noop');
-});
-
-test('the connecting status counts the attempt timeout down', () => {
-  const cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked');
-  assert.equal(cs.left, CONNECT_S);
-  assert.deepEqual(connEvent(cs, 'connect-tick'), { action: 'count', left: CONNECT_S - 1 });
-  A(cs, 'gatt-connected'); assert.equal(A(cs, 'connect-tick'), 'noop');
-});
-
-test('the card and the pack chip follow the state object', () => {
-  const cs = connState();
-  assert.deepEqual(connCard(cs, { gattConnected: false, hasData: false }), { offline: false, loading: false, countdown: false, idle: true, reNow: false, disconnectEnabled: false });
-  A(cs, 'tap-connect'); A(cs, 'picked');
-  assert.deepEqual(connCard(cs, { gattConnected: false, hasData: false }), { offline: true, loading: false, countdown: true, idle: false, reNow: false, disconnectEnabled: false });
-  assert.equal(packChipState(cs, false, false), 'connecting'); assert.equal(wakeWantedByConn(cs, false), true);
-  A(cs, 'gatt-connected');
-  assert.deepEqual(connCard(cs, { gattConnected: true, hasData: false }), { offline: false, loading: true, countdown: false, idle: false, reNow: false, disconnectEnabled: true });
-  assert.equal(packChipState(cs, true, false), 'waiting'); assert.equal(packChipState(cs, true, true), 'live');
-  A(cs, 'gatt-disconnected');
-  assert.deepEqual(connCard(cs, { gattConnected: false, hasData: true }), { offline: true, loading: false, countdown: true, idle: false, reNow: true, disconnectEnabled: false });
-  A(cs, 'cancel');
-  assert.deepEqual(connCard(cs, { gattConnected: false, hasData: true }), { offline: true, loading: false, countdown: false, idle: true, reNow: false, disconnectEnabled: false });
-  assert.equal(packChipState(cs, false, true), 'offline'); assert.equal(wakeWantedByConn(cs, false), false);
-});
-
-test('the one Bluetooth button: Connect when idle, pulsing Connecting (a cancel) while connecting or counting down, sunk Disconnect when connected', () => {
-  const cs = connState();
-  assert.deepEqual(connButton(cs, false), { on: false, busy: false, disabled: false, label: 'connect' });
-  A(cs, 'tap-connect'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false, label: 'connecting' });
-  A(cs, 'picked'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false, label: 'connecting' });
-  A(cs, 'gatt-connected'); assert.deepEqual(connButton(cs, true), { on: true, busy: false, disabled: false, label: 'disconnect' });
-  A(cs, 'gatt-disconnected'); assert.equal(cs.phase, 'countdown'); assert.deepEqual(connButton(cs, false), { on: false, busy: true, disabled: false, label: 'connecting' });
-  assert.equal(A(cs, 'cancel'), 'disconnect-gatt'); assert.deepEqual(connButton(cs, false), { on: false, busy: false, disabled: false, label: 'connect' });
-});
-
-test('the remembered BMS: a green Connect-to-NAME button only while the browser still lists the saved id as permitted; the known event connects without a chooser and retries like an auto reconnect', () => {
+test('the remembered BMS: a green Connect-to-NAME button only while the browser still lists the saved id as permitted', () => {
   const saved = { id: 'abc123', name: 'JK-B2A24S', at: 1 };
   assert.deepEqual(knownDevice(saved, ['xyz', 'abc123']), { show: true, id: 'abc123', name: 'JK-B2A24S' });
   assert.equal(knownDevice(saved, ['xyz']).show, false); assert.equal(knownDevice(saved, ['xyz']).why, 'not permitted any more');
   assert.equal(knownDevice(saved, null).why, 'no getDevices'); assert.equal(knownDevice(null, ['abc123']).show, false); assert.equal(knownDevice({ id: '' }, ['']).show, false);
   assert.equal(knownDevice({ id: 'abc123' }, ['abc123']).name, 'abc123', 'a device without a name is shown by its id');
-  const cs = connState();
-  const d = connEvent(cs, 'known', { now: 0 });
-  assert.equal(d.action, 'connect'); assert.equal(cs.phase, 'connecting'); assert.equal(cs.origin, 'known'); assert.equal(cs.hasDevice, true);
-  assert.equal(connEvent(cs, 'known', { now: 1 }).action, 'ignore', 'a double tap is ignored');
-  for (let i = 0; i < 3; i++) connEvent(cs, 'attempt-failed', { msg: 'Connection attempt failed', autoRe: true, now: 1000 * (i + 1) });
-  assert.equal(cs.phase, 'countdown'); assert.equal(cs.count, RECONNECT_S.auto, 'a known device counts down the auto 10 s, not the chooser 5 s');
 });
 
-test('2026-10-07 crash: a connect that ran with Bluetooth off is stuck in the browser - no retries, no countdown, a tap shows the sheet again; connected or settled clears it', () => {
-  const cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked');
-  assert.deepEqual(connEvent(cs, 'connect-stuck', { autoRe: true }), { action: 'stuck' });
-  assert.equal(cs.phase, 'stuck'); assert.equal(cs.attempt, 0);
-  assert.equal(A(cs, 'countdown-tick'), 'ignore'); assert.equal(A(cs, 'connect-tick'), 'ignore'); assert.equal(A(cs, 'attempt-failed', { msg: 'no answer in 15 s' }), 'ignore');
-  assert.equal(A(cs, 'adapter-available'), 'ignore'); assert.equal(A(cs, 'gatt-disconnected'), 'ignore');
-  assert.equal(A(cs, 'tap-connect'), 'stuck', 'Connect again: the sheet, not the chooser'); assert.equal(A(cs, 'known'), 'stuck'); assert.equal(A(cs, 'reconnect-now'), 'stuck');
-  assert.equal(cs.phase, 'stuck');
-  assert.deepEqual(connCard(cs, { gattConnected: false, hasData: false }), { offline: true, loading: false, countdown: false, idle: true, reNow: false, disconnectEnabled: false });
-  assert.equal(packChipState(cs, false, false), 'offline'); assert.equal(wakeWantedByConn(cs, false), false, 'nothing to keep the screen on for');
-  // it was only a slow stack: settled -> the auto countdown as after any drop
-  assert.deepEqual(connEvent(cs, 'connect-settled', { autoRe: true }), { action: 'countdown', seconds: RECONNECT_S.auto });
-  assert.equal(A(cs, 'connect-settled'), 'noop', 'settled while not stuck is nothing');
-  // a stuck connect that connects after all is simply connected
-  A(cs, 'countdown-tick'); cs.count = 1; A(cs, 'countdown-tick'); A(cs, 'connect-stuck');
-  assert.equal(A(cs, 'gatt-connected', { now: 9000 }), 'connected'); assert.equal(cs.phase, 'connected');
-  // settled with auto reconnect off: idle
-  A(cs, 'connect-stuck'); assert.equal(connEvent(cs, 'connect-settled', { autoRe: false }).action, 'idle');
-  // the Disconnect button still works while stuck (its GATT call is guarded by gatt.connected in the app)
-  A(cs, 'connect-stuck'); assert.equal(A(cs, 'disconnect'), 'disconnect-bms'); assert.equal(cs.phase, 'idle');
-});
-
-// The seahut reader, 0.9.80, 2026-10-29 20:53 - 2026-10-30 10:28 (owner: "connecting and reconnecting very frequently"):
-// 2561 GATT server connects, 2 reached the service. 1760 were dropped by the stall watchdog (every 4 s) a median 1.7 s
-// (p10 0.5 s, p90 3.7 s) after the server connected, judged by the last frame of the link before - 34 h old:
-//   20:53:43.333 connecting to n11 / 43.638 gatt: server connected in 304 ms
-//   20:53:45.159 no data for 122196 s (watchdog) / conn: link-stalled -> drop-link [connecting]
-//   20:53:45.159 conn: gatt-disconnected -> countdown 3 s [countdown]   (a countdown beside the attempt still in flight)
-//   20:53:45.172 connect: attempt 2 failed: GATT Server is disconnected / conn: attempt-failed -> ignore (not connecting)
-// Successful discovery on that phone took 1.4-1.8 s, so a link survived only when no watchdog tick fell in its window.
-const H = 3600e3;
-function seahut(t0) {
-  // a link that streamed, went quiet, was dropped; the reconnect attempt is building a new one
-  const lastFrameAt = t0 - 122196e3, quiet = lastFrameAt + 30e3;
-  const cs = connState(); A(cs, 'tap-connect'); A(cs, 'picked'); A(cs, 'gatt-connected', { now: lastFrameAt - H });
-  const w = watchDecision(cs, { gattUp: true, gone: linkGone(lastFrameAt, cs.connectedAt, quiet), lastFrameAt, now: quiet });
-  assert.equal(w.drop, true, 'a connected link that went quiet IS dropped');
-  assert.equal(connEvent(cs, 'link-stalled', { ageS: w.ageS }).action, 'drop-link');
-  assert.equal(A(cs, 'gatt-disconnected'), 'countdown');
-  while (cs.phase === 'countdown') A(cs, 'countdown-tick');
-  assert.equal(cs.phase, 'connecting');
-  return { cs, lastFrameAt };
+// ---------------------------------------------------------------- the loop over a fake device
+/** A JK BMS behind Web Bluetooth: refuses `refuse` connects (status 133), leaves `hang` connects pending (Bluetooth
+ *  off), answers 0x97 with its device info, streams cell info once asked (0x96), finds its service after serviceMs. */
+class FakeDev extends EventTarget {
+  constructor(p = {}) {
+    super();
+    Object.assign(this, { id: 'fake-1', name: 'n11', refuse: 0, hang: 0, serviceMs: 0, answer: true, stream: true, connects: 0, disconnects: 0, writes: [], pending: [], timer: null }, p);
+    const dev = this;
+    this.char = {
+      fns: [],
+      addEventListener(_, fn) { this.fns.push(fn); },
+      startNotifications: async () => {},
+      writeValueWithoutResponse: async (bytes) => {
+        dev.writes.push(bytes[4]);
+        if (bytes[4] === 0x97 && dev.answer) setTimeout(() => dev.notify(F.AIO_32S_DEV), 5);
+        if (bytes[4] === 0x96 && dev.stream) dev.startStream();
+      },
+    };
+    this.gatt = {
+      connected: false,
+      connect: () => {
+        dev.connects++;
+        if (dev.hang > 0) { dev.hang--; return new Promise((resolve, reject) => { dev.pending.push({ resolve, reject }); }); }
+        if (dev.refuse > 0) { dev.refuse--; return Promise.reject(new Error(REFUSED)); }
+        dev.gatt.connected = true;
+        return Promise.resolve(dev.server());
+      },
+      disconnect: () => { dev.disconnects++; if (!dev.gatt.connected) return; dev.gatt.connected = false; dev.stopStream(); dev.dispatchEvent(new Event('gattserverdisconnected')); },
+    };
+  }
+  server() {
+    return { getPrimaryService: async () => {
+      if (this.serviceMs) await sleep(this.serviceMs);
+      if (!this.gatt.connected) throw new Error('GATT Server is disconnected. Cannot retrieve services.');
+      return { getCharacteristic: async () => this.char };
+    } };
+  }
+  notify(bytes) { for (const fn of this.char.fns) fn({ target: { value: new DataView(Uint8Array.from(bytes).buffer) } }); }
+  startStream() { if (!this.timer) this.timer = setInterval(() => { if (this.gatt.connected) this.notify(F.OWNER_32S_CELL); }, 30); }
+  stopStream() { clearInterval(this.timer); this.timer = null; }
+  fall() { this.gatt.disconnect(); }                                   // the BMS side drops the link
 }
 
-test('2026-10-29 seahut reader: the watchdog never judges a link an attempt is still building, at any tick offset in any discovery time from the log', () => {
-  const t0 = Date.UTC(2026, 9, 29, 20, 53, 43, 333);
-  for (const discoveryMs of [497, 1694, 1822, 3678, 14000]) {           // the log's kill times, the real 1.8 s discovery, a slow one
-    for (let offset = 0; offset < 4000; offset += 250) {                // the 4 s watchdog tick lands anywhere in the window
-      const { cs, lastFrameAt } = seahut(t0);
-      for (let t = t0 + 305 + offset; t < t0 + 305 + discoveryMs; t += 4000) {
-        assert.equal(linkGone(lastFrameAt, cs.connectedAt, t), false, 'no connect time of its own: not stale');
-        const w = watchDecision(cs, { gattUp: true, gone: true, lastFrameAt, now: t });  // even if a caller thought it gone
-        assert.equal(w.drop, false, `discovery ${discoveryMs} ms, tick +${offset} ms: the attempt owns the link`);
-        assert.equal(connEvent(cs, 'link-stalled', { ageS: 122196 }).action, 'ignore');
-      }
-      const now = t0 + 305 + discoveryMs;
-      assert.equal(A(cs, 'gatt-connected', { now }), 'connected');
-      // its own startup grace now: the 34 h old frame is the link before's
-      assert.equal(watchDecision(cs, { gattUp: true, gone: linkGone(lastFrameAt, cs.connectedAt, now + 4000), lastFrameAt, now: now + 4000 }).drop, false);
-      // and a link of its own that goes silent is still dropped (the 2026-09-16 rule stands)
-      const own = now + 1000;
-      const later = own + STALE_MS + 1;
-      const w = watchDecision(cs, { gattUp: true, gone: linkGone(own, cs.connectedAt, later), lastFrameAt: own, now: later });
-      assert.deepEqual(w, { drop: true, ageS: Math.round((later - own) / 1000) });
-    }
-  }
+const open = [];                                                      // every harness, ended after its test whatever happened
+afterEach(() => { for (const t of open.splice(0)) t.end(); });
+
+/** The loop with an app that records what it was told. One "second" = 20 ms; the attempt gives up after 15 of them. */
+function harness(dev, { autoRe = true, chooser = true, device = null, o = {} } = {}) {
+  const bms = new JkBms(), log = [], ev = [];
+  let dv = device;
+  bms.addEventListener('log', (e) => log.push(e.detail));
+  const h = {
+    log: (m) => log.push(m), autoRe: () => autoRe, device: () => dv, changed: () => {},
+    choose: async () => { ev.push('chooser'); await sleep(1); if (!chooser) return null; dv = dev; return dev; },
+    fresh: async (d) => d, attempt: (n) => ev.push(`attempt ${n}`), connected: () => ev.push('connected'),
+    failed: (m) => ev.push(`failed: ${m}`), stalled: () => ev.push('stalled'), down: (st) => ev.push(st ? 'down (stalled)' : 'down'), stuck: () => ev.push('stuck'),
+  };
+  const c = new BleConn(bms, h, { secMs: 20, tickMs: 10, gapMs: 30, downWaitMs: 100, writeMs: 200, stuckMs: 60_000, link: { staleMs: 300, startupMs: 600, handshakeMs: 60, nudgeMs: 100, quickMs: 40 }, ...o });
+  const until = async (pred, what, ms = 4000) => {
+    const t0 = Date.now();
+    while (!pred()) { if (Date.now() - t0 > ms) throw new Error(`no ${what} in ${ms} ms: phase ${c.cs.phase}; ${ev.join(' | ')}\n${log.slice(-12).join('\n')}`); await sleep(5); }
+  };
+  const phase = (ph) => until(() => c.cs.phase === ph, `phase ${ph}`);
+  const end = () => { c.stop(); dev.stopStream(); };
+  const t = { bms, c, ev, log, until, phase, end, setAuto: (v) => { autoRe = v; } };
+  open.push(t);
+  return t;
+}
+
+test('2026-09-18 log: one tap, Android refuses twice with status 133, the third attempt connects - one chooser, three attempts; 0x97, then 0x96 after the device info', async () => {
+  const dev = new FakeDev({ refuse: 2 }), t = harness(dev);
+  t.c.tell('connect');
+  await t.phase('connected');
+  assert.deepEqual(t.ev, ['chooser', 'attempt 1', 'attempt 2', 'attempt 3', 'connected']);
+  assert.equal(dev.connects, 3); assert.equal(t.c.cs.origin, 'chooser'); assert.ok(t.c.cs.connectedAt > 0);
+  await t.until(() => t.c.cs.gotData, 'data');
+  assert.deepEqual(dev.writes.slice(0, 2), [0x97, 0x96], 'the JK app order (0.9.34): device info, then cell info once it answered');
+  assert.ok(t.log.some((l) => /^handshake: device info in \d+ ms, asking for cell info \(0x96\)$/.test(l)), t.log.join('\n'));
+  assert.equal(dev.writes.filter((w) => w === 0x96).length, 1, 'streaming: no poll (0.9.33 - the BMS beeps at each one)');
+  await sleep(250);
+  assert.equal(dev.writes.filter((w) => w === 0x96).length, 1, 'still none while frames flow');
+  t.end();
 });
 
-test('2026-10-29 seahut reader: a link that drops during discovery is the attempt\'s to report - no countdown beside it, the attempt retries', () => {
-  const { cs } = seahut(Date.UTC(2026, 9, 29, 20, 53, 43, 333));
-  assert.equal(cs.attempt, 1);
-  assert.deepEqual(connEvent(cs, 'gatt-disconnected', { autoRe: true }), { action: 'ignore', why: 'the attempt in flight owns the link' });
-  assert.equal(cs.phase, 'connecting', 'no second flow started');
-  assert.deepEqual(connEvent(cs, 'attempt-failed', { msg: 'GATT Server is disconnected. Cannot retrieve services.' }), { action: 'retry', attempt: 2, gapMs: CONNECT_GAP_MS });
-  A(cs, 'attempt-failed', { msg: 'Connection Error: Connection attempt failed.' });
-  assert.deepEqual(connEvent(cs, 'attempt-failed', { autoRe: true, msg: 'Connection Error: Connection attempt failed.' }), { action: 'countdown', seconds: RECONNECT_S.auto, final: true });
-  // the chooser drops the old link before it opens: that disconnect is not a reason to count down either
-  const c2 = connState(); A(c2, 'tap-connect'); A(c2, 'picked'); A(c2, 'gatt-connected', { now: 5 });
-  A(c2, 'tap-connect');
-  assert.equal(A(c2, 'gatt-disconnected'), 'ignore'); assert.equal(c2.phase, 'choosing');
-  // outside an attempt the disconnect still counts down as before
-  const c3 = connState(); A(c3, 'tap-connect'); A(c3, 'picked'); A(c3, 'gatt-connected', { now: 5 });
-  assert.deepEqual(connEvent(c3, 'gatt-disconnected', { autoRe: true }), { action: 'countdown', seconds: RECONNECT_S.auto });
+test('handshake: no device-info answer -> cell info asked anyway after the wait; a BMS that only echoes is asked again until cell info flows (0.9.42 / 0.9.69)', async () => {
+  const dev = new FakeDev({ answer: false, stream: false }), t = harness(dev);
+  t.c.tell('connect');
+  await t.until(() => t.log.some((l) => /^handshake: no device info in 60 ms, asking for cell info anyway/.test(l)), 'handshake without info');
+  await t.until(() => dev.writes.filter((w) => w === 0x96).length >= 3, 'startup asks');
+  assert.ok(t.log.some((l) => /^startup: no cell info [\d.]+ s after the ask \(not served\), asking again \(0x96, ask 2\)$/.test(l)), t.log.join('\n'));
+  dev.stream = true; dev.startStream();
+  await t.until(() => t.log.some((l) => /^startup: cell info after \d+ asks$/.test(l)), 'cell info');
+  assert.equal(t.c.cs.phase, 'connected');
+  t.end();
+});
+
+test('2026-09-16 frozen tab: a connected link that goes quiet is dropped by the loop that serves it, counts down 3 s and comes back', async () => {
+  const dev = new FakeDev(), t = harness(dev);
+  t.c.tell('connect');
+  await t.until(() => t.c.cs.gotData, 'data');
+  dev.stream = false; dev.stopStream();                                // the link stays up, nothing comes, nudges unanswered
+  await t.until(() => t.ev.includes('down (stalled)'), 'the stall');
+  assert.ok(t.log.some((l) => /^dropping link: no data for \d+ s$/.test(l)), t.log.join('\n'));
+  assert.ok(t.log.some((l) => l === `conn: connected -> countdown (stalled, ${RECONNECT_S.stalled} s)`), t.log.join('\n'));
+  assert.equal(t.c.cs.stalled, true);
+  dev.stream = true;
+  await t.until(() => t.ev.filter((e) => e === 'connected').length === 2, 'the reconnect');
+  assert.equal(t.c.cs.origin, 'auto'); assert.equal(t.c.cs.stalled, false);
+  t.end();
+});
+
+test('2026-10-29 seahut reader: a service discovery longer than the stall limit is never dropped - the stall check runs only on a link the loop serves', async () => {
+  const dev = new FakeDev(), t = harness(dev, { o: { secMs: 100 } });   // an attempt has 1.5 s here, as a phone has 15 s
+  t.c.tell('connect');
+  await t.until(() => t.c.cs.gotData, 'data');
+  dev.stream = false; dev.stopStream();
+  await t.until(() => t.ev.includes('down (stalled)'), 'the stall');
+  dev.stream = true;
+  const before = dev.connects, drops = () => t.log.filter((l) => /^dropping link/.test(l)).length, d0 = drops();
+  dev.serviceMs = 900;                                                 // 3x the stall limit, 1.5x the startup grace (the phone took 1.8 s)
+  await t.until(() => t.ev.filter((e) => e === 'connected').length === 2, 'the slow reconnect');
+  assert.equal(dev.connects - before, 1, 'one attempt, never dropped while it discovered the service');
+  assert.equal(drops(), d0, 'no drop during the discovery');
+  await t.until(() => t.c.cs.gotData, 'data');
+  t.end();
+});
+
+test('2026-10-29 seahut reader: a link that falls during discovery is the attempt\'s to report - it retries, no countdown beside it', async () => {
+  const dev = new FakeDev({ serviceMs: 120 }), t = harness(dev);
+  t.c.tell('connect');
+  await t.until(() => t.log.some((l) => /^gatt: server connected/.test(l)), 'the server');
+  dev.fall();                                                          // during getPrimaryService
+  await t.phase('connected');
+  assert.deepEqual(t.ev, ['chooser', 'attempt 1', 'attempt 2', 'connected']);
+  assert.ok(t.log.some((l) => /^connect: attempt 1 failed after \d+ ms: GATT Server is disconnected/.test(l)), t.log.join('\n'));
+  assert.ok(!t.log.some((l) => /-> countdown/.test(l)), 'no countdown started beside the attempt');
+  t.end();
+});
+
+test('a normal drop counts down 10 s; Reconnect now makes exactly one attempt; a second tap while it runs is ignored', async () => {
+  const dev = new FakeDev(), t = harness(dev);
+  t.c.tell('connect');
+  await t.until(() => t.c.cs.gotData, 'data');
+  dev.fall();
+  await t.phase('countdown');
+  assert.equal(t.c.cs.count, RECONNECT_S.auto);
+  const before = dev.connects;
+  dev.serviceMs = 80;
+  t.c.tell('now'); await t.phase('connecting'); t.c.tell('now'); t.c.tell('connect');
+  await t.phase('connected');
+  await sleep(RECONNECT_S.auto * 20 + 100);                            // longer than the countdown would have run
+  assert.equal(dev.connects - before, 1, 'exactly one attempt (2026-09-17)');
+  assert.ok(t.log.includes('conn: now ignored (an attempt is in progress)') && t.log.includes('conn: connect ignored (an attempt is in progress)'), t.log.join('\n'));
+  assert.equal(t.c.cs.origin, 'manual');
+  t.end();
+});
+
+test('a picked device that refuses every attempt counts down 5 s and tries again on its own, never back to the chooser; then the BMS accepts', async () => {
+  const dev = new FakeDev({ refuse: 99 }), t = harness(dev);
+  t.c.tell('connect');
+  await t.phase('countdown');
+  assert.equal(t.c.cs.count, RECONNECT_S.chooser);
+  assert.deepEqual(t.ev, ['chooser', 'attempt 1', 'attempt 2', 'attempt 3', `failed: ${REFUSED}`]);
+  await t.until(() => dev.connects >= 6, 'the countdown\'s round');
+  dev.refuse = 0;
+  await t.phase('connected');
+  assert.equal(t.ev.filter((e) => e === 'chooser').length, 1);
+  t.end();
+});
+
+test('the remembered BMS connects without the chooser and counts down the auto 10 s after a failed round; Cancel and auto-off end a countdown; Bluetooth back shortens it', async () => {
+  const dev = new FakeDev({ refuse: 99 }), t = harness(dev, { device: null });
+  const t2 = harness(dev, { device: dev });
+  t2.c.tell('known');
+  await t2.phase('countdown');
+  assert.equal(t2.c.cs.count, RECONNECT_S.auto); assert.equal(t2.c.cs.origin, 'known'); assert.ok(!t2.ev.includes('chooser'));
+  t2.c.tell('adapter');
+  await t2.until(() => t2.log.some((l) => /^reconnect: Bluetooth is back, in 3 s$/.test(l)), 'the shorter countdown');
+  assert.ok(t2.c.cs.count <= RECONNECT_S.adapter);
+  t2.c.tell('cancel');
+  await t2.phase('idle');
+  const n = dev.connects; await sleep(400); assert.equal(dev.connects, n, 'cancelled: no more attempts');
+  t2.c.tell('now');
+  await t2.until(() => dev.connects > n, 'Reconnect now from idle');
+  await t2.phase('countdown');
+  t2.c.tell('auto-off');
+  await t2.phase('idle');
+  t2.end(); t.end();
+});
+
+test('the person\'s Disconnect closes the link and stays idle; Connect while connected opens the chooser after closing it; a cancelled chooser stays idle', async () => {
+  const dev = new FakeDev(), t = harness(dev);
+  t.c.tell('connect');
+  await t.until(() => t.c.cs.gotData, 'data');
+  t.c.tell('connect');
+  await t.until(() => t.ev.filter((e) => e === 'connected').length === 2, 'the second pick');
+  assert.deepEqual(t.ev.slice(0, 7), ['chooser', 'attempt 1', 'connected', 'down', 'chooser', 'attempt 1', 'connected']);
+  t.c.tell('disconnect');
+  await t.phase('idle');
+  assert.equal(dev.gatt.connected, false);
+  await sleep(300); assert.equal(t.c.cs.phase, 'idle', 'no countdown after the person\'s own Disconnect');
+  t.end();
+  const t3 = harness(new FakeDev(), { chooser: false });
+  t3.c.tell('connect');
+  await t3.until(() => t3.ev.includes('chooser'), 'the chooser');
+  await t3.phase('idle');
+  assert.deepEqual(t3.ev, ['chooser']);
+  t3.end();
+});
+
+test('queued readings of a frozen tab void the link (the boundary sets the Flag): the loop drops it and counts down the auto 10 s', async () => {
+  const dev = new FakeDev(), t = harness(dev);
+  t.c.tell('connect');
+  await t.until(() => t.c.cs.gotData, 'data');
+  t.bms.voidGapS = 3600; t.bms.voided.set(true);                       // what _onNotify does on a chunk after a long gap
+  await t.phase('countdown');
+  assert.equal(t.c.cs.count <= RECONNECT_S.auto && t.c.cs.count > RECONNECT_S.stalled, true);
+  assert.ok(t.log.includes('dropping link: 3600 s without data - queued readings dropped'), t.log.join('\n'));
+  t.end();
+});
+
+test('2026-10-07 crash: a connect that ran with Bluetooth off is never cancelled - past stuckMs no retries, no countdown, a tap explains it again; settled -> on we go', async () => {
+  const dev = new FakeDev({ hang: 99 }), t = harness(dev, { o: { stuckMs: 700 } });
+  t.c.tell('connect');
+  await t.phase('stuck');
+  assert.ok(t.log.some((l) => /^connect: attempt 1 failed after \d+ ms: no answer in 15 s$/.test(l)), 'the attempt gave up on its side (15 "seconds")');
+  assert.equal(dev.disconnects, 0, 'gatt.disconnect() on a pending connect crashes Chrome Android: never called');
+  const n = dev.connects;
+  t.c.tell('connect'); t.c.tell('now');
+  await t.until(() => t.ev.filter((e) => e === 'stuck').length === 3, 'the sheet again');
+  await sleep(300);
+  assert.equal(dev.connects, n, 'no retry while stuck'); assert.equal(t.c.cs.phase, 'stuck');
+  assert.equal(t.ev.filter((e) => e === 'chooser').length, 1);
+  dev.hang = 0;
+  for (const p of dev.pending) p.reject(new Error('gone'));            // the stack settles every queued connect together
+  await t.phase('connected');
+  assert.ok(t.log.includes('gatt: the pending connect settled after all') && t.log.some((l) => /-> countdown \(settled, 10 s\)/.test(l)), t.log.join('\n'));
+  assert.equal(dev.disconnects, 0);
+  t.end();
+});
+
+test('stop() ends the loop wherever it waits; start() refuses a second loop', async () => {
+  const dev = new FakeDev(), t = harness(dev);
+  t.c.tell('connect');
+  const task = t.c.task;
+  t.c.start(); assert.equal(t.c.task, task, 'one loop');
+  await t.until(() => t.c.cs.gotData, 'data');
+  t.c.stop(); await task;
+  assert.equal(t.c.running, false);
+  dev.stopStream();
 });

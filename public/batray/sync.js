@@ -54,6 +54,8 @@ export class Channel {
   constructor() { this.q = []; this.w = []; }
   push(x) { this.q.push(x); const w = this.w; this.w = []; for (const f of w) f(); }
   get size() { return this.q.length; }
+  /** Forget what nobody took (taps made while the loop could not listen, e.g. with the Bluetooth chooser open). */
+  clear() { this.q.length = 0; }
   async next(opts = {}) {
     while (!this.q.length) { const r = await waitOn(this.w, opts, 'item'); if (r === TIMEOUT) return TIMEOUT; }
     return this.q.shift();

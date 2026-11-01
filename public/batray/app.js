@@ -14,14 +14,15 @@
 
 import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castSettle, castProgress, castButtons, castStateUi, castTapAllowed, castTvUpdate, CAST_FLOW_TIMEOUT_MS, CAST_TV_WAIT_MS } from './cast-logic.js';
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart } from './wake-logic.js';
-import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO, linkGone } from './jkbms.js';
+import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO } from './jkbms.js';
 import { fmtWhen, stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fmtVersion } from './compat-logic.js';
 import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel, phonePowerState, phonePowerEvent, phoneWarn } from './status-logic.js';
 import { parseIntent, intentEvent, resumePlan, resumeLine, RESUME_ON_KEY } from './resume-logic.js';
 import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggleDone, SETUP_DONE_KEY } from './setup-logic.js';
 import { pushDecision, pushState, b64uBytes } from './push-logic.js';
-import { connState, connEvent, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, watchDecision, CONNECT_TRIES, CONNECT_S } from './conn-logic.js';
+import { connState, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES } from './conn-logic.js';
+import { BleConn } from './conn.js';
 import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, tvPreviewToggle, previewState, previewEvent, previewSource } from './tv-logic.js';
@@ -31,7 +32,7 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope, suggestChannelName, parseSavedShare } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
-import { Flag, Channel, select, sleep, TIMEOUT } from './sync.js';
+import { Flag, Channel, select, sleep, isAbort, TIMEOUT } from './sync.js';
 import { TAB_SS, TAB_PREFIX, LEGACY, validTabId, LEGACY_DROP, tabLock, tabKey, metaKey, tabMeta, tabRecords, chooseTab, orphanDrops, legacyMoves, storeRows } from './tab-logic.js';
 import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
@@ -42,7 +43,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.82';
+export const APP_VERSION = '0.9.83';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -271,19 +272,22 @@ const fmtSpan = (h) => fmtSpanT(h, T), fmtRuntime = (sec) => fmtRuntimeT(sec, T)
 // connected packs are read in parallel; the meters show the active one and the
 // pack bar shows every pack's SOC and current at a glance.
 // ---------------------------------------------------------------------------
+const NO_CONN = Object.freeze(connState());                  // a remote pack's connection state: never connecting
 class Pack {
   constructor(id, name, { remote = false } = {}) {
     this.id = id; this.name = name; this.remote = remote;
     this.bms = remote ? null : new JkBms();
     this.device = null; this.info = null; this.settings = null; this.data = null; this.lastFrameAt = null;
-    this.cs = connState();                                   // the connection flow state (conn-logic.js decides over it)
-    this.demo = null; this.reTimer = null; this.gapTimer = null; this.attemptTicker = null;   // timers: the shell's, never in cs
+    this.conn = remote ? null : new BleConn(this.bms, connHooks(this));   // the connection: one loop per pack (conn.js), started by the first tap
+    this.demo = null; this.fresh = false;
     this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.dumped = false;
     this.remoteLive = false; this.lastRowAt = null;              // last stored row: readings closer than MIN_ROW_MS apart are shown, not stored
     this.iEma = new Ema(60);                                 // smoothed current for the time-to-go; readings go to the stored history
     if (this.bms) this.wire();
   }
   get connected() { return this.remote ? this.remoteLive : (!!this.demo || (this.bms && this.bms.connected)); }
+  /** The connection state the loop writes; read-only here (a remote pack has none). */
+  get cs() { return this.conn ? this.conn.cs : NO_CONN; }
   get label() { return this.demo ? 'DEMO' : (this.device && (this.device.name || this.device.id)) || this.name; }
   get isActive() { return active === this; }
   plog(msg) { log(packs.size > 1 || viewMode ? `[${this.label}] ${msg}` : msg); }
@@ -291,28 +295,6 @@ class Pack {
   wire() {
     const b = this.bms;
     b.addEventListener('log', (e) => this.plog(e.detail));
-    b.addEventListener('connected', (e) => {
-      this.device = e.detail; this.frames = 0;
-      this.plog(`gatt connected: ${this.label} id=${String(e.detail.id || '').slice(0, 10)}…`);
-      connAct(this, 'gatt-connected');
-      if (!this.demo && e.detail && e.detail.id) intentNote('connected', { id: e.detail.id, name: this.label });
-      this.loadThunk = () => T.loading(this.label);
-      if (this.isActive) { setStatus(() => T.connectedTo(this.label), 'good'); $('oneApp').hidden = false; $('btNote').hidden = false; }
-      // Auto-reconnect no longer waits for an adapter-state probe (which this
-      // Chrome lacks): the user is told once to keep Bluetooth on instead.
-      if (!btWarned) { btWarned = true; toast(T.btKeepOn, 12000); }
-      refreshCard(); renderPackBar(); void syncWake();
-    });
-    b.addEventListener('disconnected', () => {
-      this.plog('gatt disconnected');
-      this.offlineThunk = () => T.offlineDrop(this.label);
-      // a link that went quiet says so, instead of a bare "disconnected"
-      const stalled = this.cs.stalled, age = this.cs.stalledAge;
-      if (this.isActive) { setStatus(() => (stalled ? T.stalled(this.label, age) : T.disconnectedFrom(this.label)), 'bad'); $('oneApp').hidden = true; $('btNote').hidden = true; }
-      connAct(this, 'gatt-disconnected');
-    });
-    b.addEventListener('stuck', () => connAct(this, 'connect-stuck'));       // jkbms STUCK_MS: Bluetooth was off when the connect ran
-    b.addEventListener('settled', () => connAct(this, 'connect-settled'));
     b.addEventListener('data', (e) => this.onData(e.detail));
     b.addEventListener('device', (e) => {
       this.onInfo(e.detail);
@@ -352,7 +334,6 @@ class Pack {
     if (this.isActive) scheduleRender(this);
     schedulePackBar();
     if (publisher) void publisher.publish(envelope('data', this, d, row ? { r: row } : null));
-    if (connEvent(this.cs, 'data').action === 'back' && this.isActive) setStatus(() => T.connectedTo(this.label), 'good');   // back after a gap: say so instead of staying amber
     if (first) void syncWake();
   }
   onInfo(i) { this.info = i; if (this.isActive) renderDevice(i); if (publisher) void publisher.publish(envelope('info', this, i)); }
@@ -1303,28 +1284,8 @@ function schedulePackBar() {
   requestAnimationFrame(() => { packBarQueued = false; renderPackBar(); });
 }
 
-// Link watchdog: a JK BMS streams cell frames 2-3 times a second, so silence means the link is
-// gone even while Chrome still reports the GATT connection up (seen after an
-// hour with the phone locked: "connected", then an hour of queued readings
-// replayed, then a disconnect two minutes later). Freshness decides instead.
-// Only a link conn-logic calls connected is judged (watchDecision, 0.9.82): one an attempt is still building is the
-// attempt's, and its last frame time belongs to the link before.
-function watchLinks(why) {
-  for (const p of packs.values()) {
-    if (p.demo || p.remote || !p.bms) continue;
-    const now = Date.now();
-    const w = watchDecision(p.cs, { gattUp: p.bms.connected, gone: linkGone(p.lastFrameAt, p.cs.connectedAt, now), lastFrameAt: p.lastFrameAt, now });
-    if (!w.drop) continue;
-    const age = w.ageS;
-    p.plog(`no data for ${age} s (${why}) - dropping the link and reconnecting`);
-    if (p.isActive) setStatus(() => T.stalled(p.label, age), 'bad');
-    connAct(p, 'link-stalled', { ageS: age });
-  }
-}
-setInterval(() => watchLinks('watchdog'), 4000);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
-  watchLinks('tab resumed');
   if (viewer) viewer.nudge();
   if (publisher) publisher.nudge();
 });
@@ -1373,97 +1334,96 @@ $('stopDemo').addEventListener('click', stopDemo);
 els.demoBtn.addEventListener('click', runDemo);
 $('demoAgain').addEventListener('click', runDemo);
 
-// ---- BLE connection shell: every decision comes from conn-logic.js over
-// p.cs (house rule 2026-09-20). This code owns the chooser, the GATT calls,
-// the timers and the card, and logs each decision as `conn: <event> -> <action>`. ----
-function clearConnTimers(p) {
-  if (p.reTimer) { clearInterval(p.reTimer); p.reTimer = null; }
-  if (p.gapTimer) { clearTimeout(p.gapTimer); p.gapTimer = null; }
-  if (p.attemptTicker) { clearInterval(p.attemptTicker); p.attemptTicker = null; }
+// ---- BLE connection shell (0.9.83): each pack's connection is ONE loop in conn.js (the phase is where it is; it is
+// the only writer of p.cs). The app tells it what the person tapped (p.conn.tell) and paints what it reports through
+// these hooks; nothing here starts a timer or changes the state. ----
+function connHooks(p) {
+  return {
+    log: (m) => p.plog(m),
+    autoRe: () => $('autoRe').checked,
+    device: () => p.device,
+    changed: () => connChanged(p),
+    choose: (signal) => runChooser(p, signal),
+    fresh: (d) => freshHandle(d),
+    attempt: () => showAttempt(p),
+    connected: (dev) => onConnected(p, dev),
+    failed: (msg, origin) => onConnFailed(p, msg, origin),
+    stalled: (ageS) => onStalled(p, ageS),
+    down: (stalled, ageS) => onLinkDown(p, stalled, ageS),
+    stuck: () => onStuck(p),
+  };
 }
-function connAct(p, ev, inp = {}) {
-  const d = connEvent(p.cs, ev, { autoRe: $('autoRe').checked, now: Date.now(), ...inp });
-  if (d.action !== 'count' && d.action !== 'noop') p.plog(`conn: ${ev} -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}${d.seconds ? ' ' + d.seconds + ' s' : ''}${d.attempt ? ' attempt ' + d.attempt : ''} [${p.cs.phase}]`);
-  switch (d.action) {
-    case 'choose': clearConnTimers(p); p.countThunk = null; void runChooser(p, !!inp.fresh); break;
-    case 'connect': clearConnTimers(p); void runAttempt(p); break;
-    case 'retry': clearConnTimers(p); showAttempt(p); p.gapTimer = setTimeout(() => { p.gapTimer = null; void runAttempt(p); }, d.gapMs); break;
-    case 'countdown': clearConnTimers(p); p.countThunk = () => T.reIn(p.label, p.cs.count); p.reTimer = setInterval(() => connAct(p, 'countdown-tick'), 1000); break;
-    case 'count': if (p.cs.phase === 'connecting') showAttempt(p); break;    // the countdown thunk reads cs.count itself
-    case 'idle': case 'connected': clearConnTimers(p); p.countThunk = null; break;
-    case 'disconnect-gatt': clearConnTimers(p); p.countThunk = null; try { if (p.device && p.device.gatt.connected) p.device.gatt.disconnect(); } catch { /* nothing to drop */ } break;
-    case 'disconnect-bms': clearConnTimers(p); p.countThunk = null; p.bms.disconnect(); break;
-    case 'drop-link': p.bms.drop(`no data for ${d.ageS} s`); break;
-    case 'stuck':                                                             // only closing Chrome completely clears it: say so
-      clearConnTimers(p); p.countThunk = null; p.offlineThunk = () => T.btStuckShort;
-      if (p.isActive) setStatus(() => T.btStuckShort, 'bad');
-      void openSheet('btStuck'); break;
-    default: break;
-  }
+/** The loop changed its state: the card, the button, the pack chip and the wake lock follow it. */
+function connChanged(p) {
+  const ph = p.cs.phase;
+  if (ph === 'countdown') p.countThunk = () => T.reIn(p.label, p.cs.count);
+  else if (ph === 'connecting') showAttempt(p);
+  else if (ph !== 'stuck') p.countThunk = null;
+  $('connectBig').disabled = [...packs.values()].some((x) => x.cs.phase === 'connecting');
   if (p.isActive) refreshCard();
   renderPackBar(); void syncWake();
-  return d;
 }
 function showAttempt(p) {
   const name = p.device ? (p.device.name || p.device.id) : p.label;
   const txt = () => (p.cs.attempt > 1 ? T.connectingRetry(name, p.cs.left, p.cs.attempt, CONNECT_TRIES) : T.connectingTo(name, p.cs.left));
   if (p.isActive) setStatus(txt);
   p.countThunk = txt;
-  if (p.isActive) refreshCard();
 }
-// Android's BLE stack often refuses the first GATT connect outright
-// ("Connection attempt failed", status 133) and accepts the next one a second
-// later - seen live 2026-09-18: three taps, third one worked. conn-logic.js
-// turns that into up to CONNECT_TRIES attempts per tap; this runs one.
-async function runAttempt(p) {
-  if (p.cs.origin !== 'chooser') p.device = await freshHandle(p.device);
-  showAttempt(p);
-  if (!p.attemptTicker) p.attemptTicker = setInterval(() => connAct(p, 'connect-tick'), 1000);
-  // eslint-disable-next-line house/ui-after-await -- the attempt that just started owns the button until it ends (conn-logic runs one at a time)
-  $('connectBig').disabled = true;
-  const t0 = Date.now(), attempt = p.cs.attempt;
-  try {
-    await p.bms.connect(p.device, { timeoutMs: CONNECT_S * 1000 });
-    p.plog(`connect: ok on attempt ${attempt} in ${Date.now() - t0} ms`);
-  } catch (err) {
-    p.plog(`connect: attempt ${attempt} failed after ${Date.now() - t0} ms: ${err.message}`);
-    const d = connAct(p, 'attempt-failed', { msg: err.message });
-    if (d.final) {
-      if (p.isActive) setStatus(() => T.disconnectedFromWhy(p.label, err.message), 'bad');
-      if (!cancelledError(err.message)) toast((p.cs.origin === 'chooser' ? T.couldNot(err.message) : T.reFailed(err.message)) + T.oneAppToast, 9000);
-      p.offlineThunk = () => T.offlineDrop(p.label);
-      if (p.isActive) refreshCard();
-    }
-  } finally {
-    // eslint-disable-next-line house/ui-after-await -- the attempt has ended, whatever happened meanwhile: the button is free again
-    $('connectBig').disabled = false;
-    if (p.attemptTicker) { clearInterval(p.attemptTicker); p.attemptTicker = null; }
-  }
+function onConnected(p, dev) {
+  p.device = dev; p.frames = 0;
+  p.plog(`gatt connected: ${p.label} id=${String(dev.id || '').slice(0, 10)}…`);
+  if (dev.id) intentNote('connected', { id: dev.id, name: p.label });
+  p.loadThunk = () => T.loading(p.label);
+  if (p.isActive) { setStatus(() => T.connectedTo(p.label), 'good'); $('oneApp').hidden = false; $('btNote').hidden = false; }
+  // Auto-reconnect no longer waits for an adapter-state probe (which this
+  // Chrome lacks): the user is told once to keep Bluetooth on instead.
+  if (!btWarned) { btWarned = true; toast(T.btKeepOn, 12000); }
 }
-async function runChooser(p, fresh) {
-  try {
-    if (p.device && p.device.gatt.connected) {
-      const gone = new Promise((res) => { p.device.addEventListener('gattserverdisconnected', res, { once: true }); });
-      p.device.gatt.disconnect();
-      await Promise.race([gone, new Promise((res) => { setTimeout(res, 2000); })]);
-    }
-  } catch { /* nothing to drop */ }
-  // eslint-disable-next-line house/ui-after-await -- the chooser is opening now, whatever the old handle's disconnect did
+// Android's BLE stack often refuses the first GATT connect outright ("Connection attempt failed", status 133) and
+// accepts the next one a second later - seen live 2026-09-18: three taps, third one worked. The loop makes up to
+// CONNECT_TRIES attempts per tap; this says when a round has failed for good.
+function onConnFailed(p, msg, origin) {
+  if (p.isActive) setStatus(() => T.disconnectedFromWhy(p.label, msg), 'bad');
+  if (!cancelledError(msg)) toast((origin === 'chooser' ? T.couldNot(msg) : T.reFailed(msg)) + T.oneAppToast, 9000);
+  p.offlineThunk = () => T.offlineDrop(p.label);
+}
+// A JK BMS streams cell frames 2-3 times a second, so silence means the link is gone even while Chrome still reports
+// the GATT connection up (an hour with the phone locked: "connected", an hour of queued readings replayed, then a
+// disconnect two minutes later). The loop that serves the link checks it; this only says so.
+function onStalled(p, ageS) {
+  p.plog(`no data for ${ageS} s (watchdog) - dropping the link and reconnecting`);
+  if (p.isActive) setStatus(() => T.stalled(p.label, ageS), 'bad');
+}
+function onLinkDown(p, stalled, ageS) {
+  p.offlineThunk = () => T.offlineDrop(p.label);
+  // a link that went quiet says so, instead of a bare "disconnected"
+  if (p.isActive) { setStatus(() => (stalled ? T.stalled(p.label, ageS) : T.disconnectedFrom(p.label)), 'bad'); $('oneApp').hidden = true; $('btNote').hidden = true; }
+}
+function onStuck(p) {                                                // only closing Chrome completely clears it: say so
+  p.countThunk = null; p.offlineThunk = () => T.btStuckShort;
+  if (p.isActive) setStatus(() => T.btStuckShort, 'bad');
+  void openSheet('btStuck');
+}
+/** The browser's picker, for the loop's choosing phase: the device, or null (cancelled, refused, already a pack). */
+async function runChooser(p, signal) {
   setStatus(() => T.choosing);
   try {
     const device = await p.bms.requestDevice();
+    signal.throwIfAborted();
     log(`chooser: picked "${device.name || '(no name)'}" id=${String(device.id || '').slice(0, 10)}…`);
     const dup = [...packs.values()].find((x) => x !== p && x.device && x.device.id === device.id);
-    if (dup) { toast(T.alreadyAdded(device.name || device.id)); connAct(p, 'chooser-cancelled'); setActive(dup); return; }
+    if (dup) { toast(T.alreadyAdded(device.name || device.id)); setActive(dup); if (p.fresh) p.conn.stop(); return null; }
     p.device = device;
-    if (fresh) { p.id = `bt-${device.id}`; addPack(p); setActive(p); }
+    if (p.fresh) { p.fresh = false; p.id = `bt-${device.id}`; addPack(p); setActive(p); }
     rememberDevice(device);
-    connAct(p, 'picked');
+    return device;
   } catch (err) {
+    if (isAbort(err)) throw err;
     setStatus(err.message, 'bad');
     log(`connect failed: ${err.message}`);
     if (!/cancelled/i.test(err.message)) toast(T.couldNot(err.message) + T.oneAppToast);
-    connAct(p, 'chooser-cancelled');
+    if (p.fresh) p.conn.stop();                                       // a new pack that never got a device goes with its loop
+    return null;
   }
 }
 async function freshHandle(device) {
@@ -1480,7 +1440,7 @@ if (navigator.bluetooth && navigator.bluetooth.addEventListener) {
   navigator.bluetooth.addEventListener('availabilitychanged', (e) => {
     log(`bluetooth adapter ${e.value ? 'available' : 'unavailable'}`);
     if (!e.value) setStatus(() => T.btOff, 'bad');
-    else for (const p of packs.values()) if (!p.remote && !p.demo) connAct(p, 'adapter-available');
+    else for (const p of packs.values()) if (p.conn && p.conn.running) p.conn.tell('adapter');
   });
 }
 // ---- the browser gate (owner ask 2026-10-05, after a reader on Chrome 96 ran with no stored history or log and died
@@ -1599,7 +1559,7 @@ async function doResume(plan) {
     if ([...packs.values()].some((q) => q.device && q.device.id === dev.id)) continue;
     const p = new Pack(`bt-${dev.id}`, dev.name || x.name || 'BMS'); p.device = dev; addPack(p); setActive(p);
     log(`resume: reconnecting ${p.label} without the chooser`);
-    connAct(p, 'known');
+    p.conn.tell('known');
     await sleep(1500);
   }
   if (plan.cannot.length) toast(T.resumeTap(plan.cannot.map((x) => x.name || x.id).join(', ')), 15000);
@@ -1703,9 +1663,8 @@ if (new URLSearchParams(location.search).get('from') === 'push') log('start: ope
 async function startConnect(p) {
   if (!(await compatGate('reader'))) return;
   if (!(await setupGate())) return;
-  const fresh = !p;
-  if (fresh) p = new Pack(`bt-${++packSeq}`, `BMS ${packs.size + 1 - (packs.size && [...packs.values()].some((x) => x.demo) ? 1 : 0)}`);
-  connAct(p, 'tap-connect', { fresh });
+  if (!p) { p = new Pack(`bt-${++packSeq}`, `BMS ${packs.size + 1 - (packs.size && [...packs.values()].some((x) => x.demo) ? 1 : 0)}`); p.fresh = true; }
+  p.conn.tell('connect');
 }
 $('connectBig').addEventListener('click', () => { void startConnect(null); });
 // The remembered BMS (owner ask 2026-09-21): Chrome gives a page no Bluetooth address, only a per-site id and the
@@ -1737,11 +1696,11 @@ async function startKnown() {
   let dev = null; try { dev = (await navigator.bluetooth.getDevices()).find((d) => d.id === b.dataset.id) || null; } catch { /* below */ }
   if (!dev) { log('known device: not in getDevices any more, opening the chooser'); b.hidden = true; await startConnect(null); return; }
   const dup = [...packs.values()].find((x) => x.device && x.device.id === dev.id);
-  if (dup) { setActive(dup); connAct(dup, 'known'); return; }
+  if (dup) { setActive(dup); dup.conn.tell('known'); return; }
   const p = new Pack(`bt-${dev.id}`, dev.name || 'BMS');
   p.device = dev; addPack(p); setActive(p);
   log(`known device: connecting to "${dev.name || dev.id}" without the chooser`);
-  connAct(p, 'known');
+  p.conn.tell('known');
 }
 $('connectKnown').addEventListener('click', () => { startKnown().catch((e) => log(`known device: ${e.message}`)); });
 if (!viewMode && navigator.bluetooth) renderKnown().catch(() => {});
@@ -1750,15 +1709,15 @@ els.disconnect.dataset.title = els.disconnect.title;
 els.disconnect.addEventListener('click', () => {
   const p = active && active.bms && !active.demo ? active : null;
   const db = p ? connButton(p.cs, !!p.bms.connected) : { label: 'connect' };
-  if (db.label === 'disconnect') { if (p.device && p.device.id) intentNote('disconnected', { id: p.device.id, name: p.label }); connAct(p, 'disconnect'); return; }
+  if (db.label === 'disconnect') { if (p.device && p.device.id) intentNote('disconnected', { id: p.device.id, name: p.label }); p.conn.tell('disconnect'); return; }
   if (db.label === 'connecting') {                                  // the busy button is a cancel
     p.plog('connect: cancelled from the toolbar');
-    connAct(p, 'cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); toast(T.cancelled, 4000); return;
+    p.conn.tell('cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); toast(T.cancelled, 4000); return;
   }
   void startConnect(p);                                             // idle: the same button connects (a known pack, or the chooser for a new one)
 });
-$('reNow').addEventListener('click', () => { const p = active; if (!p || p.remote) return; p.plog('reconnect: user tapped Reconnect now'); connAct(p, 'reconnect-now'); });
-$('cancelRe').addEventListener('click', () => { const p = active; if (!p || p.remote) return; p.plog('reconnect: cancelled by user'); connAct(p, 'cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); });
+$('reNow').addEventListener('click', () => { const p = active; if (!p || !p.conn) return; p.plog('reconnect: user tapped Reconnect now'); p.conn.tell('now'); });
+$('cancelRe').addEventListener('click', () => { const p = active; if (!p || !p.conn) return; p.plog('reconnect: cancelled by user'); p.conn.tell('cancel'); setStatus(() => T.disconnectedFrom(p.label), 'bad'); });
 
 // ---- Share live (publisher) ----
 // One line for both chips: viewers, path (and how many are on direct Wi-Fi),
@@ -2662,7 +2621,7 @@ $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('ab
 (function () {
   const cb = $('autoRe');
   try { const v = localStorage.getItem('batray_auto_reconnect'); if (v !== null) cb.checked = v === '1'; } catch {}
-  cb.addEventListener('change', () => { try { localStorage.setItem('batray_auto_reconnect', cb.checked ? '1' : '0'); } catch {} if (!cb.checked) for (const p of packs.values()) if (!p.remote && !p.demo) connAct(p, 'auto-off'); });
+  cb.addEventListener('change', () => { try { localStorage.setItem('batray_auto_reconnect', cb.checked ? '1' : '0'); } catch {} if (!cb.checked) for (const p of packs.values()) if (p.conn && p.conn.running) p.conn.tell('auto-off'); });
 })();
 (function () {
   let z = +localStorage.getItem('ce_zoom') || 100;

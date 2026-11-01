@@ -40,7 +40,7 @@ export default {
   },
   house: {
     // the first-party I/O shells (logic modules are checked for purity; vendored files are not ours)
-    shells: ['app.js', 'live.js', 'tv.js', 'jkbms.js', 'history.js', 'history-worker.js', 'history-chart.js', 'alerts.js', 'demo.js'],
+    shells: ['app.js', 'live.js', 'tv.js', 'jkbms.js', 'conn.js', 'history.js', 'history-worker.js', 'history-chart.js', 'alerts.js', 'demo.js'],
     // `.then(` chains: the ceiling per file and why they are still there (round 2/3 of the conversion)
     then: {
       'app.js': [5, 'rollover -> maintain, span read, two sheet results, init chain: the app shell is round 3'],
@@ -53,20 +53,18 @@ export default {
       'app.js': [14, 'button and sheet handlers in the app shell: round 3'],
       'live.js': [1, 'the j() fetch helper is an async arrow, not a callback'],
       'tv.js': [2, 'the j() helper and the upload chain step (round 2)'],
-      'jkbms.js': [1, 'the connect attempt body is an IIFE awaited by connect()'],
       'history.js': [1, 'the reopen IIFE awaited by every call'],
       'history-worker.js': [2, 'the init IIFE and the worker onmessage (one handler per op, a dispatcher)'],
       'alerts.js': [3, 'three settings handlers that await a send'],
     },
     // hand-rolled `new Promise(`: sync.js has Flag / Channel / sleep / select; what remains wraps a platform event
     promise: {
-      'app.js': [8, 'rAF, file reads, sheet results, timers in the app shell: round 3'],
-      'jkbms.js': [2, 'GATT connect timeout and the handshake wait'],
+      'app.js': [6, 'rAF, file reads, sheet results, timers in the app shell: round 3'],
       'history.js': [2, 'the worker reply wait with its deadline, the pool reopen'],
       'history-worker.js': [2, 'the sync access handle waits'],
     },
     // timers belong to sync.js (sleep / select); a shell that sets its own is a lifecycle written as callbacks
-    timers: { 'app.js': [32, 'the app shell: round 3'], 'tv.js': [2, 'encoder cadence and upload retry: round 2'], 'jkbms.js': [4, 'GATT attempt pacing, the silence nudge, the stuck-connect watch (0.9.81: a connect the browser cannot finish)'], 'history.js': [2, 'the per-call deadline and restart pacing'], 'history-worker.js': [2, 'pool retry pacing'], 'alerts.js': [1, 'the evaluator tick'] },
+    timers: { 'app.js': [27, 'the app shell: round 3 (the Bluetooth timers went into the conn.js loop, 0.9.83)'], 'tv.js': [2, 'encoder cadence and upload retry: round 2'], 'history.js': [2, 'the per-call deadline and restart pacing'], 'history-worker.js': [2, 'pool retry pacing'], 'alerts.js': [1, 'the evaluator tick'] },
     // innerHTML built with interpolated values: BatRay's are language-table strings and numbers, never a BMS string
     innerHtml: { 'app.js': [6, 'sheet and chip templates filled from T (the language table) and formatted numbers; the BMS name goes through textContent'] },
     logic: (f) => /-logic\.js$/.test(f) || f === 'trend.js',          // the pure modules
@@ -83,6 +81,18 @@ export default {
           assert.ok(!/navigator\.geolocation|getCurrentPosition|watchPosition|['"]geolocation['"]/.test(src), `${f}: reads a position`);
           assert.ok(!/location-logic/.test(src), `${f}: imports the removed location module`);
         }
+      });
+      test('the Bluetooth connection is ONE loop per pack (0.9.83): conn.js is its only writer, app.js only tells it, jkbms.js only sets Flags at the GATT boundary', () => {
+        const conn = h.strip(h.read('conn.js')), app = h.strip(h.read('app.js')), bms = h.strip(h.read('jkbms.js'));
+        assert.equal((conn.match(/async run\(signal\)/g) || []).length, 1, 'one run(signal)');
+        assert.ok(/start\(\) \{\s*if \(this\.task !== null\) return;/.test(conn), 'start() refuses a second loop');
+        assert.ok(/stop\(\) \{ if \(this\.ac\) this\.ac\.abort\(\);/.test(conn), 'stop() aborts it');
+        assert.ok(!/\bcs\.\w+\s*(=[^=]|\+\+|--|[-+*]=)|\.cs\s*=[^=]/.test(app), 'app.js writes no connection state (it reads p.cs and calls p.conn.tell)');
+        assert.ok(!/connAct|connEvent|watchLinks|reTimer|gapTimer|attemptTicker/.test(app), 'the event machine and its timers are gone');
+        assert.ok(!/\bset(Timeout|Interval)\(|new Promise\(/.test(conn + bms), 'the loop waits through sync.js only; the port keeps no timers');
+        const cb = bms.match(/addEventListener\('(gattserverdisconnected|characteristicvaluechanged)'[^\n]*/g) || [];
+        assert.equal(cb.length, 2, cb.join('\n'));
+        assert.ok(/down\.set\(true\)/.test(cb[0]) && !/_emit|await|this\.\w+\(/.test(cb[0].replace(/this\.down\.set\(true\)/, '')), `the disconnect callback only sets the Flag: ${cb[0]}`);
       });
       test('lifecycle loops: each link class has exactly one run(signal), start() refuses a second loop, stop() aborts it', () => {
         const src = h.strip(h.read('live.js'));
