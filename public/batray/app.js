@@ -347,6 +347,7 @@ const packs = new Map();
 let active = null;
 let packSeq = 0;
 let publisher = null, viewer = null, tv = null;     // IO handles (sockets, encoder); their flow state is below
+let snapAc = null;                                  // the share's 10 s snapshot loop (hello + pack list), aborted when the share stops
 // ---- the state objects (house rule 2026-09-20): one plain object per flow,
 // decisions in the *-logic.js modules (functional core), this file acts on
 // them (imperative shell) and logs every decision. Per-pack BLE state is p.cs. ----
@@ -705,15 +706,20 @@ function recordRow(p, d, t, remoteRow = null) {
   queueRow(row);
   return row;
 }
-let histFlushing = false;
+let histFlush = null;   // the flush in flight: a promise is a handle, never a boolean (house rule; review 2026-11-01)
 /** A full disk: the SQLite pool turns the browser's QuotaExceededError into SQLITE_FULL / SQLITE_IOERR on write
  *  (history review 2026-11-01: the old check never matched, a store full at noon failed every insert to midnight). */
 const diskFull = (e) => !!e && (e.name === 'QuotaExceededError' || /SQLITE_FULL|SQLITE_IOERR|quota|disk is full/i.test(String(e.message)));
 /** The queue into the day databases, one insert per day. A failed insert keeps its rows for the next flush
  *  (bounded); the store has already logged why. */
 async function flushHistory() {
-  if (histFlushing || !histMem.pending.size || !histMem.ready) return;
-  histFlushing = true;
+  while (histFlush !== null) await histFlush;   // a caller that needs its rows stored (a history request) waits for the flush in flight, then flushes what came since
+  if (!histMem.pending.size || !histMem.ready) return;
+  histFlush = flushBatch();
+  try { await histFlush; } finally { histFlush = null; }
+  if (active && !$('trendCard').hidden) scheduleDraw(false);   // the throttle decides (half a bucket at least): a 7-day window is not re-queried every 10 s
+}
+async function flushBatch() {
   const batch = histMem.pending; histMem.pending = new Map(); histMem.inflight = batch;   // pagehide spills the batch in flight too
   try {
     if (hist.persistent === null) { const ok = await hist.persist(); histS.persistent = ok; log(`history: ${hist.backend}, persistent=${ok}`); }
@@ -734,8 +740,7 @@ async function flushHistory() {
         }
       }
     }
-  } finally { histFlushing = false; histMem.inflight = null; }
-  if (active && !$('trendCard').hidden) scheduleDraw(false);   // the throttle decides (half a bucket at least): a 7-day window is not re-queried every 10 s
+  } finally { histMem.inflight = null; }
 }
 void every(HISTORY_FLUSH_MS, flushHistory, { onError: jobError('history flush') });   // a loop: a slow flush never overlaps the next
 // Leaving the page (a reload, a navigation, the back/forward cache): everything here is synchronous, because the
@@ -1850,8 +1855,9 @@ async function beginShare() {
     void copyShareLink();
     // the room retains the newest hello / pack list / info / settings / data per pack for late viewers; the pack list
     // (connected flags) is resent every 10 s, the rest goes out when it changes
-    publisher.snapshotTimer = setInterval(sendSnapshots, 10000);
-    sendSnapshots();
+    if (snapAc) snapAc.abort();
+    snapAc = new AbortController();
+    void every(10000, sendSnapshots, { first: 0, signal: snapAc.signal, onError: jobError('snapshots') }).catch(() => {});   // ends with the share (abort)
   } catch (err) {
     if (publisher !== pub) return;                                    // cancelled: its own toast already said so
     log(`share failed: ${err.message}`);
@@ -1875,7 +1881,10 @@ async function histRequest(m) {
   const plan = transferPlan(histS.days, Array.isArray(m.have) ? m.have : []).map((x) => ({ ...x, to: m.from }));   // to the viewer that asked
   log(`history: request from ${String(m.from || '').slice(0, 6)}: viewer has ${Array.isArray(m.have) ? m.have.length : 0} days -> ${plan.length ? plan.map((x) => `${x.day} after id ${x.after} (${x.rows} rows)`).join(', ') : 'nothing to send'}`);
   if (!plan.length) return;
-  if (histS.xfer) { histS.xfer.queue = plan; log('history: a transfer is running, the new plan replaces its queue'); return; }
+  if (histS.xfer) {                                                     // a transfer is running: this viewer's new plan replaces only its own items, other viewers keep theirs
+    histS.xfer.queue = histS.xfer.queue.filter((q) => q.to !== m.from).concat(plan);
+    log(`history: a transfer is running, queued for this viewer (${histS.xfer.queue.length} items in the queue)`); return;
+  }
   // this transfer's own record: a share stopped and started again meanwhile has its own (an old finally had wiped the
   // new one's state, share review 2026-11-01)
   const x = { queue: plan, sent: 0 };
@@ -1921,7 +1930,7 @@ function cancelShare() {
 async function stopShare(why = 'chip') {
   if (!publisher) return;
   log(`share: stop (${why})`);
-  clearInterval(publisher.snapshotTimer);
+  if (snapAc) { snapAc.abort(); snapAc = null; }
   const pub = publisher; publisher = null; shareStopped(shareS); histS.xfer = null; statusS.sent = null;
   dropPush(pub.room, pub.pubToken);
   intentNote('share-off');   // the next share sends its status at once

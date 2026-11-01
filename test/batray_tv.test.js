@@ -184,6 +184,9 @@ test('2026-11-01 review: a stop while start() still waits on the relay ends star
   const started = t.start();
   await sleep(5);
   assert.equal(posted, 1, 'the POST is out');
+  assert.equal(t.start(), started, 'a second start() is the first one (Fable review 2026-11-01: one relay stream per TvStream)');
+  await sleep(5);
+  assert.equal(posted, 1, 'still one POST');
   await t.stop();
   await assert.rejects(started, (e) => e.name === 'AbortError');
   assert.equal(t.encoder, undefined, 'no encoder was configured after the stop');

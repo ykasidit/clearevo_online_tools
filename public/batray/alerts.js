@@ -123,6 +123,9 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
   async function stopWatch() { armed = false; lastHeartbeat = 0; try { await fetch(`${API}/watch/${watchId}`, { method: 'DELETE' }); log('watchdog: disarmed'); } catch { /* */ } }
 
   // ---- UI ----
+  // settings strings come from this browser's storage, which a restored settings file can fill: never markup
+  // (Fable review 2026-11-01 - a crafted file could have scripted the page through these four fields)
+  const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   function render() {
     const A = T().alerts;
     const ch = settings.channels, n = settings.ntfy, w = settings.watchdog;
@@ -131,7 +134,7 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
       <div class="agrp"><b>${A.channelsH}</b>
         ${NTFY_ENABLED ? `<label class="chk"><input type="checkbox" id="alNtfy" ${ch.ntfy ? 'checked' : ''}> ntfy</label>` : ''}
         <div class="arow" ${ch.ntfy && NTFY_ENABLED ? '' : 'hidden'} id="alNtfyRow">
-          <input id="alServer" value="${n.server}" placeholder="https://ntfy.sh" size="18"> / <input id="alTopic" value="${n.topic}" placeholder="${A.topicPh}" size="16"> <input id="alToken" value="${n.token}" placeholder="${A.tokenPh}" size="14" type="password">
+          <input id="alServer" value="${esc(n.server)}" placeholder="https://ntfy.sh" size="18"> / <input id="alTopic" value="${esc(n.topic)}" placeholder="${A.topicPh}" size="16"> <input id="alToken" value="${esc(n.token)}" placeholder="${A.tokenPh}" size="14" type="password">
           <button class="linkbtn" id="alNtfyTest">${A.test}</button>
           <div class="note">${A.ntfyNote}</div>
         </div>
@@ -150,7 +153,7 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
       </div>
       <div class="agrp" ${viewMode || !NTFY_ENABLED ? 'hidden' : ''}><b>${A.watchH}</b>
         <label class="chk"><input type="checkbox" id="alWatch" ${w.on ? 'checked' : ''} ${ch.ntfy ? '' : 'disabled'}> ${A.watchLbl}</label>
-        <div class="arow" ${w.on ? '' : 'hidden'} id="alWatchRow">${A.watchName} <input id="alWatchName" value="${w.name || ''}" placeholder="Sea hut" size="12"> · ${A.watchAfter} <input id="alWatchMin" type="number" value="${Math.round(w.timeoutS / 60)}" size="3"> ${A.min}
+        <div class="arow" ${w.on ? '' : 'hidden'} id="alWatchRow">${A.watchName} <input id="alWatchName" value="${esc(w.name || '')}" placeholder="Sea hut" size="12"> · ${A.watchAfter} <input id="alWatchMin" type="number" value="${Math.round(w.timeoutS / 60)}" size="3"> ${A.min}
           <div class="note">${A.watchNote}</div>${/^https:\/\/ntfy\.sh$/.test(n.server.replace(/\/+$/, '')) && !n.token ? `<div class="note warn">${A.watchTokenWarn}</div>` : ''}</div>
       </div>`;
     const on = (id, evn, fn) => { const el = $(id); if (el) el.addEventListener(evn, fn); };

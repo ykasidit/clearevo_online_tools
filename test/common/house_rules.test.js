@@ -54,7 +54,10 @@ test(`no innerHTML built from data in ${R.name}'s shells (a crafted file must no
   for (const f of H.shells) {
     const lines = strip(read(f)).split('\n');
     const [ceiling, why] = (H.innerHtml || {})[f] || [0, 'none listed'];
-    const hits = lines.map((l, i) => (/\.innerHTML\s*(\+?=)/.test(l) && /\$\{|\+ *[a-zA-Z_]/.test(l) ? `${f}:${i + 1} ${l.trim().slice(0, 90)}` : null)).filter(Boolean);
+    // the whole right-hand side, not the assignment line: a template that opens on that line and interpolates on later
+    // ones had slipped through (Fable review 2026-11-01: alerts.js put four settings strings into markup unescaped)
+    const rhs = (i) => { let t = '', k = i; do { t += lines[k] + '\n'; k++; } while (k < lines.length && (t.split('`').length - 1) % 2 === 1 && k - i < 200); return t; };
+    const hits = lines.map((l, i) => (/\.innerHTML\s*(\+?=)/.test(l) && /\$\{|\+ *[a-zA-Z_]/.test(rhs(i)) ? `${f}:${i + 1} ${l.trim().slice(0, 90)}` : null)).filter(Boolean);
     assert.ok(hits.length <= ceiling, `${f}: ${hits.length} innerHTML assignments with interpolated data, ceiling ${ceiling} (${why}):\n${hits.join('\n')}`);
   }
 });

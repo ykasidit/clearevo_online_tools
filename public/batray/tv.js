@@ -52,12 +52,14 @@ export class TvStream {
     this.frame = 0; this.n = 0; this.tick = 0; this.sinceKey = 0; this.pendingDurs = []; this.initSent = false; this.initBytes = null; this.reviving = false;
     this.lastErr = null; this.errRepeat = 0;
     this.uploadMs = o.uploadMs || UPLOAD_MS; this.queueMax = o.queueMax || QUEUE_MAX;
-    this.q = new Channel(); this.ac = new AbortController(); this.task = null; this.sendTask = null; this.stopped = false; this.dropped = 0;
+    this.q = new Channel(); this.ac = new AbortController(); this.task = null; this.startTask = null; this.sendTask = null; this.stopped = false; this.dropped = 0;
     this.encErr = null; this.busySince = null; this.rebuilds = []; this.died = false;
   }
   emit() { this.onState({ ...this.state }); }
 
-  async start() {
+  /** One start per stream: a second call gets the first one's promise (never a second relay stream). */
+  start() { if (this.startTask === null) this.startTask = this.begin(); return this.startTask; }
+  async begin() {
     if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') { const e = new Error('no WebCodecs'); e.code = 'nocodec'; throw e; }
     for (const c of this.codecs) {
       const cfg = this.encoderConfig(c);
@@ -113,7 +115,7 @@ export class TvStream {
     if (this.rebuilds.length >= REBUILD_MAX) {
       this.died = true; this.state.live = false; this.state.error = `the video encoder keeps failing (${e.message})`;
       this.log(`tv: the encoder failed again (${e.message}) - ${REBUILD_MAX} new ones within an hour, the stream stops`);
-      this.ac.abort(); this.emit();
+      this.ac.abort(); this.q.push(END); this.emit();                   // the uploader ends after what is queued, stopped or not
       return;
     }
     this.rebuilds.push(now);

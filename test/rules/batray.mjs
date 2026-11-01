@@ -58,14 +58,14 @@ export default {
     },
     // hand-rolled `new Promise(`: sync.js has Flag / Channel / sleep / select; what remains wraps a platform event
     promise: {
-      'app.js': [4, 'rAF, file reads, sheet results, the cast library load in the app shell: round 3'],
-      'history.js': [2, 'the worker reply wait with its deadline, the pool reopen'],
-      'history-worker.js': [2, 'the sync access handle waits'],
+      'app.js': [4, 'the cast library script load, the cast discovery wait, the sheet result, the log upload XHR: the cast flow and the sheet are the app shell\'s round 3 (they work on phones; converted one per release with a phone test)'],
+      'history.js': [2, 'the worker reply wait with its deadline; the slow() test hook of the memory backend'],
+      'history-worker.js': [2, 'the pool install retry wait (the worker has no sync.js import); the slow() test hook'],
     },
     // timers belong to sync.js (sleep / select); a shell that sets its own is a lifecycle written as callbacks
-    timers: { 'app.js': [15, 'one-shot UI timers (toast, blob URL revoke, reload after a restore, the cast tick and media poll, the reach hold): the periodic jobs are every() loops since 0.9.84'], 'history.js': [2, 'the per-call deadline and restart pacing'], 'history-worker.js': [2, 'pool retry pacing'], },
+    timers: { 'app.js': [15, 'one-shot UI timers (toast, three blob URL revokes, two reloads after a restore / reset, copy-label reset, the reach hold), the wake lock retry and keep-awake restart, and the cast flow (library load deadline, discovery wait, sheet tick, media poll) - the wake lock and the cast flow are round 3; the periodic jobs are every() loops since 0.9.84'], 'history.js': [2, 'the per-call reply deadline; the slow() test hook'], 'history-worker.js': [2, 'the pool install retry wait; the slow() test hook'], },
     // innerHTML built with interpolated values: BatRay's are language-table strings and numbers, never a BMS string
-    innerHtml: { 'app.js': [6, 'sheet and chip templates filled from T (the language table) and formatted numbers; the BMS name goes through textContent'] },
+    innerHtml: { 'alerts.js': [1, 'the settings form: language-table strings and numbers; the four strings from storage (ntfy server, topic, token, watchdog name) go through esc() - a gate below holds that'], 'app.js': [6, 'sheet and chip templates filled from T (the language table) and formatted numbers; the BMS name goes through textContent'] },
     logic: (f) => /-logic\.js$/.test(f) || f === 'trend.js',          // the pure modules
     logicMin: 12,
     sync: 'sync.js',
@@ -96,10 +96,22 @@ export default {
       test('a channel arm of select() only waits (ready) and the loop takes the item after it won - next() inside a select loses the item whenever another arm wins the same turn (review 2026-11-01)', () => {
         for (const f of ['app.js', 'live.js', 'conn.js', 'tv.js']) {
           const src = h.strip(h.read(f));
-          const bad = src.split('\n').filter((l) => /select\(/.test(l) && /\.next\(\{ signal/.test(l));
+          // every select( call through the end of its arms object (multi-line too), and every arms object built
+          // beside it (`const arms = { ... }`): no arm may take from a channel
+          const lines = src.split('\n'), bad = [];
+          lines.forEach((l, i) => {
+            if (!/\bselect\(|\barms\s*=\s*\{/.test(l)) return;
+            let t = '', depth = 0, k = i;
+            do { t += lines[k] + '\n'; depth += (lines[k].match(/[({]/g) || []).length - (lines[k].match(/[)}]/g) || []).length; k++; } while (k < lines.length && depth > 0 && k - i < 40);
+            if (/=>\s*[\w.]*\.next\(|=>\s*this\.next\(/.test(t)) bad.push(`${f}:${i + 1} ${l.trim().slice(0, 80)}`);
+          });
           assert.deepEqual(bad, [], `${f}: a Channel.next() as a select arm`);
         }
-        assert.ok(!/cmd: \(s\) => this\.next\(/.test(h.strip(h.read('conn.js'))), 'conn.js arms use cmdArm');
+      });
+      test('alerts.js: settings strings from storage are escaped in the form (a restored settings file must not script the page - Fable review 2026-11-01)', () => {
+        const src = h.strip(h.read('alerts.js'));
+        assert.ok(!/value="\$\{(n|w|settings)\./.test(src), 'a settings value into markup without esc()');
+        assert.ok((src.match(/value="\$\{esc\(/g) || []).length >= 4, 'server, topic, token, watchdog name escaped');
       });
       test('lifecycle loops: each link class has exactly one run(signal), start() refuses a second loop, stop() aborts it', () => {
         const src = h.strip(h.read('live.js'));

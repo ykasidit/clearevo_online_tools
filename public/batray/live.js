@@ -97,7 +97,7 @@ async function serve(sock, signal, { onMsg, onTick, log, now, resumed }) {
   }
 }
 
-/** Track the device's own internet state into state.net (navigator.onLine is
+/** Track the device's own internet state into state.net, a display field the loops never read (navigator.onLine is
  *  a coarse signal - false is reliable, true only means "not known offline"). */
 function watchNet(self) {
   self.state.net = navigator.onLine !== false;
