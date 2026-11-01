@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 //
 // The pure half of the Bluetooth connection (house rules 2026-09-20 and 2026-10-01). Since 0.9.83 the flow itself is
-// ONE loop per pack in conn.js (idle -> choosing -> connecting -> connected -> countdown, and stuck): the phase is the
+// ONE loop per pack, the BleConn class (idle -> choosing -> connecting -> connected -> countdown, and stuck): the phase is the
 // loop's program counter, the loop is the only writer of `connState()`, and a person's tap only queues a command.
 // What a command means in each phase, whether a failed attempt is tried again, and what follows the end of a link
 // are decided here, as tables over plain values, so the rules stay replayable in node. Facts encoded here come from

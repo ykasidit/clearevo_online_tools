@@ -459,7 +459,7 @@ export function startupAskDecision(firstCellAt, askedAt, now = Date.now(), every
   return now - askedAt >= (!served && asks < STARTUP_QUICK_ASKS ? quickMs : everyMs);
 }
 
-/** One look at a connected link (conn.js asks every SERVE_TICK_MS and when the device-info answer arrives): what the
+/** One look at a connected link (the connection loop asks every SERVE_TICK_MS and when the device-info answer arrives): what the
  *  loop does now. l = { now, connectedAt, askedAt (the last 0x96, null before the handshake), asks, info (the device
  *  info came), firstCellAt, settingsAt, lastRxAt, lastDataAt } of THIS link. Returns { act: 'stall', ageS } (quiet past
  *  the limit, or never answered: drop it) | { act: 'handshake' } (the first 0x96: after the device info, or after
@@ -475,7 +475,7 @@ export function linkStep(l, { staleMs = STALE_MS, startupMs = 20000, handshakeMs
 }
 
 /** The GATT port of ONE link at a time, and the frame codec on its notifications (0.9.83). No lifecycle in here: the
- *  connect / serve / reconnect flow is the pack's loop in conn.js, the only writer of the connection state. This
+ *  connect / serve / reconnect flow is the pack's connection loop, the only writer of the connection state. This
  *  class does the GATT calls when the loop asks, and at the boundary (the browser's callbacks) it only sets Flags:
  *  `down` (no GATT link), `voided` (a notification after a gap no live link has: queued while the tab was frozen),
  *  `infoSeen` (the device-info answer of this link). The per-frame decode stays synchronous (the hot path) and emits
