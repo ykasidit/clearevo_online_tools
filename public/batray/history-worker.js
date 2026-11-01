@@ -33,6 +33,7 @@ import sqlite3InitModule from './sqlite3.js';
 import { isCorruptError } from './history-logic.js';
 import { ensureSchema, insertRows, rowsAfter, lastRows, buckets, energyWh, span, dayInfo, dbBytes, mergeFrom, looksLikeDayDb } from './history-sql.js';
 import { storeDirs, storeOfDir, storeOfLogDir, validTabId } from './tab-logic.js';
+import { sleep } from './sync.js';
 
 const DIR = 'batray-history';           // text files: one logs directory per store (and old day files from before 0.9.40, unread)
 // One store per tab (0.9.77): the page names its store first ('config'); the SQLite pool's directory and the debug-log
@@ -42,7 +43,8 @@ const OLD_RX = /^\d{4}-\d{2}-\d{2}\.ndjson(\.gz)?$/;   // a day file from before
 const IDLE_CLOSE_MS = 60000;            // a past day's database is closed after this without use (today's stays open)
 const enc = new TextEncoder(), dec = new TextDecoder();
 let dirP = null;
-function dir() { return dirP || (dirP = navigator.storage.getDirectory().then((root) => root.getDirectoryHandle(DIR, { create: true }))); }
+function dir() { if (!dirP) dirP = openDir(); return dirP; }
+async function openDir() { const root = await navigator.storage.getDirectory(); return root.getDirectoryHandle(DIR, { create: true }); }
 
 let sqlite3 = null, pool = null, initP = null;
 const dbs = new Map();                  // day -> { db, usedAt }
@@ -60,20 +62,21 @@ async function init() {
   if (pool) return;
   if (!DIRS) throw new Error('no store named yet');
   if (!initP) {
-    initP = (async () => {
-      sqlite3 = await sqlite3InitModule({ print: () => {}, printErr: () => {} });
-      for (let i = 1; ; i++) {
-        try { pool = await sqlite3.installOpfsSAHPoolVfs({ directory: '/' + DIRS.db, initialCapacity: 16, clearOnInit: false }); if (i > 1) wlog(`pool taken on try ${i}`); break; }
-        catch (e) {
-          const busy = /Access Handle|NoModificationAllowed|InvalidState/i.test(String(e && e.message));
-          if (!busy || i >= INSTALL_TRIES) { wlog(`pool not taken after ${i} tries: ${e && e.message}`); throw e; }
-          if (i === 1 || i % 10 === 0) wlog(`pool busy (another worker still holds its files), try ${i} of ${INSTALL_TRIES}`);
-          await new Promise((r) => { setTimeout(r, INSTALL_WAIT_MS); });
-        }
-      }
-    })().catch((e) => { initP = null; throw e; });
+    initP = openPool();
   }
-  await initP;
+  try { await initP; } catch (e) { initP = null; throw e; }               // the next op tries again
+}
+async function openPool() {
+  sqlite3 = await sqlite3InitModule({ print: () => {}, printErr: () => {} });
+  for (let i = 1; ; i++) {
+    try { pool = await sqlite3.installOpfsSAHPoolVfs({ directory: '/' + DIRS.db, initialCapacity: 16, clearOnInit: false }); if (i > 1) wlog(`pool taken on try ${i}`); break; }
+    catch (e) {
+      const busy = /Access Handle|NoModificationAllowed|InvalidState/i.test(String(e && e.message));
+      if (!busy || i >= INSTALL_TRIES) { wlog(`pool not taken after ${i} tries: ${e && e.message}`); throw e; }
+      if (i === 1 || i % 10 === 0) wlog(`pool busy (another worker still holds its files), try ${i} of ${INSTALL_TRIES}`);
+      await sleep(INSTALL_WAIT_MS);
+    }
+  }
 }
 /** Hand the pool's files back (pagehide): every day database is closed and the access handles released, so the
  *  next page (or another tab) can take them. The next op takes them again. */
@@ -236,7 +239,7 @@ const ops = {
   /** Test hooks. `slow` = a worker that does not answer for a while (a timer: terminate() ends it cleanly and the
    *  pool is free at once); `spin` = a worker stuck in JavaScript (a busy loop: Chrome's terminate() then never
    *  releases its access handles - the pool stays locked until the page is reloaded, probed 2026-09-24). */
-  async slow({ ms }) { await new Promise((r) => { setTimeout(r, Math.min(ms || 0, 120000)); }); return { slept: ms }; },
+  async slow({ ms }) { await sleep(Math.min(ms || 0, 120000)); return { slept: ms }; },
   /** Test hook: damage a day's file in place (the header stays, every byte after it is 0xFF), as a bad flash
    *  block or a torn write would. The next read or write of that day raises SQLITE_CORRUPT. */
   async corrupt({ day }) { await init(); await resume(); close(day); const name = dbName(day); const bytes = pool.exportFile(name); bytes.fill(0xff, 100); pool.importDb(name, bytes); return { bytes: bytes.length }; },
@@ -275,8 +278,9 @@ const ops = {
   async estimate() { const e = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : {}; return { usage: e.usage || 0, quota: e.quota || 0 }; },
 };
 
-self.onmessage = async (ev) => {
-  const { id, op, args } = ev.data || {};
+self.onmessage = (ev) => { void runOp(ev.data || {}); };
+/** One op: its reply (or its error) goes back with its id; the page's call waits on that. */
+async function runOp({ id, op, args }) {
   try {
     if (!ops[op]) throw new Error('unknown op ' + op);
     const r = await ops[op](args || {});
@@ -289,4 +293,4 @@ self.onmessage = async (ev) => {
     }
     self.postMessage({ id, ok: false, error: (e && e.message) || String(e), name: e && e.name });
   }
-};
+}

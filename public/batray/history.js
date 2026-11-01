@@ -21,7 +21,7 @@
 // card says "not stored".
 
 import { opTimeoutMs, statsState, statsAdd, stuckDecision, statsLine, statsReset, bucketsFromRows, energyFromRows, daysInRange } from './history-logic.js';
-import { sleep } from './sync.js';
+import { sleep, Flag, TIMEOUT } from './sync.js';
 
 const WORKER_URL = 'history-worker.js';
 
@@ -63,7 +63,7 @@ class MemoryBackend {
   async oldFiles() { return { files: 0, bytes: 0 }; }
   async pause() { return { paused: false }; }
   async resume() { return { paused: false }; }
-  async slow({ ms }) { await new Promise((r) => { setTimeout(r, ms); }); return { slept: ms }; }
+  async slow({ ms }) { await sleep(ms); return { slept: ms }; }
   async note() { return { bytes: 0 }; }
   async logAppend({ name, text }) { const f = this.files.get('L:' + name) || { raw: '' }; f.raw += text; this.files.set('L:' + name, f); return { bytes: f.raw.length }; }
   async logList() { return { files: [...this.files.entries()].filter(([k]) => k.startsWith('L:')).map(([k, f]) => ({ name: k.slice(2), bytes: f.raw.length })).sort((a, b) => (a.name < b.name ? -1 : 1)) }; }
@@ -82,25 +82,30 @@ class WorkerBackend {
   start() {
     this.generation++; this.lastReplyAt = Date.now();
     this.w = this.makeWorker();
-    this.w.onmessage = (ev) => { const m = ev.data; this.lastReplyAt = Date.now(); if (m && m.log) { this.log('history worker: ' + m.log); return; } if (m && m.id === 0) { if (!m.ok) this.log('history: the worker refused its store: ' + m.error); return; } const p = this.waiting.get(m.id); if (!p) return; this.waiting.delete(m.id); clearTimeout(p.timer); m.ok ? p.res(m.r) : p.rej(Object.assign(new Error(m.error), { name: m.name || 'Error' }, m.data || {})); };
+    this.w.onmessage = (ev) => { const m = ev.data; this.lastReplyAt = Date.now(); if (m && m.log) { this.log('history worker: ' + m.log); return; } if (m && m.id === 0) { if (!m.ok) this.log('history: the worker refused its store: ' + m.error); return; } const p = this.waiting.get(m.id); if (!p) return; this.waiting.delete(m.id); if (m.ok) p.r = m.r; else p.err = Object.assign(new Error(m.error), { name: m.name || 'Error' }, m.data || {}); p.done.set(true); };   // the reply fills its call's latch
     this.w.onerror = (e) => { this.log('history: worker error ' + (e.message || e)); this.failAll(new Error('worker failed')); };
     // every fresh worker is told its tab's store first (0.9.77); the worker handles it before the next message
     if (this.store) { try { this.w.postMessage({ id: 0, op: 'config', args: { store: this.store } }); } catch { /* the next call fails and says so */ } }
   }
-  failAll(err) { for (const p of this.waiting.values()) { clearTimeout(p.timer); p.rej(err); } this.waiting.clear(); }
+  failAll(err) { for (const p of this.waiting.values()) { p.err = err; p.done.set(true); } this.waiting.clear(); }
   /** Kill the worker (whatever it is doing) and start another; pending calls fail at once. */
   restart() { this.failAll(Object.assign(new Error('worker restarted'), { name: 'RestartError' })); try { if (this.w) this.w.terminate(); } catch { /* gone */ } this.start(); }
   /** Stop the worker (pagehide): its OPFS access handles are released with it, so the next page or another tab
    *  can take the pool; the next call starts a fresh worker (a page back from the back/forward cache). */
   stop() { this.failAll(Object.assign(new Error('worker stopped'), { name: 'RestartError' })); try { if (this.w) this.w.terminate(); } catch { /* gone */ } this.w = null; }
-  call(op, args, timeoutMs) {
+  /** One call: a latch per call (the reply, a restart or the worker's error sets it) waited with the call's deadline;
+   *  a reply after the deadline finds no latch and is dropped. */
+  async call(op, args, timeoutMs) {
     if (!this.w) this.start();
-    return new Promise((res, rej) => {
-      const id = ++this.seq;
-      const timer = setTimeout(() => { if (!this.waiting.has(id)) return; this.waiting.delete(id); rej(Object.assign(new Error(`${op} timed out after ${Math.round(timeoutMs / 1000)} s`), { name: 'TimeoutError' })); }, timeoutMs);
-      this.waiting.set(id, { res, rej, timer });
-      try { this.w.postMessage({ id, op, args }); } catch (e) { clearTimeout(timer); this.waiting.delete(id); rej(e); }
-    });
+    const id = ++this.seq, slot = { done: new Flag(false), r: null, err: null };
+    this.waiting.set(id, slot);
+    try { this.w.postMessage({ id, op, args }); } catch (e) { this.waiting.delete(id); throw e; }
+    if (await slot.done.wait(true, { ms: timeoutMs }) === TIMEOUT) {
+      this.waiting.delete(id);
+      throw Object.assign(new Error(`${op} timed out after ${Math.round(timeoutMs / 1000)} s`), { name: 'TimeoutError' });
+    }
+    if (slot.err) throw slot.err;
+    return slot.r;
   }
 }
 
@@ -112,7 +117,7 @@ const KIND = { ping: 'ping', pause: 'other', resume: 'other', insert: 'insert', 
 export class HistoryStore {
   /** opts: { log(msg), store (this tab's store id, or a promise of it: 0.9.77), forceMemory, backend (tests), makeWorker (tests), timeouts (tests: {op: ms}), stuckSilentMs / retryMs / retryTries (tests) } */
   constructor(opts = {}) {
-    this.log = opts.log || (() => {}); this.backend = 'none'; this.b = null; this.persistent = null; this.stats = statsState(); this.onBackend = null;   // the app's hook when the backend changes (lock-out)
+    this.log = opts.log || (() => {}); this.backend = 'none'; this.b = null; this.reopening = null; this.persistent = null; this.stats = statsState(); this.onBackend = null;   // the app's hook when the backend changes (lock-out)
     this.stuckSilentMs = opts.stuckSilentMs !== undefined ? opts.stuckSilentMs : STUCK_SILENT_MS; this.retryMs = opts.retryMs || RETRY_MS; this.retryTries = opts.retryTries !== undefined ? opts.retryTries : RETRY_TRIES;
     this.timeouts = opts.timeouts || {}; this.makeWorker = opts.makeWorker || null; this.lastFail = ''; this.store = null; this.storeP = Promise.resolve(opts.store || null);
     this.ready = opts.backend ? this.adopt(opts.backend, opts.backendName || 'test') : this.open(!!opts.forceMemory);
@@ -139,7 +144,7 @@ export class HistoryStore {
   timeoutFor(op) { return this.timeouts[op] || opTimeoutMs(KIND[op] || 'other'); }
   /** One store call: deadline, statistics, a log line on a failure or a timeout, a worker restart when stuck. */
   async call(op, args = {}, n = 0) {
-    await this.ready; if (this.reopening) await this.reopening;
+    await this.ready; if (this.reopening !== null) await this.reopening;
     if (this.released) throw Object.assign(new Error('the page is being left: the store is released'), { name: 'RestartError' });   // a call during pagehide must not start a worker               // a fresh worker is taking the pool: calls wait for it (bounded by the ping deadline)
     const kind = KIND[op] || 'other', t0 = Date.now();
     try {
@@ -168,11 +173,12 @@ export class HistoryStore {
    *  means the pool is lost for this page and the store goes memory-only. */
   reopen() {
     this.b.restart(); const wb = this.b, t0 = Date.now();
-    this.reopening = (async () => {
-      try { const r = await wb.call('ping', {}, this.timeoutFor('ping')); this.log(`history: fresh worker answers, SQLite over ${r.vfs}, ${r.files} files, ${Date.now() - t0} ms`); }
-      catch (e) { if (this.b === wb) this.lockOut(Date.now() - t0, e); }
-      finally { this.reopening = null; }
-    })();
+    this.reopening = this.reopenPing(wb, t0);
+  }
+  async reopenPing(wb, t0) {
+    try { const r = await wb.call('ping', {}, this.timeoutFor('ping')); this.log(`history: fresh worker answers, SQLite over ${r.vfs}, ${r.files} files, ${Date.now() - t0} ms`); }
+    catch (e) { if (this.b === wb) this.lockOut(Date.now() - t0, e); }
+    finally { this.reopening = null; }
   }
   /** The fresh worker could not take the pool: a worker killed while it was busy keeps its access handles until
    *  the page is reloaded (Chrome, probed 2026-09-24). The session goes memory-only rather than failing every call. */

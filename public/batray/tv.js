@@ -32,12 +32,12 @@ export const UPLOAD_MS = 15000, QUEUE_MAX = 20, STOP_DRAIN_MS = 15000;
 export const REBUILD_MAX = 5, BUSY_MS = 10000, RELAY_MS = 15000;
 const END = Symbol('end');
 
-const j = async (path, init = {}) => {
+async function j(path, init = {}) {
   const r = await fetch(`${API}/${path}`, init);
   const body = await r.json().catch(() => ({}));
   if (!r.ok) { const e = new Error(`${path}: ${r.status} ${body.error || ''}`.trim()); e.status = r.status; throw e; }
   return body;
-};
+}
 
 export class TvStream {
   /** opts: { width, height, fps, segS, bitrate, model(), log, onState, codecs, texts, uploadMs, queueMax } */

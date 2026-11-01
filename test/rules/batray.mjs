@@ -41,29 +41,14 @@ export default {
   house: {
     // the first-party I/O shells (logic modules are checked for purity; vendored files are not ours)
     shells: ['app.js', 'live.js', 'tv.js', 'jkbms.js', 'conn.js', 'history.js', 'history-worker.js', 'history-chart.js', 'alerts.js', 'demo.js'],
-    // `.then(` chains: the ceiling per file and why they are still there (round 2/3 of the conversion)
-    then: {
-      'app.js': [5, 'rollover -> maintain, span read, two sheet results, init chain: the app shell is round 3'],
-      'history-worker.js': [1, 'the OPFS directory handle memo'],
-      'alerts.js': [3, 'two fan-out sends with per-channel results, the service-worker registration lookup'],
-    },
-    // async callbacks (an `async (` after =, comma or paren): a callback that awaits is a lifecycle in disguise
-    asyncCb: {
-      'app.js': [14, 'button and sheet handlers in the app shell: round 3'],
-      'live.js': [1, 'the j() fetch helper is an async arrow, not a callback'],
-      'tv.js': [1, 'the j() fetch helper is an async arrow, not a callback'],
-      'history.js': [1, 'the reopen IIFE awaited by every call'],
-      'history-worker.js': [2, 'the init IIFE and the worker onmessage (one handler per op, a dispatcher)'],
-      'alerts.js': [3, 'three settings handlers that await a send'],
-    },
-    // hand-rolled `new Promise(`: sync.js has Flag / Channel / sleep / select; what remains wraps a platform event
-    promise: {
-      'app.js': [4, 'the cast library script load, the cast discovery wait, the sheet result, the log upload XHR: the cast flow and the sheet are the app shell\'s round 3 (they work on phones; converted one per release with a phone test)'],
-      'history.js': [2, 'the worker reply wait with its deadline; the slow() test hook of the memory backend'],
-      'history-worker.js': [2, 'the pool install retry wait (the worker has no sync.js import); the slow() test hook'],
-    },
-    // timers belong to sync.js (sleep / select); a shell that sets its own is a lifecycle written as callbacks
-    timers: { 'app.js': [15, 'one-shot UI timers (toast, three blob URL revokes, two reloads after a restore / reset, copy-label reset, the reach hold), the wake lock retry and keep-awake restart, and the cast flow (library load deadline, discovery wait, sheet tick, media poll) - the wake lock and the cast flow are round 3; the periodic jobs are every() loops since 0.9.84'], 'history.js': [2, 'the per-call reply deadline; the slow() test hook'], 'history-worker.js': [2, 'the pool install retry wait; the slow() test hook'], },
+    // `.then(` chains, async callbacks, hand-rolled Promises: none left in any shell since 0.9.85 (the app shell's round 3:
+    // the cast flow, the wake lock, the reach hold, the sheet answer and the log upload are loops / latches; buttons that
+    // await go through onTap(), one run at a time). A new one fails here.
+    then: {},
+    asyncCb: {},
+    promise: {},
+    // timers belong to sync.js (sleep / select); what stays is fire-and-forget UI that no loop waits on
+    timers: { 'app.js': [7, 'one-shot UI timers no flow waits on: the toast hide, three blob URL revokes after a download, two reloads after a settings restore / reset, the copy-label reset'] },
     // innerHTML built with interpolated values: BatRay's are language-table strings and numbers, never a BMS string
     innerHtml: { 'alerts.js': [1, 'the settings form: language-table strings and numbers; the four strings from storage (ntfy server, topic, token, watchdog name) go through esc() - a gate below holds that'], 'app.js': [6, 'sheet and chip templates filled from T (the language table) and formatted numbers; the BMS name goes through textContent'] },
     logic: (f) => /-logic\.js$/.test(f) || f === 'trend.js',          // the pure modules
@@ -112,6 +97,17 @@ export default {
         const src = h.strip(h.read('app.js'));
         assert.ok(!/=\s*await hist\.ready/.test(src), 'a backend taken from hist.ready');
         assert.ok(/histS\.backend = hist\.backend/.test(src) && /logS\.backend = hist\.backend/.test(src), 'both inits read hist.backend');
+      });
+      test('0.9.85: the cast flow, the wake lock and the reach hold are one loop each - the platform calls happen only inside their loop, the old timers and generation counters are gone', () => {
+        const src = h.strip(h.read('app.js'));
+        const body = (name) => { const i = src.indexOf(`async function ${name}(`); assert.ok(i >= 0, name); const k = src.indexOf('\n}\n', i); return src.slice(i, k); };
+        const outside = (needle, fn) => src.split(needle).length - 1 - (body(fn).split(needle).length - 1);
+        assert.equal(outside('requestSession(', 'castFlow'), 0, 'a cast picker request outside the cast flow');
+        assert.equal(outside('.loadMedia(', 'castFlow'), 0, 'a cast load outside the cast flow');
+        assert.equal(outside('wakeLock.request(', 'wakeRun'), 0, 'a wake lock request outside the wake loop');
+        assert.ok(!/castGen|castWaiters|castLoad\b|wakeRetryTimer|reachTimer|sheetResolve|logFlushing/.test(src), 'a timer, a generation counter or a boolean single-flight came back');
+        assert.ok(/castRun !== null/.test(src) && /wakeTask === null/.test(src) && /reachTask === null/.test(src), 'each loop is started once through its handle');
+        assert.ok(/function onTap\(/.test(src) && !/addEventListener\([^)]*async/.test(src), 'a handler that awaits goes through onTap (one run per control)');
       });
       test('alerts.js: settings strings from storage are escaped in the form (a restored settings file must not script the page - Fable review 2026-11-01)', () => {
         const src = h.strip(h.read('alerts.js'));

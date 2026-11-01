@@ -35,12 +35,12 @@ const SEND_MAX = 256 * 1024;   // bytes queued on the socket before an envelope 
 
 // A share that starts on a Wi-Fi link that is up but not answering must not hang (the resume waits on it).
 export const START_MS = 10000;
-const j = async (path, init = {}) => {
+async function j(path, init = {}) {
   const r = await fetch(`${API}/${path}`, { headers: { 'Content-Type': 'application/json' }, ...init });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) { /** @type {any} */ const e = new Error(`${path}: ${r.status} ${body.error || JSON.stringify(body).slice(0, 160)}`); e.status = r.status; e.body = body; throw e; }
   return body;
-};
+}
 const b64 = (bytes) => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); };
 const unb64 = (str) => Uint8Array.from(atob(str), (c) => c.charCodeAt(0));
 

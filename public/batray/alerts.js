@@ -24,7 +24,7 @@ import { every } from './sync.js';
 
 const API = '/batray/api';
 const STORE = 'batray_alerts';
-const TICK_MS = 5000, HEARTBEAT_MS = 60000;
+const TICK_MS = 5000, HEARTBEAT_MS = 60000, NTFY_MS = 10000;
 // ntfy delivery and the relay watchdog are built and tested but not offered
 // yet (ntfy.sh refuses posts from the relay's shared address without a paid
 // account). Chrome notifications only, until a delivery path is settled.
@@ -53,7 +53,7 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
     const n = settings.ntfy;
     const headers = { Title: title, Priority: String(priority), Tags: tag };
     if (n.token) headers.Authorization = `Bearer ${n.token}`;
-    const r = await fetch(`${n.server.replace(/\/+$/, '')}/${n.topic}`, { method: 'POST', body, headers });
+    const r = await fetch(`${n.server.replace(/\/+$/, '')}/${n.topic}`, { method: 'POST', body, headers, signal: AbortSignal.timeout(NTFY_MS) });   // a silent server never holds an alert for good
     if (!r.ok) throw new Error(`ntfy ${r.status}`);
   }
   async function sendChrome(title, body, tag) {
@@ -61,11 +61,13 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
     if (swReg) { await swReg.showNotification(title, { body, tag, renotify: true, icon: '/batray/icon-192.png', badge: '/batray/icon-192.png' }); return; }
     new Notification(title, { body, tag, icon: '/batray/icon-192.png' });
   }
+  /** One channel's send as a result line: every channel is tried, one failing never hides the other. */
+  async function outcome(name, send) { try { await send(); return `${name} ok`; } catch (e) { return `${name} failed: ${e.message}`; } }
   async function deliver(title, body, priority, tag) {
     const st = status();
     const results = [];
-    if (st.channels.includes('ntfy')) results.push(sendNtfy(title, body, priority, tag).then(() => 'ntfy ok').catch((e) => `ntfy failed: ${e.message}`));
-    if (st.channels.includes('chrome')) results.push(sendChrome(title, body, tag).then(() => 'chrome ok').catch((e) => `chrome failed: ${e.message}`));
+    if (st.channels.includes('ntfy')) results.push(outcome('ntfy', () => sendNtfy(title, body, priority, tag)));
+    if (st.channels.includes('chrome')) results.push(outcome('chrome', () => sendChrome(title, body, tag)));
     if (!results.length) { log(`alert (no channel on): ${title} - ${body}`); return; }
     for (const r of await Promise.all(results)) log(`alert ${r}: ${title} - ${body}`);
   }
@@ -113,14 +115,14 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
     lastHeartbeat = Date.now(); armed = true;
     try {
       const r = await fetch(`${API}/watch/${watchId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ server: settings.ntfy.server, topic: settings.ntfy.topic, token: settings.ntfy.token || '', name: settings.watchdog.name || 'BatRay', timeout_s: settings.watchdog.timeoutS }) });
+        body: JSON.stringify({ server: settings.ntfy.server, topic: settings.ntfy.topic, token: settings.ntfy.token || '', name: settings.watchdog.name || 'BatRay', timeout_s: settings.watchdog.timeoutS }), signal: AbortSignal.timeout(NTFY_MS) });
       const b = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(b.error || r.status);
       if (b.wasSilent) log('watchdog: relay had reported this gateway silent; it now knows we are back');
       watchSilent = false;
     } catch (e) { log(`watchdog heartbeat failed: ${e.message}`); }
   }
-  async function stopWatch() { armed = false; lastHeartbeat = 0; try { await fetch(`${API}/watch/${watchId}`, { method: 'DELETE' }); log('watchdog: disarmed'); } catch { /* */ } }
+  async function stopWatch() { armed = false; lastHeartbeat = 0; try { await fetch(`${API}/watch/${watchId}`, { method: 'DELETE', signal: AbortSignal.timeout(NTFY_MS) }); log('watchdog: disarmed'); } catch { /* */ } }
 
   // ---- UI ----
   // settings strings come from this browser's storage, which a restored settings file can fill: never markup
@@ -156,12 +158,19 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
         <div class="arow" ${w.on ? '' : 'hidden'} id="alWatchRow">${A.watchName} <input id="alWatchName" value="${esc(w.name || '')}" placeholder="Sea hut" size="12"> · ${A.watchAfter} <input id="alWatchMin" type="number" value="${Math.round(w.timeoutS / 60)}" size="3"> ${A.min}
           <div class="note">${A.watchNote}</div>${/^https:\/\/ntfy\.sh$/.test(n.server.replace(/\/+$/, '')) && !n.token ? `<div class="note warn">${A.watchTokenWarn}</div>` : ''}</div>
       </div>`;
+    async function chromeToggled(on) {
+      ch.chrome = on;
+      try { if (on) await ensureChrome(); } catch (e) { log(`chrome notifications: ${e.message}`); toast(e.message); }
+      save();
+    }
+    async function testNtfy() { try { await sendNtfy(A.testTitle, A.testBody, 3, 'test_tube'); log('ntfy test sent'); } catch (e) { log(`ntfy test failed: ${e.message}`); toast(`ntfy: ${e.message}`); } }   // a toast, never alert() (house rule)
+    async function testChrome() { try { await ensureChrome(); await sendChrome(A.testTitle, A.testBody, 'test'); } catch (e) { log(`chrome test failed: ${e.message}`); toast(e.message); } }
     const on = (id, evn, fn) => { const el = $(id); if (el) el.addEventListener(evn, fn); };
     on('alNtfy', 'change', (e) => { ch.ntfy = e.target.checked; if (!ch.ntfy && w.on) { w.on = false; void stopWatch(); } save(); });
-    on('alChrome', 'change', async (e) => { ch.chrome = e.target.checked; if (ch.chrome) await ensureChrome(); save(); });
+    on('alChrome', 'change', (e) => { void chromeToggled(e.target.checked); });
     for (const id of ['alServer', 'alTopic', 'alToken']) on(id, 'change', () => { n.server = $('alServer').value.trim(); n.topic = $('alTopic').value.trim(); n.token = $('alToken').value.trim(); save(); if (w.on) void heartbeat(true); });
-    on('alNtfyTest', 'click', async () => { try { await sendNtfy(A.testTitle, A.testBody, 3, 'test_tube'); log('ntfy test sent'); } catch (e) { log(`ntfy test failed: ${e.message}`); toast(`ntfy: ${e.message}`); } });   // a toast, never alert() (house rule)
-    on('alChromeTest', 'click', async () => { try { await ensureChrome(); await sendChrome(A.testTitle, A.testBody, 'test'); } catch (e) { log(`chrome test failed: ${e.message}`); toast(e.message); } });
+    on('alNtfyTest', 'click', () => { void testNtfy(); });
+    on('alChromeTest', 'click', () => { void testChrome(); });
     $('alertsBody').querySelectorAll('[data-rule]').forEach((el) => el.addEventListener('change', () => { settings.rules[el.dataset.rule].on = el.checked; save(); }));
     $('alertsBody').querySelectorAll('[data-val]').forEach((el) => el.addEventListener('change', () => { const r = RULES.find((x) => x.id === el.dataset.val); const v = +el.value; if (Number.isFinite(v) && v >= 0) settings.rules[r.id].value = r.unit === 's' ? Math.max(60, Math.round(v * 60)) : v; save(); }));
     $('alertsBody').querySelectorAll('[data-hold]').forEach((el) => el.addEventListener('change', () => { const v = +el.value; if (Number.isFinite(v) && v >= 0) settings.rules[el.dataset.hold].holdS = Math.round(v * 60); save(); }));
@@ -172,6 +181,7 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
     on('alWatchName', 'change', (e) => { w.name = e.target.value.trim().slice(0, 64); save(); void heartbeat(true); });
     on('alWatchMin', 'change', (e) => { const v = Math.round(+e.target.value * 60); if (Number.isFinite(v)) w.timeoutS = Math.max(120, Math.min(86400, v)); save(); void heartbeat(true); });
   }
+  async function findServiceWorker() { try { const r = await navigator.serviceWorker.getRegistration('/batray/'); if (r) swReg = r; } catch { /* none yet */ } }
   async function ensureChrome() {
     if (typeof Notification === 'undefined') throw new Error('this browser has no notifications');
     if (Notification.permission !== 'granted') await Notification.requestPermission();
@@ -179,7 +189,7 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
     if (!swReg && 'serviceWorker' in navigator) { try { swReg = await navigator.serviceWorker.register('/batray/sw.js'); await navigator.serviceWorker.ready; } catch (e) { log(`service worker: ${e.message}`); } }
   }
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistration('/batray/').then((r) => { if (r) swReg = r; }).catch(() => {});
+  if ('serviceWorker' in navigator) void findServiceWorker();
   render();
   void every(TICK_MS, tick, { onError: (e) => log(`ERROR alerts tick: ${e.message}`) });   // a loop: a slow notify never overlaps the next tick
   onStatus(status());

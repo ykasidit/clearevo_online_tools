@@ -12,7 +12,7 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
-import { castState, onCastStateEvent, discoveryKnown, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castSettle, castProgress, castButtons, castStateUi, castTapAllowed, castTvUpdate, CAST_FLOW_TIMEOUT_MS, CAST_TV_WAIT_MS } from './cast-logic.js';
+import { castState, onCastStateEvent, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castSettle, castProgress, castButtons, castStateUi, castTapAllowed, castTvUpdate, CAST_FLOW_TIMEOUT_MS, CAST_TV_WAIT_MS } from './cast-logic.js';
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO } from './jkbms.js';
 import { fmtWhen, stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
@@ -43,7 +43,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.84';
+export const APP_VERSION = '0.9.85';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -200,7 +200,18 @@ function renderLog() {
 let logKeepPref = false; try { logKeepPref = logKeepOn(localStorage.getItem(LOG_KEY)); } catch {}
 const logS = logState(logKeepPref);
 /** A periodic job's failure: logged once per run, the loop goes on (setInterval used to throw it as UNHANDLED). */
+const RELAY_CALL_MS = 10000;                                                 // a relay call that never answers is given up after this
 function jobError(what) { return (e) => log(`ERROR ${what}: ${e && e.message ? e.message : e}`); }
+/** A control whose handler awaits (a sheet's answer, a file, a store call) - one run at a time per control: a second
+ *  tap while it runs is logged and ignored (two runs of one handler had no owner), and a failure is logged instead of
+ *  escaping as UNHANDLED. The handler is a named async function (house rule: no async callbacks). */
+function onTap(el, what, fn, ev = 'click') {
+  let task = null;
+  async function run(e) {
+    try { await fn(e); } catch (err) { log(`ERROR ${what}: ${err && err.message ? err.message : err}`); } finally { task = null; }
+  }
+  el.addEventListener(ev, (e) => { if (task !== null) { log(`ui: ${what} still running - ${ev} ignored`); return; } task = run(e); });
+}
 function log(msg) {
   const line = `${new Date().toISOString().slice(11, 23)}  ${msg}`;
   logLines.push(line);
@@ -232,7 +243,8 @@ function logHeaderLines() {
 // what the header cannot know synchronously: battery, codec support, adapter state
 async function logEnvAsync() {
   // each probe on its own: one that never settles (getBattery in some builds) must not hold the others
-  void (async () => { try { if (navigator.getBattery) { const b = await navigator.getBattery(); battNow = b; log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => log(`battery: ${Math.round(b.level * 100)}%`)); b.addEventListener('chargingchange', () => { log(`battery: charging=${b.charging}`); statusTick('charging'); onPhoneCharging(b); }); } } catch (e) { log(`battery: ${e.message}`); } })();
+  void logBattery();
+  async function logBattery() { try { if (navigator.getBattery) { const b = await navigator.getBattery(); battNow = b; log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => log(`battery: ${Math.round(b.level * 100)}%`)); b.addEventListener('chargingchange', () => { log(`battery: charging=${b.charging}`); statusTick('charging'); onPhoneCharging(b); }); } } catch (e) { log(`battery: ${e.message}`); } }
   if (typeof VideoEncoder !== 'undefined') {
     const out = [];
     for (const codec of ['avc1.42E01E', 'avc1.4D401F', 'vp09.00.10.08']) { try { const r = await VideoEncoder.isConfigSupported({ codec, width: 1280, height: 720, bitrate: 500000, framerate: 1, ...(codec.startsWith('avc') ? { avc: { format: 'avc' } } : {}) }); out.push(`${codec}=${yn(r.supported)}`); } catch (e) { out.push(`${codec}=err`); } }
@@ -337,7 +349,7 @@ class Pack {
     if (this.isActive) scheduleRender(this);
     schedulePackBar();
     if (publisher) void publisher.publish(envelope('data', this, d, row ? { r: row } : null));
-    if (first) void syncWake();
+    if (first) syncWake();
   }
   onInfo(i) { this.info = i; if (this.isActive) renderDevice(i); if (publisher) void publisher.publish(envelope('info', this, i)); }
   onSettings(s) { this.settings = s; if (this.isActive) renderSettings(s); if (publisher) void publisher.publish(envelope('settings', this, s)); }
@@ -471,77 +483,99 @@ function applyLang(code) {
 // > 0) on a visible page, or visible and >= 20 % of the viewport - so this
 // one must NOT be muted and keepawake.webm carries a silent opus track.
 // The Notes card sets it to auto (default) / always / never.
-// All decisions are in wake-logic.js over the one `wakeS` object; this code
-// only acts on them (house rule 2026-09-20).
+// All decisions are in wake-logic.js over the one `wakeS` object. One loop owns it (house rule 2026-10-01):
+// `syncWake()` from anywhere, the lock's release and the video's pause only push into `wakeKick`; the loop
+// looks again on each push and after its back-off, and is the only writer of the lock, the video and wakeS.
 const KEEP_AWAKE_KEY = 'batray_keepawake';
-let wakeLock = null, wakeRetryTimer = null, keepVideo = null;
+const WAKE_ASK_MS = 10000;                                // a wake lock request or a play() that never answers is given up after this
+const VIDEO_RETRY_MS = 5000;                              // a video the browser paused (a call, audio focus) is tried again after this
+let wakeLock = null, keepVideo = null, wakeTask = null;
+const wakeKick = new Channel();
 try { wakeS.mode = wakeMode(localStorage.getItem(KEEP_AWAKE_KEY)); } catch {}
 function setKeepAwake(mode) {
   wakeS.mode = wakeMode(mode);
   $('keepAwake').dataset.value = wakeS.mode; $('keepAwake').textContent = T[{ auto: 'keepAwakeAuto', always: 'keepAwakeAlways', never: 'keepAwakeNever' }[wakeS.mode]];
   try { localStorage.setItem(KEEP_AWAKE_KEY, wakeS.mode); } catch {}
-  log(`keep-awake video: ${wakeS.mode}`); void syncKeepAwake();
+  log(`keep-awake video: ${wakeS.mode}`); syncWake();
 }
 $('keepAwake').dataset.value = wakeS.mode;
-$('keepAwake').addEventListener('click', async () => { const m = await openSheet('keepAwake'); if (m) setKeepAwake(m); });
-async function syncKeepAwake() {
+onTap($('keepAwake'), 'keep awake', pickKeepAwake);
+async function pickKeepAwake() { const m = await openSheet('keepAwake'); if (m) setKeepAwake(m); }
+/** Look at the wake lock again (something that wants it changed, the tab came to the front, the minute watchdog). */
+function syncWake() {
+  wakeKick.push({ kind: 'sync' });
+  if (wakeTask === null) wakeTask = wakeRun();
+}
+async function wakeRun() {
+  let lockRetryAt = 0, videoRetryAt = 0;
+  for (;;) {
+    try {
+      wakeS.wanted = [...packs.values()].some((p) => wakeWantedByConn(p.cs, p.connected)) || shareS.phase === 'on' || shareS.phase === 'starting' || !!(viewer && viewer.state.live) || tvS.phase === 'on';
+      if (wakeShouldRequest(wakeS, document.visibilityState === 'visible')) {
+        wakeRequestStart(wakeS);
+        try {
+          const r = await select(null, { lock: () => navigator.wakeLock.request('screen'), late: (s) => sleep(WAKE_ASK_MS, s) });
+          if (r.key === 'late') throw new Error(`no answer in ${WAKE_ASK_MS / 1000} s`);
+          const lock = r.value;
+          wakeLock = lock; wakeAcquired(wakeS); lockRetryAt = 0;
+          lock.addEventListener('release', () => wakeKick.push({ kind: 'released', lock }));
+          log('screen wake lock acquired');
+        } catch (err) {
+          const why = wakeRefused(wakeS, document.visibilityState === 'visible' && !/not visible/i.test(err.message));
+          log(`screen wake lock refused${why === 'hidden' ? ' while the tab was not in front (not counted)' : ` (${wakeS.refusals})`}: ${err.name} ${err.message}`);
+          lockRetryAt = Date.now() + wakeRetryDelayMs(wakeS);
+        }
+      } else if (!wakeS.wanted && wakeLock) {
+        const lock = wakeLock; wakeLock = null; wakeS.held = false;
+        try { await lock.release(); } catch { /* already gone */ }
+      }
+      // eslint-disable-next-line house/ui-after-await -- the wake loop is the one writer of the lock and wakeS; this paints the lock as it stands now
+      $('wake').hidden = !wakeLock;
+      if (!videoRetryAt || Date.now() >= videoRetryAt) { videoRetryAt = 0; await keepAwakeStep(); }
+    } catch (e) { log(`ERROR wake: ${e && e.message ? e.message : e}`); }
+    // the next reason to look again: a push, or one of the back-offs
+    const due = [lockRetryAt, videoRetryAt].filter((t) => t > 0);
+    const arms = { kick: (s) => wakeKick.ready({ signal: s }) };
+    if (due.length) arms.due = (s) => sleep(Math.max(0, Math.min(...due) - Date.now()), s);
+    const r = await select(null, arms);
+    if (r.key === 'due') { if (lockRetryAt && Date.now() >= lockRetryAt) lockRetryAt = 0; continue; }
+    while (wakeKick.size) {
+      const k = wakeKick.take();
+      if (k.kind === 'released' && k.lock === wakeLock) {
+        wakeLock = null; $('wake').hidden = true;
+        if (wakeReleased(wakeS, document.visibilityState === 'visible') === 'dropped') {
+          log(`screen wake lock dropped by the system while in front (${wakeS.drops}) - asking again`);
+          lockRetryAt = Date.now() + wakeRetryDelayMs(wakeS);
+        } else log('screen wake lock released');
+      } else if (k.kind === 'paused' && wakeS.videoOn) {
+        wakeS.videoOn = false; $('wakeVideo').hidden = true; log('keep-awake video paused by the browser');
+        videoRetryAt = Date.now() + VIDEO_RETRY_MS;
+      }
+    }
+  }
+}
+/** Layer 2, the near-silent video, as wake-logic decides; called by the wake loop only. */
+async function keepAwakeStep() {
   const want = wakeVideoWanted(wakeS);
   if (want && !wakeS.videoOn) {
     if (!keepVideo) {
       keepVideo = $('keepVideo');
       keepVideo.src = 'keepawake.webm';                 // literal name: build.sh hashes it
       keepVideo.muted = false; keepVideo.volume = 0.01; // > 0: audible to Chrome, not to people
-      keepVideo.addEventListener('pause', () => {       // paused by the browser (a call, audio focus): try again
-        if (!wakeS.videoOn) return;
-        wakeS.videoOn = false; $('wakeVideo').hidden = true; log('keep-awake video paused by the browser');
-        setTimeout(syncKeepAwake, 5000);
-      });
+      keepVideo.addEventListener('pause', () => wakeKick.push({ kind: 'paused' }));   // paused by the browser (a call, audio focus): the loop tries again
     }
     try {
-      await keepVideo.play(); wakeS.videoOn = true;
+      const r = await select(null, { play: () => keepVideo.play(), late: (s) => sleep(WAKE_ASK_MS, s) });
+      if (r.key === 'late') throw new Error(`play() gave no answer in ${WAKE_ASK_MS / 1000} s`);
+      wakeS.videoOn = true;
       log(`keep-awake video playing (${wakeS.mode}, lock=${wakeS.held} drops=${wakeS.drops} refusals=${wakeS.refusals})`);
     } catch (err) { log(`keep-awake video refused: ${err.name} ${err.message}`); }
   } else if (!want && wakeS.videoOn) {
     wakeS.videoOn = false; keepVideo.pause(); log('keep-awake video stopped');
   }
-  // eslint-disable-next-line house/ui-after-await -- wakeS is the one wake state; this paints it as it stands after the play() attempt
   $('wakeVideo').hidden = !wakeS.videoOn;
 }
-function scheduleWakeRetry() {
-  if (wakeRetryTimer) return;
-  wakeRetryTimer = setTimeout(() => { wakeRetryTimer = null; if (wakeS.wanted && document.visibilityState === 'visible') void syncWake(); }, wakeRetryDelayMs(wakeS));
-}
-async function syncWake() {
-  wakeS.wanted = [...packs.values()].some((p) => wakeWantedByConn(p.cs, p.connected)) || shareS.phase === 'on' || shareS.phase === 'starting' || !!(viewer && viewer.state.live) || tvS.phase === 'on';
-  const el = $('wake');
-  if (wakeShouldRequest(wakeS, document.visibilityState === 'visible')) {
-    wakeRequestStart(wakeS);                                                // one request in flight: a second call meanwhile asks nothing (wake-logic ownership rule)
-    try {
-      const lock = await navigator.wakeLock.request('screen');
-      wakeLock = lock; wakeAcquired(wakeS);
-      lock.addEventListener('release', () => {
-        if (wakeLock !== lock) return;
-        wakeLock = null; el.hidden = true;
-        if (wakeReleased(wakeS, document.visibilityState === 'visible') === 'dropped') {
-          log(`screen wake lock dropped by the system while in front (${wakeS.drops}) - asking again`);
-          scheduleWakeRetry();
-        } else log('screen wake lock released');
-        void syncKeepAwake();
-      });
-      log('screen wake lock acquired');
-    } catch (err) {
-      const r = wakeRefused(wakeS, document.visibilityState === 'visible' && !/not visible/i.test(err.message));
-      log(`screen wake lock refused${r === 'hidden' ? ' while the tab was not in front (not counted)' : ` (${wakeS.refusals})`}: ${err.name} ${err.message}`);
-      scheduleWakeRetry();
-    }
-  } else if (!wakeS.wanted && wakeLock) {
-    try { await wakeLock.release(); } catch { /* already gone */ }
-    wakeLock = null; wakeS.held = false;
-  }
-  el.hidden = !wakeLock;
-  await syncKeepAwake();
-}
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && wakeS.wanted) void syncWake(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && wakeS.wanted) syncWake(); });
 
 // ---- flow picture layout: landscape on wide screens, portrait on phones and
 // in full screen when the viewport is taller than wide (owner ask 2026-09-17:
@@ -578,12 +612,13 @@ window.addEventListener('resize', layoutFlow);
 (function () {
   const card = $('flowCard'), btn = $('flowFull');
   const sync = () => { const on = document.fullscreenElement === card || card.classList.contains('full'); btn.textContent = on ? '✕' : '⛶'; btn.setAttribute('aria-label', on ? T.exitFull : T.fullScreen); btn.title = btn.getAttribute('aria-label'); layoutFlow(); if (active && active.data) renderFlow(active.data); };
-  btn.addEventListener('click', async () => {
+  async function toggleFull() {
     if (document.fullscreenElement === card) { try { await document.exitFullscreen(); } catch {} card.classList.remove('full'); sync(); return; }
     if (card.classList.contains('full')) { card.classList.remove('full'); sync(); return; }
     if (card.requestFullscreen) { try { await card.requestFullscreen(); sync(); return; } catch { /* fall through to the overlay */ } }
     card.classList.add('full'); sync();
-  });
+  }
+  onTap(btn, 'full screen', toggleFull);
   document.addEventListener('fullscreenchange', sync);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && card.classList.contains('full')) { card.classList.remove('full'); sync(); } });
 })();
@@ -684,7 +719,7 @@ function recordRow(p, d, t, remoteRow = null) {
   if (!histS.day || day > histS.day) {                                   // a new UTC day: ids start again at 1 in its database
     const ro = rolloverDecision(histS, day);
     log(`history: ${ro.action} ${ro.day}`);
-    if (ro.action === 'rollover') void flushHistory().then(maintainHistory);
+    if (ro.action === 'rollover') void rollover();
   }
   if (p.remote) {
     const row = remoteRow;
@@ -712,6 +747,8 @@ let histFlush = null;   // the flush in flight: a promise is a handle, never a b
 const diskFull = (e) => !!e && (e.name === 'QuotaExceededError' || /SQLITE_FULL|SQLITE_IOERR|quota|disk is full/i.test(String(e.message)));
 /** The queue into the day databases, one insert per day. A failed insert keeps its rows for the next flush
  *  (bounded); the store has already logged why. */
+/** The day changed: what was queued for yesterday goes into yesterday's file, then the store is tidied. */
+async function rollover() { await flushHistory(); await maintainHistory(); }
 async function flushHistory() {
   while (histFlush !== null) await histFlush;   // a caller that needs its rows stored (a history request) waits for the flush in flight, then flushes what came since
   if (!histMem.pending.size || !histMem.ready) return;
@@ -897,12 +934,13 @@ async function restoreHistory(bytes, from = 'file') {
 }
 $('histBackup').addEventListener('click', () => backupHistory().catch((e) => { log(`history: backup failed: ${e.message}`); toast(T.histRestoreBad, 6000); }));
 $('histRestore').addEventListener('click', () => $('histFile').click());
-$('histFile').addEventListener('change', async () => {
+onTap($('histFile'), 'history restore', restoreHistoryFile, 'change');
+async function restoreHistoryFile() {
   const f = $('histFile').files[0]; $('histFile').value = '';
   if (!f) return;
   if (f.size > BACKUP_MAX_BYTES) { toast(T.histTooBig(fmtSize(BACKUP_MAX_BYTES)), 9000); return; }
-  restoreHistory(new Uint8Array(await f.arrayBuffer()), f.name).catch((e) => log(`history: restore failed: ${e.message}`));
-});
+  try { await restoreHistory(new Uint8Array(await f.arrayBuffer()), f.name); } catch (e) { log(`history: restore failed: ${e.message}`); }
+}
 async function clearHistory() {
   histMem.pending = new Map();
   try { const r = await hist.clear(); log(`history: cleared (${r.removed} day databases)`); } catch (e) { /* logged by the store */ }
@@ -911,23 +949,26 @@ async function clearHistory() {
   if (active) { renderTrend(active); if ($('trendCard').hidden) renderHistNote(); }
 }
 // ---- stored debug log I/O (the decisions are in the log logic module) ----
-let logFlushing = false;
+let logFlush = null;   // the write in flight: a promise is a handle, never a boolean
 async function flushLog() {
-  if (logFlushing || histS.backend === 'none') return;
+  if (logFlush !== null) { await logFlush; return; }                        // a caller that needs the lines written waits for the write in flight
+  logFlush = flushLogOnce();
+  try { await logFlush; } finally { logFlush = null; }
+}
+async function flushLogOnce() {
+  if (histS.backend === 'none') return;
   if (histS.backend === 'memory') { logS.pending = []; logS.pendBytes = 0; return; }   // no file storage: the 4000-line ring buffer is all (Copy / Upload send it)
   const plan = flushPlan(logS, Date.now()); if (plan.action !== 'write') return;
-  logFlushing = true;
   const { lines } = logTake(logS), text = (plan.roll ? logHeaderLines().join('\n') + '\n---\n' : '') + lines.join('\n') + '\n';
   try {
     const r = await hist.logAppend(plan.file, text);
     flushDone(logS, plan.file, r.bytes, text.length);
-    // eslint-disable-next-line house/ui-after-await -- paints the file list just read; flushLog is single-flight (logFlushing)
+    // eslint-disable-next-line house/ui-after-await -- paints the file list just read; flushLog is single-flight (logFlush)
     if (plan.roll) { logS.files = await hist.logList(); for (const f of logRetention(logS.files, logS.filesMax)) { await hist.logRemove(f.name); } logS.files = await hist.logList(); renderLogNote(); }
   } catch (e) {
     logUntake(logS, lines);                                                   // the lines describing the failure are the ones worth keeping: back to the front, capped
     if (!logS.failedOnce) { logS.failedOnce = true; console.warn('debug log write failed', e); }
   }
-  finally { logFlushing = false; }
 }
 void every(LOG_FLUSH_MS, flushLog, { onError: jobError('log flush') });
 // no log flush in pagehide: the store has been released by then (a flush would start a fresh worker on a page being left)
@@ -1046,7 +1087,8 @@ function logLastRun() {
   log(`mem: ${memPrecise() ? 'page is cross-origin isolated: figures are live' : 'page is NOT cross-origin isolated: Chrome refreshes performance.memory only every ~20 min'}`);
 }
 $('logDownload').addEventListener('click', () => downloadLogs().catch((e) => log(`debug log: download failed: ${e.message}`)));
-$('logClear').addEventListener('click', async () => { const a = await openSheet('clearLogs'); if (a === 'ok') await clearLogs(); });
+onTap($('logClear'), 'clear logs', askClearLogs);
+async function askClearLogs() { const a = await openSheet('clearLogs'); if (a === 'ok') await clearLogs(); }
 function fmtSize(b) { return b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`; }   // hoisted: used by the startup blocks above
 function histSum() { return historySummary(histS.days, histS.todayRows, { usage: histS.usage, quota: histS.quota, today: histS.day }); }
 function settingsEntries() { const out = []; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); out.push([k, localStorage.getItem(k)]); } } catch { /* no storage */ } return out; }
@@ -1100,7 +1142,7 @@ async function resetSettings() {
 const browseS = { type: null, items: [], sizeText: '' };
 async function browseData(type) {
   if (type === 'hist') {
-    histS.days = await hist.days().catch(async (e) => { if (isCorrupt(e)) await corruptDb(e, 'history read'); return histS.days; });
+    try { histS.days = await hist.days(); } catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); }
     // every other tab's store too (0.9.77, owner: "browse can list and delete for all"); one open in another tab cannot go
     const stores = await hist.stores().catch(() => []), live = await liveTabs();
     const others = storeRows({ stores, records: tabRecords(tabEntries()), live, own: TAB.id }).map((r) => ({ id: `store:${r.id}`, name: storeLabel(r), bytes: r.bytes, del: !r.inUse }));
@@ -1147,14 +1189,20 @@ $('setBrowse').addEventListener('click', () => openBrowse('set'));
 $('logBrowse').addEventListener('click', () => openBrowse('log'));
 $('setBackup').addEventListener('click', () => backupSettings());
 $('setRestore').addEventListener('click', () => $('setFile').click());
-$('setFile').addEventListener('change', async () => { const f = $('setFile').files[0]; $('setFile').value = ''; if (!f) return; if (f.size > 1048576) { toast(T.setBad, 6000); return; } restoreSettings(await f.text(), f.name).catch((e) => log(`settings: restore failed: ${e.message}`)); });
-$('setReset').addEventListener('click', async () => { const a = await openSheet('resetSettings'); log(`settings: reset -> ${a}`); if (a === 'ok') await resetSettings(); });
+onTap($('setFile'), 'settings restore', restoreSettingsFile, 'change');
+async function restoreSettingsFile() { const f = $('setFile').files[0]; $('setFile').value = ''; if (!f) return; if (f.size > 1048576) { toast(T.setBad, 6000); return; } try { await restoreSettings(await f.text(), f.name); } catch (e) { log(`settings: restore failed: ${e.message}`); } }
+onTap($('setReset'), 'settings reset', askResetSettings);
+async function askResetSettings() { const a = await openSheet('resetSettings'); log(`settings: reset -> ${a}`); if (a === 'ok') await resetSettings(); }
 // past days for the 7 d / all ranges: read once, thinned to a row a minute, cached per day
 /** How much of the active pack is stored in the last 24 h (for the "collecting" bar): asked of the store every
  *  5 s while the card waits, plus what is still queued. */
 function refreshSpan(p) {
   const now = Date.now(); if (now - histMem.spanAt < 5000 || !p) return; histMem.spanAt = now;
-  void hist.span(p.label, now - 86400e3, p.demo ? ['demo'] : undefined).then((r) => { histS.spanFirst = r.first; histS.spanLast = r.last; }).catch((e) => { if (isCorrupt(e)) void corruptDb(e, 'history read'); });
+  void readSpan(p.label, now - 86400e3, p.demo ? ['demo'] : undefined);
+}
+async function readSpan(label, from, days) {
+  try { const r = await hist.span(label, from, days); histS.spanFirst = r.first; histS.spanLast = r.last; }
+  catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); }
 }
 function spanForWait(p) {
   let first = histS.spanFirst, last = histS.spanLast;
@@ -1244,7 +1292,8 @@ $('histRanges').addEventListener('click', (e) => {
   histS.range = b.dataset.range; try { localStorage.setItem('batray_hist_range', histS.range); } catch {}
   log(`history: range ${histS.range}`); if (active) scheduleDraw(true);
 });
-$('histClear').addEventListener('click', async () => { const a = await openSheet('clearHist'); log(`history: clear -> ${a}`); if (a === 'ok') await clearHistory(); });
+onTap($('histClear'), 'clear history', askClearHistory);
+async function askClearHistory() { const a = await openSheet('clearHist'); log(`history: clear -> ${a}`); if (a === 'ok') await clearHistory(); }
 window.addEventListener('resize', () => { if (active && active.data) paintHistory(); });
 
 function render(d, relabelOnly = false) {
@@ -1356,7 +1405,7 @@ function stopDemo() {
   removePack(p);
   log('demo stopped');
   setStatus(() => T.demoStopped);
-  void syncWake();
+  syncWake();
 }
 function runDemo() {
   if ([...packs.values()].some((x) => x.demo)) return;
@@ -1364,7 +1413,7 @@ function runDemo() {
   p.plog('demo started: simulated 16-cell pack, frames are generated, not received');
   p.demo = startDemo((chunk) => p.bms._onNotify(chunk));
   addPack(p); setActive(p);
-  void syncWake();
+  syncWake();
 }
 $('stopDemo').addEventListener('click', stopDemo);
 els.demoBtn.addEventListener('click', runDemo);
@@ -1397,7 +1446,7 @@ function connChanged(p) {
   else if (ph !== 'stuck') p.countThunk = null;
   $('connectBig').disabled = [...packs.values()].some((x) => x.cs.phase === 'connecting');
   if (p.isActive) refreshCard();
-  renderPackBar(); void syncWake();
+  renderPackBar(); syncWake();
 }
 function showAttempt(p) {
   const name = p.device ? (p.device.name || p.device.id) : p.label;
@@ -1677,14 +1726,14 @@ async function syncPush(why) {
   const pub = publisher;
   try {
     const reg = await navigator.serviceWorker.register('/batray/sw.js'); await navigator.serviceWorker.ready;
-    const r = await fetch('/batray/api/push/key'); const k = await r.json().catch(() => ({}));
+    const r = await fetch('/batray/api/push/key', { signal: AbortSignal.timeout(RELAY_CALL_MS) }); const k = await r.json().catch(() => ({}));
     if (!k.key) throw new Error(`no server key (${r.status})`);
     let sub = await reg.pushManager.getSubscription();
     if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uBytes(k.key) });
     if (publisher !== pub) return;                                     // the share stopped meanwhile
     const cfg = { title: T.pushTitle(shareS.name), body: T.pushBody, url: '/batray/?from=push' };
     await (await caches.open('batray-push')).put('/batray/push-config', new Response(JSON.stringify(cfg), { headers: { 'Content-Type': 'application/json' } }));
-    const res = await fetch(`/batray/api/room/${pub.room}/push?token=${pub.pubToken}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) });
+    const res = await fetch(`/batray/api/room/${pub.room}/push?token=${pub.pubToken}`, { method: 'PUT', signal: AbortSignal.timeout(RELAY_CALL_MS), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) });
     if (!res.ok) throw new Error(`relay ${res.status}`);
     if (publisher !== pub) return;
     pushS.room = pub.room; pushS.failedAt = 0; pushS.lastWhy = ''; pushS.host = new URL(sub.endpoint).host;
@@ -1696,7 +1745,7 @@ async function syncPush(why) {
 function dropPush(room, token) {
   if (!room || pushS.room !== room) return;
   pushS.room = null;
-  void fetch(`/batray/api/room/${room}/push?token=${token}`, { method: 'DELETE' }).catch(() => {});
+  void fetch(`/batray/api/room/${room}/push?token=${token}`, { method: 'DELETE', signal: AbortSignal.timeout(RELAY_CALL_MS) }).catch(() => {});
   log('push: the room forgets this phone (sharing stopped)');
 }
 if (new URLSearchParams(location.search).get('from') === 'push') log('start: opened from the "reader stopped" notification');
@@ -1836,10 +1885,10 @@ async function beginShare() {
   try { localStorage.setItem(tk('share_name'), b.name); tabChannel = b.name; writeTabMeta(); } catch {}
   log(`share: name "${b.name}", ${b.reuse ? `reusing room ${b.reuse.room}` : 'new room'}`);
   $('sharePanel').hidden = true;
-  renderLiveChip(); void syncWake();
+  renderLiveChip(); syncWake();
   let wasLive = false;
   publisher = new Publisher({ log, onState: (s) => {
-    renderLiveChip(); void syncWake(); watchReach(s);
+    renderLiveChip(); syncWake(); watchReach(s);
     if (s.live && !wasLive) { statusS.sent = null; statusTick('online'); void syncPush('share'); }   // each time the socket comes up (first open, every reopen): the room gets a fresh status, and the push endpoint
     wasLive = s.live;
     const v = viewersChange(shareS, s.viewers);
@@ -1866,14 +1915,14 @@ async function beginShare() {
     log(`share failed: ${err.message}`);
     toast(T.shareFailed(err.message), 9000);
     void publisher.stop(); publisher = null; shareFailed(shareS);
-  } finally { renderLiveChip(); void syncWake(); }
+  } finally { renderLiveChip(); syncWake(); }
 }
 // A viewer asked for history (its own day listing came with the request): send the gzipped day files it lacks,
 // newest first, in base64 chunks over the encrypted link, paced by the channels' backlog, only while live.
 const b64 = (bytes) => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); };
 const unb64 = (str) => Uint8Array.from(atob(str), (c) => c.charCodeAt(0));
-const gzipBytes = async (bytes) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
-const gunzipBytes = async (bytes) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+async function gzipBytes(bytes) { return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer()); }
+async function gunzipBytes(bytes) { return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()); }
 /** A viewer asked for history (its day listing with ids came with the request): send the rows it lacks, newest day
  *  first, as gzipped JSON files of XFER_ROWS rows in base64 chunks over the encrypted link, paced by the channels'
  *  backlog, only while live. */
@@ -1928,7 +1977,7 @@ function cancelShare() {
   const pub = publisher; publisher = null;
   log('share: cancelled while starting');
   try { pub.stop(); } catch { /* never started */ }
-  renderLiveChip(); void syncWake(); toast(T.cancelled, 4000);
+  renderLiveChip(); syncWake(); toast(T.cancelled, 4000);
 }
 async function stopShare(why = 'chip') {
   if (!publisher) return;
@@ -1937,7 +1986,7 @@ async function stopShare(why = 'chip') {
   const pub = publisher; publisher = null; shareStopped(shareS); histS.xfer = null; statusS.sent = null;
   dropPush(pub.room, pub.pubToken);
   intentNote('share-off');   // the next share sends its status at once
-  renderLiveChip(); void syncWake();
+  renderLiveChip(); syncWake();
   await pub.stop();
   if (!publisher) { showQr(false); renderLiveChip(); }                   // unless a newer share owns the chip and the QR by now
   toast(T.shareStopped, 5000);
@@ -1966,23 +2015,34 @@ function renderViewChip() {
 function readerGone() { return !!(viewer && viewer.state.sig && viewer.state.reader === false); }
 // Internet / server reachability of THIS device, same on both sides: share-logic.js
 // holds a change for REACH_HOLD_MS before it is announced (a socket reopen is not an outage).
-let reachTimer = null;
+// One loop holds it: watchReach() only queues share-logic's decision; a newer decision restarts the hold.
+const reachKick = new Channel();
+let reachTask = null;
 function watchReach(s) {
   const d = reachEvent(reachS, s, Date.now());
   if (!d) return;
-  if (d.clear) { clearTimeout(reachTimer); reachTimer = null; return; }
-  clearTimeout(reachTimer);
-  reachTimer = setTimeout(() => {
-    reachTimer = null;
-    const st = viewer ? viewer.state : (publisher ? publisher.state : null);
-    const a = reachSettle(reachS, st, Date.now());
-    if (!a) return;
-    log(`reach: ${a.prev} -> ${a.announce}`);
-    if (!alerts) return;
-    if (a.announce === 'net') alerts.notify('net', T.evNetOff, T.evNetOffBody);
-    else if (a.announce === 'server') alerts.notify('net', T.evServerOff, T.evServerOffBody);
-    else alerts.notify('net', T.evNetOn, a.prev === 'net' ? T.evNetOnBody : T.evServerOnBody);
-  }, d.hold);
+  reachKick.push(d);
+  if (reachTask === null) reachTask = reachRun();
+}
+async function reachRun() {
+  let hold = null;                                                           // ms the change in hand is held, null = none
+  for (;;) {
+    const arms = { kick: (sg) => reachKick.ready({ signal: sg }) };
+    if (hold !== null) { const ms = hold; arms.held = (sg) => sleep(ms, sg); }
+    const r = await select(null, arms);
+    if (r.key === 'kick') { const d = reachKick.take(); hold = d.clear ? null : d.hold; continue; }
+    hold = null;
+    try {
+      const st = viewer ? viewer.state : (publisher ? publisher.state : null);
+      const a = reachSettle(reachS, st, Date.now());
+      if (!a) continue;
+      log(`reach: ${a.prev} -> ${a.announce}`);
+      if (!alerts) continue;
+      if (a.announce === 'net') alerts.notify('net', T.evNetOff, T.evNetOffBody);
+      else if (a.announce === 'server') alerts.notify('net', T.evServerOff, T.evServerOffBody);
+      else alerts.notify('net', T.evNetOn, a.prev === 'net' ? T.evNetOnBody : T.evServerOnBody);
+    } catch (e) { log(`ERROR reach: ${e && e.message ? e.message : e}`); }
+  }
 }
 // the viewer's own copy: ask the reader for the day files this device lacks (share-logic never sees rows, only files)
 // the viewer's own copy: ask the reader for the rows this device lacks, per day by id (share-logic never sees rows)
@@ -2106,7 +2166,7 @@ async function startView() {
       const ve = viewerEvent(viewS, s);           // the reader's presence: share-logic.js decides what is worth an alert
       if (ve && alerts) alerts.notify('reader', ve.readerAlert === 'on' ? T.evReaderOn : T.evReaderOff, ve.readerAlert === 'on' ? T.evReaderOnBody : T.evReaderOffBody);
       if (active) { if (!s.live) setStatus(() => (s.reader === false ? T.viewOfflineShort : T.viewReconnecting), 'bad'); else setStatus(() => T.viewingPack(active.label), 'good'); }
-      refreshCard(); renderPackBar(); void syncWake(); renderReaderOff();
+      refreshCard(); renderPackBar(); syncWake(); renderReaderOff();
     },
     onEnvelope: (env) => {
       if (env.k === 'hello') {
@@ -2222,19 +2282,24 @@ async function retryPreview(v, url, signal, kick) {
 // source "incompatible until proved otherwise" and nothing proves HLS), so
 // this is the path every video site uses.
 const CAST_SDK = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';
-let castLoad = null, castWired = false;
-function loadCastSdk() {
-  if (window.cast && window.cast.framework) return Promise.resolve();
-  if (castLoad) return castLoad;
-  castLoad = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('cast library did not load')), 15000);
-    window.__onGCastApiAvailable = (ok, reason) => { clearTimeout(timer); if (ok) resolve(); else reject(new Error(reason || 'cast not available in this browser')); };
+const CAST_SDK_MS = 15000;
+let castWired = false;
+// the library's own callbacks (its ready hook, the script tag's error) only set this latch; the flow waits on it
+const castSdk = { tried: false, done: new Flag(false), err: null };
+async function loadCastSdk(signal) {
+  if (window.cast && window.cast.framework) return;
+  if (!castSdk.tried) {
+    castSdk.tried = true; castSdk.done = new Flag(false); castSdk.err = null;
+    const s = castSdk;
+    window.__onGCastApiAvailable = (ok, reason) => { s.err = ok ? null : (reason || 'cast not available in this browser'); s.done.set(true); };
     const sc = document.createElement('script'); sc.src = CAST_SDK; sc.async = true;
-    sc.onerror = () => { clearTimeout(timer); reject(new Error('cast library blocked or offline')); };
+    sc.onerror = () => { s.err = 'cast library blocked or offline'; s.done.set(true); };
     document.head.appendChild(sc);
     log('cast: loading the cast library');
-  }).catch((e) => { castLoad = null; throw e; });
-  return castLoad;
+  }
+  const done = castSdk.done;
+  const r = await select(signal, { ok: (s) => done.wait(true, { signal: s }), late: (s) => sleep(CAST_SDK_MS, s) });
+  if (r.key === 'late' || castSdk.err) { const why = r.key === 'late' ? 'cast library did not load' : castSdk.err; castSdk.tried = false; throw new Error(why); }   // the next tap tries again
 }
 // the Cast buttons are the standard cast icon (Material Design icon "cast", Apache 2.0); the words live in the hint
 // line: "Cast to TV - <state>". Chrome's OWN cast button inside the <video> controls cannot appear for this stream:
@@ -2251,22 +2316,18 @@ const castBudget = (ph) => (ph === 'waiting' || ph === 'buffering' ? castTvMs : 
 function castSheetCtx() { return { phase: castS.phase, dev: castS.dev, tvT: castS.tvT, ...castProgress(castS, Date.now(), castBudget(castS.phase)) }; }
 /** The flow is over; the sheet keeps the result until the user closes it, the buttons come back now. */
 function castSettleUi(result, hint) { castSettle(castS, result); castHint(hint); renderCastButtons(); updateSheet('casting'); log(`cast: settled -> ${result}`); }
-/** Every player state the TV reports, from the RemotePlayer events and the media-session poll alike: while the
- *  sheet waits for the TV, BUFFERING is progress, PLAYING settles it, IDLE/ERROR settles it as a failure. */
-function castTvSeen(playerState, idleReason, t) {
-  castS.tvT = Math.round(t || 0);
-  const d = castTvUpdate(castS, playerState, idleReason);
-  if (d === 'playing') castSettleUi('playing', T.tvCastState(castS.dev, 'PLAYING'));
-  else if (d === 'error') castSettleUi('error', T.tvCastTvError(castS.dev));
-  else if (d === 'buffering') { if (castS.phase !== 'buffering') log('cast: TV player buffering'); castFlowPhase(castS, 'buffering'); updateSheet('casting'); }
-  else if (castS.phase === 'playing') updateSheet('casting');                // the playing time in the open sheet
-}
 // Cast picker rules live in cast-logic.js over the one `castS` object (why: a
 // picker opened before Chrome finished discovering TVs never settles, and a
 // second request while one is pending fails with invalid_parameter until the
-// page reloads - both phones, 2026-09-20). This code loads the library, asks
-// the decision functions, acts, and logs the TV's own player state.
-let castWaiters = [], castPlayer = null;
+// page reloads - both phones, 2026-09-20). The library's events only feed
+// latches: `castFlip` (discovery has spoken) and `castTv` (each player state the
+// TV reports); the one flow per tap below waits on them.
+const castFlip = new Flag(false);
+const castTv = new Channel();
+let castPlayer = null;
+/** Every player state the TV reports, from the RemotePlayer events and the media-session poll alike: queued for the
+ *  flow in flight (it decides; a TV state with no flow running only shows in the hint and the log). */
+function castTvSeen(playerState, idleReason, t) { if (castRun !== null) castTv.push({ st: playerState, idle: idleReason, t: t || 0 }); }
 function wireCastState() {
   if (castWired) return; castWired = true;
   const ctx = cast.framework.CastContext.getInstance();
@@ -2274,7 +2335,7 @@ function wireCastState() {
   ctx.addEventListener(cast.framework.CastContextEventType.CAST_STATE_CHANGED, (e) => {
     log(`cast: state ${e.castState}`);
     const S = cast.framework.CastState;
-    if (onCastStateEvent(castS, e.castState)) { for (const w of castWaiters) w(); castWaiters = []; }
+    if (onCastStateEvent(castS, e.castState)) castFlip.set(true);           // the library's own level (counters of what it said), then the latch
     if (castStateUi(castS) === 'sheet') { updateSheet('casting'); renderCastButtons(); return; }   // the flow owns the hint and the buttons meanwhile
     if (e.castState === S.NO_DEVICES_AVAILABLE) castHint(T.tvCastNone);
     else if (e.castState === S.NOT_CONNECTED) castHint(T.tvCastReady);
@@ -2299,11 +2360,13 @@ function wireCastState() {
 /** Every status the TV reports for the loaded media. The 2026-09-28 log: the TV's media session appears only
  *  with its FIRST status update, 19 s after the load was accepted (its player buffered the growing MP4 that long
  *  before PLAYING), so "no media session right after the load" is normal, not a failure - the poll waits for it,
- *  and only CAST_NO_MEDIA_MS without one says the TV reported nothing playing. */
-// one cast flow per tap: an earlier flow's tick, sheet answer and media watcher stand down when a newer tap starts (0.9.84)
-let castGen = 0;
-function watchCastMedia(sess, gen) {
-  const t0 = Date.now(); let last = ''; let attached = false;
+ *  and only CAST_NO_MEDIA_MS without one says the TV reported nothing playing. One watcher: the next load ends the
+ *  last one. */
+let castWatch = null;
+async function watchCastMedia(sess) {
+  if (castWatch) castWatch.abort();
+  const ac = new AbortController(); castWatch = ac;
+  const t0 = Date.now(); let last = '', attached = false;
   const line = (why, alive, m) => {
     const t = (m.getEstimatedTime ? m.getEstimatedTime() : m.currentTime) || 0;
     const txt = `player=${m.playerState || '-'}${m.idleReason ? ' idle=' + m.idleReason : ''} t=${Math.round(t)}s${alive === false ? ' alive=false' : ''}`;
@@ -2311,20 +2374,21 @@ function watchCastMedia(sess, gen) {
     if (why === 'poll' && txt === last) return; last = txt;
     log(`cast: tv ${why} +${Math.round((Date.now() - t0) / 1000)}s: ${txt}`);
   };
-  const tick = () => {
-    if (gen !== castGen) { clearInterval(poll); return; }
-    const m = sess.getMediaSession && sess.getMediaSession();
-    if (m && !attached) {
-      attached = true; log(`cast: tv media session ${Math.round((Date.now() - t0) / 1000)} s after the load`);
-      try { m.addUpdateListener((alive) => line('update', alive, m)); } catch (e) { log(`cast: no update listener: ${e.message}`); }
-      line('status', true, m);
-    } else if (m) line('poll', true, m);
-    else if (Date.now() - t0 >= castTvMs) { log(`cast: no media session ${Math.round(castTvMs / 1000)} s after the load`); if (castS.busy && (castS.phase === 'waiting' || castS.phase === 'buffering')) castSettleUi('nomedia', T.tvCastNoMedia); else castHint(T.tvCastNoMedia); clearInterval(poll); return; }
-    if (Date.now() - t0 > 120000 || !sess.getMediaSession) clearInterval(poll);
-  };
-  const poll = setInterval(tick, 3000); tick();
+  try {
+    for (;;) {
+      const m = sess.getMediaSession && sess.getMediaSession();
+      if (m && !attached) {
+        attached = true; log(`cast: tv media session ${Math.round((Date.now() - t0) / 1000)} s after the load`);
+        try { m.addUpdateListener((alive) => line('update', alive, m)); } catch (e) { log(`cast: no update listener: ${e.message}`); }
+        line('status', true, m);
+      } else if (m) line('poll', true, m);
+      else if (Date.now() - t0 >= castTvMs) { log(`cast: no media session ${Math.round(castTvMs / 1000)} s after the load`); if (castRun === null) castHint(T.tvCastNoMedia); return; }   // a flow in flight settles it itself
+      if (Date.now() - t0 > 120000 || !sess.getMediaSession) return;
+      await sleep(3000, ac.signal);
+    }
+  } catch (e) { if (!isAbort(e)) log(`cast: media watch ended: ${e.message}`); }
+  finally { if (castWatch === ac) castWatch = null; }
 }
-const castDiscovery = (ms) => new Promise((ok) => { if (discoveryKnown(castS)) { ok(); return; } const t = setTimeout(ok, ms); castWaiters.push(() => { clearTimeout(t); ok(); }); });
 // A 6 s H.264 test pattern (baseline profile, progressive MP4) served next to the app: if the TV plays this and not our
 // live stream, the stream is the problem, not the TV, the session or the host. Google's sample buckets were not
 // reachable from the build sandbox (403), so the file is ours.
@@ -2341,86 +2405,138 @@ function listenCastMedia(sess) {
     sess.__batrayMediaListener = true;
   } catch (e) { log(`cast: media message listener refused: ${e.message}`); }
 }
-async function castToTv(opts = {}) {
+/** The cast flow in flight, one per tap (a promise is a handle): `stage` 'active' (the sheet follows it),
+ *  'detached' (the user cancelled, but Google's library still holds a picker request or a load that cannot be taken
+ *  back - its late answer still sends the stream, hint only) or 'settled' (the sheet shows the result until closed). */
+let castRun = null;
+async function settled(p) { try { return { ok: true, value: await p }; } catch (error) { return { ok: false, error }; } }
+function castToTv(opts = {}) {
   const testVideo = !!opts.test;
   if (!testVideo && (!tv || !tv.state.url)) return;
+  if (castRun !== null) {
+    if (castRun.stage !== 'settled') { log(`cast: tap -> ${castRun.stage === 'active' ? 'busy' : 'pending (the last request is still open in the cast library)'}`); if (castRun.stage === 'detached') castHint(T.tvCastPending); return; }
+    castRun.ac.abort();                                                     // a result on show: the new tap takes over
+  }
   if (!castTapAllowed(castS)) { log('cast: tap -> busy'); return; }
+  const run = { ac: new AbortController(), stage: 'active', task: null };
+  castRun = run;
+  run.task = castOwn(run, testVideo);
+}
+async function castOwn(run, testVideo) {
+  try { await castFlow(run, testVideo, run.ac.signal); }
+  catch (e) { if (!isAbort(e)) log(`ERROR cast flow: ${e && e.message ? e.message : e}`); }
+  // eslint-disable-next-line house/ui-after-await -- the buttons follow castS, the one cast state, whoever ended the flow
+  finally { if (castRun === run) castRun = null; renderCastButtons(); }
+}
+/** One tap, start to end, straight through: load the library, wait for discovery, the picker, the load, the TV's
+ *  player, then the result until the sheet is closed. Every wait is one select over the work, the sheet closing and
+ *  a 500 ms tick that moves the progress bar and enforces each phase's budget (cast-logic decides). */
+async function castFlow(run, testVideo, signal) {
   const loadedBeforeTap = !!(window.cast && window.cast.framework);
-  // one progress sheet from the tap to the TV's answer; Cancel ends the flow (a picker request already handed to
-  // Google's library cannot be taken back: closing its list is the cancel there)
   castFlowStart(castS, Date.now(), 'loading'); renderCastButtons(); castHint(T.castLoading);
-  const gen = ++castGen;
-  let ended = null;                                                          // 'cancel' | 'timeout' once the sheet or the clock ended the flow
-  const endFlow = (why, hint) => {
-    if (!castS.busy) return;
-    ended = ended || why; castFlowEnd(castS); renderCastButtons(); castHint(hint);
-    if (uiS.sheet && uiS.sheet.kind === 'casting') closeSheet('done', why);
-    for (const w of castWaiters) w(); castWaiters = [];
-  };
-  void openSheet('casting').then((r) => {
-    if (gen !== castGen) return;                                              // a newer tap owns the flow now
-    if (castS.busy && (castS.phase === 'waiting' || castS.phase === 'buffering') && r !== 'done') {   // the user stops watching; the TV keeps playing
-      log(`cast: sheet closed by the user while ${castS.phase}`); castFlowEnd(castS); renderCastButtons(); return;
+  castTv.clear();
+  const sheet = openSheet('casting');                                        // resolves when the sheet closes: Cancel, Close, tap outside, Back
+  async function wait(arm, { budget = true } = {}) {
+    for (;;) {
+      const r = await select(signal, { done: arm, closed: () => sheet, tick: (s) => sleep(500, s) });
+      signal.throwIfAborted();                                               // a newer tap took over while this turn was settling
+      if (r.key !== 'tick') return r;
+      if (budget && castProgress(castS, Date.now(), castBudget(castS.phase)).timedOut) return { key: 'timeout', value: null };
+      updateSheet('casting');
     }
-    if (castS.busy && r !== 'done') { log(`cast: cancelled by the user (${castS.phase})`); endFlow('cancel', castS.phase === 'picking' ? T.tvCastStuck : T.tvCastCancelled); return; }
-    if (!castS.busy) castFlowEnd(castS);                                                             // a settled result read and closed
-  });
-  const waitingOnTv = () => castS.busy && (castS.phase === 'waiting' || castS.phase === 'buffering');
-  const tick = setInterval(() => {
-    if (gen !== castGen) { clearInterval(tick); return; }
-    const castSheet = !!(uiS.sheet && uiS.sheet.kind === 'casting');
-    if (!castS.busy && !castSheet) { clearInterval(tick); castFlowEnd(castS); renderCastButtons(); return; }
-    if (!castS.busy) { updateSheet('casting'); return; }                                             // a settled result on show
-    const p = castProgress(castS, Date.now(), castBudget(castS.phase));
-    if (p.timedOut && waitingOnTv()) { log(`cast: the TV showed nothing playing within ${Math.round(castTvMs / 1000)} s`); castSettleUi('nomedia', T.tvCastNoMedia); return; }
-    if (p.timedOut) { log(`cast: no TV list within ${Math.round(castFlowMs / 1000)} s (${castS.phase})`); endFlow('timeout', T.tvCastTimeout); clearInterval(tick); return; }
-    updateSheet('casting');
-  }, 500);
-  const phase = (ph, hint, now) => { if (castS.busy) { castFlowPhase(castS, ph, now); updateSheet('casting'); } castHint(hint); };   // a cancelled flow only writes the hint
+  }
+  const phase = (ph, hint, now) => { if (castS.busy) { castFlowPhase(castS, ph, now); updateSheet('casting'); } castHint(hint); };   // a detached flow only writes the hint
+  const end = (why, hint) => {
+    if (castS.busy) { castFlowEnd(castS); renderCastButtons(); }
+    castHint(hint);
+    if (uiS.sheet && uiS.sheet.kind === 'casting') closeSheet('done', why);
+  };
+  /** The sheet closed while Google's library holds the request: the flow ends for the user, the library's answer is
+   *  still awaited (hint only). */
+  async function outlive(r, p) {
+    if (r.key !== 'closed') return r;
+    log(`cast: cancelled by the user (${castS.phase})`);
+    end('cancel', castS.phase === 'picking' ? T.tvCastStuck : T.tvCastCancelled);
+    run.stage = 'detached';
+    return select(signal, { done: () => p });
+  }
   try {
-    await loadCastSdk();
-    if (ended) return;
+    let r = await wait(() => settled(loadCastSdk(signal)));
+    if (r.key === 'closed') { log(`cast: cancelled by the user (${castS.phase})`); end('cancel', T.tvCastCancelled); return; }
+    if (r.key === 'timeout') { log(`cast: no TV list within ${Math.round(castFlowMs / 1000)} s (${castS.phase})`); end('timeout', T.tvCastTimeout); return; }
+    if (!r.value.ok) throw r.value.error;
     wireCastState();
     const ctx = cast.framework.CastContext.getInstance();
     const inp = () => ({ loadedBeforeTap, hasSession: !!ctx.getCurrentSession(), activationActive: navigator.userActivation ? navigator.userActivation.isActive : undefined, now: Date.now() });
     let d = castTapDecision(castS, inp());
-    if (d.action === 'wait-discovery') { phase('looking', T.castLooking); await castDiscovery(d.ms); if (ended) return; d = castAfterDiscovery(castS, inp()); }
+    if (d.action === 'wait-discovery') {
+      phase('looking', T.castLooking);
+      const ms = d.ms;
+      r = await wait((s) => castFlip.wait(true, { signal: s, ms }));
+      if (r.key === 'closed') { log(`cast: cancelled by the user (${castS.phase})`); end('cancel', T.tvCastCancelled); return; }
+      if (r.key === 'timeout') { log(`cast: no TV list within ${Math.round(castFlowMs / 1000)} s (${castS.phase})`); end('timeout', T.tvCastTimeout); return; }
+      d = castAfterDiscovery(castS, inp());
+    }
     log(`cast: tap -> ${d.action}${d.why ? ' (' + d.why + ')' : ''}${d.ageS !== undefined ? ' ' + d.ageS + ' s' : ''} (events=${castS.events} flipped=${castS.flipped} state=${castS.castState})`);
-    if (d.action === 'pending') { endFlow('done', T.tvCastPending); return; }
-    if (d.action === 'no-devices') { endFlow('done', T.tvCastNone); return; }
-    if (d.action === 'tap-again') { endFlow('done', d.why === 'discovery' ? T.tvCastTimeout : T.tvCastTapAgain); return; }
+    if (d.action === 'pending') { end('done', T.tvCastPending); return; }
+    if (d.action === 'no-devices') { end('done', T.tvCastNone); return; }
+    if (d.action === 'tap-again') { end('done', d.why === 'discovery' ? T.tvCastTimeout : T.tvCastTapAgain); return; }
     if (d.action === 'request') {
       phase('picking', T.tvCastPick); const mine = castRequestStarted(castS, Date.now()); renderCastButtons();
+      const req = settled(ctx.requestSession());
+      try { r = await outlive(await wait(() => req, { budget: false }), req); }
       // eslint-disable-next-line house/ui-after-await -- castS is the one cast state; the buttons follow it after the request ends, whatever happened meanwhile
-    try { await ctx.requestSession(); } finally { castRequestEnded(castS, mine); renderCastButtons(); }
+      finally { castRequestEnded(castS, mine); renderCastButtons(); }
+      if (!r.value.ok) throw r.value.error;
     }
     const sess = ctx.getCurrentSession();
     if (!sess) throw new Error('no cast session');
-    if (castS.busy) phase('sending', T.castSending);
+    phase('sending', T.castSending);
     listenCastMedia(sess);
     // The TV gets the stream as one growing MP4 (video/mp4, live), the same path its player took for the test
     // pattern; the HLS playlist stays for TV browsers and VLC (the receiver's HLS player refused it, 2026-09-27/28).
     const info = testVideo ? new chrome.cast.media.MediaInfo(CAST_TEST_URL, 'video/mp4') : new chrome.cast.media.MediaInfo(tv.state.mp4Url, 'video/mp4');
     info.streamType = testVideo ? chrome.cast.media.StreamType.BUFFERED : chrome.cast.media.StreamType.LIVE;
     info.metadata = new chrome.cast.media.GenericMediaMetadata(); info.metadata.title = testVideo ? 'BatRay TV test pattern (6 s)' : `BatRay · ${shareS.name || (active ? active.label : '')}`;
-    const req = new chrome.cast.media.LoadRequest(info); req.autoplay = true;
-    const rc = await sess.loadMedia(req);                                     // CAF resolves with an error code on some failures instead of rejecting
+    const lreq = new chrome.cast.media.LoadRequest(info); lreq.autoplay = true;
+    const load = settled(sess.loadMedia(lreq));
+    r = run.stage === 'active' ? await outlive(await wait(() => load, { budget: false }), load) : await select(signal, { done: () => load });
+    if (!r.value.ok) throw r.value.error;
+    const rc = r.value.value;                                                // CAF resolves with an error code on some failures instead of rejecting
     const dev = sess.getCastDevice ? sess.getCastDevice().friendlyName : '';
-    log(`cast: loadMedia(${testVideo ? 'test video' : 'stream mp4'}) resolved with ${rc === undefined || rc === null ? 'no error' : JSON.stringify(rc)} on "${dev}"${testVideo ? '' : ` (${tv.state.segs} segments on the relay)`} - watching its player state`);
+    log(`cast: loadMedia(${testVideo ? 'test video' : 'stream mp4'}) resolved with ${rc === undefined || rc === null ? 'no error' : JSON.stringify(rc)} on "${dev}"${testVideo ? '' : ` (${tv ? tv.state.segs : 0} segments on the relay)`} - watching its player state`);
     if (rc) throw new Error(`load refused: ${JSON.stringify(rc)}`);
     castS.dev = dev;
+    void watchCastMedia(sess);
+    if (run.stage !== 'active') { log('cast: the stream is sent although the user had cancelled - the hint follows the TV, the sheet stays away'); castHint(T.tvCastConnected(dev)); return; }
     phase('waiting', T.tvCastConnected(dev), Date.now());                    // the sheet stays: the TV's player state shows here until it plays (or a minute passes)
-    if (!castS.busy) log('cast: the stream is sent although the user had cancelled - the hint follows the TV, the sheet stays away');
-    watchCastMedia(sess, gen);
+    for (;;) {
+      r = await wait((s) => castTv.ready({ signal: s }));
+      if (r.key === 'closed') { log(`cast: sheet closed by the user while ${castS.phase}`); castFlowEnd(castS); renderCastButtons(); return; }   // the user stops watching; the TV keeps playing
+      if (r.key === 'timeout') { log(`cast: the TV showed nothing playing within ${Math.round(castTvMs / 1000)} s`); castSettleUi('nomedia', T.tvCastNoMedia); break; }
+      const m = castTv.take(); castS.tvT = Math.round(m.t);
+      const v = castTvUpdate(castS, m.st, m.idle);
+      if (v === 'playing') { castSettleUi('playing', T.tvCastState(castS.dev, 'PLAYING')); break; }
+      if (v === 'error') { castSettleUi('error', T.tvCastTvError(castS.dev)); break; }
+      if (v === 'buffering') { if (castS.phase !== 'buffering') log('cast: TV player buffering'); castFlowPhase(castS, 'buffering'); updateSheet('casting'); }
+    }
+    // settled: the sheet keeps the result (and the TV's playing time) until the user closes it; a new tap takes over
+    run.stage = 'settled';
+    for (;;) {
+      r = await wait((s) => castTv.ready({ signal: s }), { budget: false });
+      if (r.key === 'closed') { castFlowEnd(castS); return; }
+      castS.tvT = Math.round(castTv.take().t); updateSheet('casting');
+    }
   } catch (e) {
+    if (isAbort(e)) throw e;
     const msg = e && (e.message || e.code || String(e));
     const kind = castErrorDecision(msg);
-    if (kind === 'closed') { log('cast: picker closed without a choice'); endFlow('done', T.tvCastReady); castHint(T.tvCastReady); return; }
+    if (kind === 'closed') { log('cast: picker closed without a choice'); end('done', T.tvCastReady); return; }
     log(`cast: ${msg}${e && e.description ? ' - ' + e.description : ''}`);
-    if (kind === 'stuck') { endFlow('done', T.tvCastStuck); castHint(T.tvCastStuck); toast(T.tvCastStuck, 9000); return; }
-    endFlow('done', T.tvCastFailed(msg)); castHint(T.tvCastFailed(msg));
+    if (kind === 'stuck') { end('done', T.tvCastStuck); toast(T.tvCastStuck, 9000); return; }
+    end('done', T.tvCastFailed(msg));
     toast(T.tvCastFailed(msg), 9000);
-  } finally { if (!waitingOnTv()) { clearInterval(tick); if (castS.busy) endFlow('done', T.tvCastReady); } renderCastButtons(); }
+  } finally { if (!signal.aborted && castS.busy) end('done', T.tvCastReady); }
 }
 // every button and note of the TV card and the toolbar follow tvS (tv-logic.js)
 void every(1000, () => { if (tv && tv.state.live) renderPreview(); }, { onError: jobError('tv preview') });   // the stall grace expires without a player event
@@ -2451,7 +2567,7 @@ async function startTv(opts = {}) {
   try {
     const url = await t.start();
     if (tv !== t) return null;                                          // cancelled from the toolbar meanwhile
-    tvStarted(tvS); renderTvButtons(); castHint(T.tvCastLoads); renderTv(t.state); void syncWake();
+    tvStarted(tvS); renderTvButtons(); castHint(T.tvCastLoads); renderTv(t.state); syncWake();
     toast(T.tvStarting, 9000);
     return url;
   } catch (e) {
@@ -2466,7 +2582,7 @@ function cancelTv() {
   const t = tv; tv = null; renderTvButtons();
   log('tv: cancelled while starting');
   t.stop().catch(() => {});
-  void syncWake(); toast(T.cancelled, 4000);
+  syncWake(); toast(T.cancelled, 4000);
 }
 async function stopTv(why = 'card') {
   if (!tv) return;
@@ -2474,13 +2590,14 @@ async function stopTv(why = 'card') {
   log(`tv: stop (${why})`);
   await t.stop();
   if (!tv) { unloadPreview($('tvVideo')); $('tvQr').hidden = true; }    // unless a newer stream owns the card by now
-  void syncWake(); toast(T.tvStopped, 5000);
+  syncWake(); toast(T.tvStopped, 5000);
 }
 (function () {
   const RES_LABEL = { '1280x720': '720p', '1920x1080': '1080p' };
   const setRes = (r) => { if (!RES_LABEL[r]) return; $('tvRes').dataset.value = r; $('tvRes').textContent = RES_LABEL[r]; try { localStorage.setItem('batray_tv_res', r); } catch {} };
   try { setRes(localStorage.getItem('batray_tv_res')); } catch {}
-  $('tvRes').addEventListener('click', async () => { const r = await openSheet('res'); if (r) { setRes(r); log(`tv: resolution ${r}`); } });
+  onTap($('tvRes'), 'tv resolution', pickTvRes);
+  async function pickTvRes() { const r = await openSheet('res'); if (r) { setRes(r); log(`tv: resolution ${r}`); } }
   $('tv').dataset.title = $('tv').title; els.share.dataset.title = els.share.title;
   // the toolbar button: opens the card; sunk while streaming, and pressing it then stops the stream (toast)
   $('tv').addEventListener('click', () => {
@@ -2509,7 +2626,8 @@ async function stopTv(why = 'card') {
   $('tvCast').addEventListener('click', () => castToTv());
   $('tvCastOverlay').addEventListener('click', () => castToTv());          // the same icon on the preview itself
   $('tvCastTest').addEventListener('click', () => castToTv({ test: true }));
-  $('tvCopy').addEventListener('click', async () => { if (!tv) return; try { await navigator.clipboard.writeText(tv.state.url); toast(T.linkCopied, 6000); } catch { toast(T.linkCopyManual, 8000); } });
+  onTap($('tvCopy'), 'tv copy link', copyTvLink);
+  async function copyTvLink() { if (!tv) return; try { await navigator.clipboard.writeText(tv.state.url); toast(T.linkCopied, 6000); } catch { toast(T.linkCopyManual, 8000); } }
   $('tvQrBtn').addEventListener('click', () => { const c = $('tvQr'); if (!tv) return; if (c.hidden) { renderQr(tv.state.url, c); c.hidden = false; } else c.hidden = true; });
   window.addEventListener('pagehide', () => { if (tv) { const t = tv; tv = null; tvStopped(tvS); t.stop(); } });
 })();
@@ -2524,14 +2642,18 @@ if (window.__batrayTest) Object.assign(window.__batrayTest, {
 // ---- UI chrome (UI_GUIDELINES.md): bottom sheet, viewer tabs, Back, low power.
 // Decisions in ui-logic.js over uiS; this code paints and talks to the history API. ----
 const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-let sheetResolve = null, suppressPop = 0;
+let sheetEnd = null, suppressPop = 0;   // the open sheet's latch {flag, result}: closing it sets the Flag once
+/** End the open sheet's wait with `result` (null = dismissed). */
+function endSheet(result) { const e = sheetEnd; sheetEnd = null; if (e) { e.result = result; e.flag.set(true); } }
+async function sheetResult(e) { await e.flag.wait(true); return e.result; }
 function sheetCtx() {
   const p = active;
   return { resume: resumeS.plan ? { plan: resumeS.plan, left: resumeS.left } : null, setup: { items: setupS.items || setupCheck(), mode: setupS.mode, facts: { browser: `${browserInfo.name} ${fmtVersion(browserInfo.version)} (${browserInfo.engine})`, os: browserInfo.os, getDevices: !!(navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function'), ver: APP_VERSION } }, reader: viewMode ? { model: readerModel(), status: readerS.status, live: !!(viewer && viewer.state.reader !== false) } : null, compat: compatS, d: p ? p.data : null, settings: p ? p.settings : null, iEmaV: p && p.iEma ? p.iEma.v : null, cutoffPct, upload: uploadS, cast: castSheetCtx(), browse: browseS, logFiles: logSummary(logS.files).files, logSize: fmtSize(logSummary(logS.files).bytes), setCount: Object.keys(settingsSnapshot(settingsEntries())).length, label: p ? p.label : '', lang: langCode, liveText: viewer ? els.viewTxt.textContent : (publisher ? els.liveTxt.textContent : ''), langs: Object.keys(I18N).map((k) => ({ code: k, name: I18N[k].langName })), res: $('tvRes').dataset.value, mode: wakeS.mode, histDays: histSum().days, histSize: fmtSize(histSum().bytes) };
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
+/** @returns {Promise<any>} the answer when the sheet closes (null = dismissed) */
 function openSheet(kind) {
-  if (sheetResolve) { const r = sheetResolve; sheetResolve = null; r(null); }   // a sheet over a sheet: the first one is dismissed
+  endSheet(null);                                                           // a sheet over a sheet: the first one is dismissed
   const m = sheetModel(kind, sheetCtx(), T), d = sheetOpen(uiS, kind);
   $('sheetTitle').textContent = m.title;
   const lead = $('sheetLead'); lead.textContent = m.lead || ''; lead.className = 'lead' + (m.tone ? ' ' + m.tone : ''); lead.hidden = !m.lead;
@@ -2542,7 +2664,8 @@ function openSheet(kind) {
   $('sheet').hidden = false; $('sheetBox').style.transform = ''; $('sheetBox').scrollTop = 0;
   if (!d.replace) history.pushState({ sheet: kind }, '');
   log(`ui: sheet ${kind}`);
-  return new Promise((ok) => { sheetResolve = ok; });
+  const e = { flag: new Flag(false), result: null }; sheetEnd = e;
+  return sheetResult(e);
 }
 function renderSheetProgress(m) { const p = $('sheetProg'); p.hidden = m.progress === undefined; if (!p.hidden) $('sheetBar').style.width = `${m.progress}%`; }
 function renderSheetItems(m) {
@@ -2578,7 +2701,7 @@ function closeSheet(result = null, why = 'dismiss') {
   const d = sheetClose(uiS);
   if (d.action !== 'close') return;
   $('sheet').hidden = true;
-  const r = sheetResolve; sheetResolve = null; if (r) r(result);
+  endSheet(result);
   log(`ui: sheet ${d.kind} closed (${why}${result !== null ? ': ' + result : ''})`);
   if (history.state && history.state.sheet) { suppressPop++; history.back(); }   // drop the entry the open pushed
 }
@@ -2601,7 +2724,7 @@ function closeSheet(result = null, why = 'dismiss') {
     if (suppressPop > 0) { suppressPop--; return; }
     const d = backDecision(uiS);
     log(`ui: back -> ${d.action}`);
-    if (d.action === 'close-sheet') { $('sheet').hidden = true; const r = sheetResolve; sheetResolve = null; if (r) r(null); }
+    if (d.action === 'close-sheet') { $('sheet').hidden = true; endSheet(null); }
     else if (d.action === 'switch') renderTabs();
   });
   // tappable tiles: the battery, the flow, the chips, the cells
@@ -2646,6 +2769,7 @@ els.debugBtn.addEventListener('click', () => { log(`ui: Debug log button -> ${lo
 // The upload shows its progress in a sheet with a Cancel (owner ask 2026-09-23): XMLHttpRequest because fetch
 // gives no upload progress and no abort of a request body in flight on every Chrome.
 const uploadS = { loaded: 0, total: 0, xhr: null };
+const UPLOAD_MS = 120000;
 async function uploadLog(btn, file = null) {
   if ((await openSheet('upload')) !== 'ok') { log('log upload: declined at the warning'); return; }
   if (uploadS.xhr) { log('log upload: one is already running'); return; }
@@ -2664,19 +2788,24 @@ async function uploadLog(btn, file = null) {
   if (btn) btn.disabled = true;
   uploadS.loaded = 0; uploadS.total = bytes.length;
   const xhr = new XMLHttpRequest(); uploadS.xhr = xhr;
-  let finished = false;
-  const done = new Promise((res) => {
-    xhr.upload.onprogress = (e) => { uploadS.loaded = e.loaded; if (e.lengthComputable) uploadS.total = e.total; updateSheet('uploading'); };
-    xhr.onload = () => { finished = true; let j = {}; try { j = JSON.parse(xhr.responseText || '{}'); } catch { /* not json */ } res(xhr.status >= 200 && xhr.status < 300 ? { ok: true, j } : { ok: false, error: j.error || `HTTP ${xhr.status}` }); };
-    xhr.onerror = () => { finished = true; res({ ok: false, error: 'network error' }); };
-    xhr.onabort = () => { finished = true; res({ ok: false, cancelled: true }); };
-  });
+  // the request's events only fill this latch (the first one wins); the upload waits on it and on the sheet
+  const end = { flag: new Flag(false), r: null };
+  const fin = (res) => { if (end.r) return; end.r = res; end.flag.set(true); };
+  xhr.upload.onprogress = (e) => { uploadS.loaded = e.loaded; if (e.lengthComputable) uploadS.total = e.total; updateSheet('uploading'); };
+  xhr.onload = () => { let j = {}; try { j = JSON.parse(xhr.responseText || '{}'); } catch { /* not json */ } fin(xhr.status >= 200 && xhr.status < 300 ? { ok: true, j } : { ok: false, error: j.error || `HTTP ${xhr.status}` }); };
+  xhr.onerror = () => fin({ ok: false, error: 'network error' });
+  xhr.onabort = () => fin({ ok: false, cancelled: true });
+  xhr.ontimeout = () => fin({ ok: false, error: `no answer in ${UPLOAD_MS / 60000} min` });
+  xhr.timeout = UPLOAD_MS;                                                   // a stalled uplink never holds the button for good
   xhr.open('POST', '/batray/api/log'); xhr.setRequestHeader('Content-Type', 'text/plain; charset=utf-8'); xhr.send(bytes);
   log(`log upload: started, ${bytes.length} B`);
   // the sheet resolves on Cancel (or a tap outside / Back, which cancels too), or when the app closes it on completion
-  // eslint-disable-next-line house/ui-after-await -- the sheet is this upload's own progress dialog; Cancel on it aborts this xhr
-  void openSheet('uploading').then((r) => { if (!finished && r !== 'done') { log(`log upload: cancelled by the user (${uploadS.loaded} of ${uploadS.total} B sent)`); xhr.abort(); } });
-  const r = await done;
+  // eslint-disable-next-line house/ui-after-await -- this upload's own progress dialog, opened once the body is read; the button is disabled until it ends
+  const sheet = openSheet('uploading');
+  const w = await select(null, { done: (sg) => end.flag.wait(true, { signal: sg }), closed: () => sheet });
+  if (w.key === 'closed' && !end.r) { log(`log upload: cancelled by the user (${uploadS.loaded} of ${uploadS.total} B sent)`); xhr.abort(); }
+  await end.flag.wait(true, { ms: 5000 });                                   // abort() fires onabort at once
+  const r = end.r || { ok: false, cancelled: true };
   uploadS.xhr = null;
   if (uiS.sheet && uiS.sheet.kind === 'uploading') closeSheet('done', r.ok ? 'uploaded' : r.cancelled ? 'cancelled' : 'failed');
   if (r.ok) {
@@ -2724,13 +2853,14 @@ void every(60000, () => {
   const tvs = tv ? `tv(segs=${tv.state.segs} kb=${Math.round(tv.state.bytes / 1024)} pull=${tv.state.pullAgeS}s err=${tv.state.error || '-'})` : '';
   const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
   const rate = histS.hbDay === histS.day && histS.hbRows !== undefined ? `${histS.todayRows - histS.hbRows}/min` : '-'; histS.hbDay = histS.day; histS.hbRows = histS.todayRows;
-  if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) void syncWake();   // watchdog
+  if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
   if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now() }).action === 'request') void requestHistory();
   if (publisher && pushS.room !== publisher.room) void syncPush('minute');   // notifications allowed later, or a failed sign-up retried (push-logic paces it)
   log(hist.statsLine()); hist.statsReset(Date.now());
   log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} hist=${histS.backend}/${histS.days.length}d/${histS.todayRows}r/${rate}/${histS.contig}c/${pendingRows()}pend${histS.gap ? '/' + histS.gap : ''}/${Math.round(histS.usage / 1048576)}of${Math.round(histS.quota / 1048576)}MB${histS.xfer ? '/xfer' : ''} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
 }, { onError: jobError('heartbeat') });
-$('langBtn').addEventListener('click', async () => { const code = await openSheet('lang'); if (code && I18N[code]) { try { localStorage.setItem('batray_lang', code); } catch {} log(`language: ${code}`); applyLang(code); } });
+onTap($('langBtn'), 'language', pickLang);
+async function pickLang() { const code = await openSheet('lang'); if (code && I18N[code]) { try { localStorage.setItem('batray_lang', code); } catch {} log(`language: ${code}`); applyLang(code); } }
 
 // The Connect buttons stay enabled without Web Bluetooth: a tap opens the compat sheet saying why and what to use
 // (owner, 2026-10-05) - a disabled button explained nothing.
@@ -2746,7 +2876,8 @@ alerts = initAlerts({
     $('alertTxt').textContent = T.alertNote(st.channels.join(' + ') + (st.watchdog ? ' + ' + T.alertWatch : ''));
   },
 });
-void initHistory().then(initLogStore);
+void startStore();
+async function startStore() { await initHistory(); await initLogStore(); }
 log(compatLogLine(viewMode ? 'viewer' : 'reader', browserInfo, compatCheck(viewMode ? 'viewer' : 'reader', browserInfo, compatFeatures())));
 if (viewMode) void startView();
 else if (new URLSearchParams(location.search).has('demo')) runDemo();

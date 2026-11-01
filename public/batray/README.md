@@ -134,6 +134,39 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.85 (2026-11-01): the app shell's round 3 - no callback lifecycles left
+
+- **Why** (owner, after 0.9.84: "go ahead with the cast thing and any other not following house rules in batray
+  app yet so I can test together"). 0.9.84 had left the cast flow, the wake lock and a dozen awaiting button
+  handlers as callbacks, timers and hand-rolled promises.
+- **Cast to TV is one flow per tap**, `castFlow(run, test, signal)`: load the library, wait for discovery, the
+  picker, the load, the TV's player, then the result until the sheet is closed - straight through. Every wait is
+  one `select` over the work, the sheet closing and a 500 ms tick (the progress bar and each phase's budget,
+  decided by cast-logic as before). The library's callbacks only fill latches: `castSdk` (its ready hook / the
+  script's error), `castFlip` (discovery has spoken), `castTv` (a Channel of the TV's player states). A run has
+  a stage: `active`, `detached` (the user cancelled but Google's library still holds the picker request or the
+  load - its late answer still sends the stream, hint only; a tap meanwhile says "an earlier tap is still
+  waiting"), or `settled` (the result on show; a new tap takes over). The media-session poll is its own short
+  loop (`watchCastMedia`, 3 s, 2 min, the next load ends it). Gone: `castGen`, `castWaiters`, the 500 ms
+  `setInterval`, the 3 s `setInterval`, the library-load and discovery promises.
+- **The wake lock is one loop**, `wakeRun()`: `syncWake()` only pushes into a Channel (so do the lock's
+  `release` and the video's `pause`); the loop computes what is wanted, asks for the lock (10 s bound), keeps
+  the back-off, plays or stops the keep-awake video (5 s retry after the browser paused it) and is the only
+  writer of the lock, the video and `wakeS`.
+- **Smaller ones**: the 10 s reach hold is a loop (`reachRun`); the sheet's answer is a latch (`endSheet`); the
+  log upload waits on a latch filled by the XHR's events, with a 2 min timeout (a stalled uplink held the button
+  for good); the history store's worker calls wait on a per-call latch with the deadline (no timer per call);
+  the worker's init, directory memo and op dispatcher are named async functions using sync.js `sleep`.
+- **Buttons that await go through `onTap(el, what, fn)`**: one run at a time per control (a second tap while it
+  runs is logged and ignored) and a failure is logged instead of escaping as UNHANDLED (the alerts' "Chrome
+  notifications" checkbox threw that way when permission was refused; it now toasts the reason).
+- **Fetches with no deadline got one**: the ntfy send and the watchdog arm / disarm (10 s), the push key and
+  push subscription calls (10 s).
+- **The ratchets are at zero** for `.then(`, async callbacks and `new Promise(` in every shell; the only own
+  timers left are seven fire-and-forget UI ones (toast hide, three blob URL revokes, two reloads after a settings
+  restore / reset, the copy-label reset). A gate in the rules file holds the loops (the picker request, the load
+  and the wake lock request happen only inside their loop; the old timers and counters stay gone).
+
 ## 0.9.84 (2026-11-01): the rest of the house rules, and a bug review of every area
 
 - **Why** (owner, after 0.9.83: "check what other parts are still not following house rules, and check for bugs and
