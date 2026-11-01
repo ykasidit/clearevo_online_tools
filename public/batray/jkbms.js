@@ -496,7 +496,7 @@ export class JkBms extends EventTarget {
     this.infoSeen = new Flag(false);
     this.pending = null;              // the oldest browser connect still unsettled: { since, n, done: Flag }
     this._charTokens = new WeakMap(); // characteristic -> the link token it serves (one listener per object)
-    this.openedAt = null;             // when this link's notifications came on: the gap check's start before any chunk
+    this.openedAt = null;             // when this link's notifications came on
     this._resetLink();
   }
 
@@ -621,9 +621,10 @@ export class JkBms extends EventTarget {
     // would paint an hour-old battery as live, so a long gap voids the link
     // (the loop drops it and reconnects for fresh readings).
     if (this.voided.v) return;
-    const since = this.lastRxAt !== null ? this.lastRxAt : this.openedAt;   // a freeze right after connect: from the link's start
-    if (token !== undefined && queuedAfterGap(since, now)) {                 // a GATT link (the demo feeds frames without one)
-      this.voidGapS = Math.round((now - since) / 1000);
+    // measured from the last chunk only: before a link's first chunk the 20 s startup grace applies (a BMS that is
+    // slow to answer is not a frozen tab - 2026-09-17; the freeze test holds that)
+    if (token !== undefined && queuedAfterGap(this.lastRxAt, now)) {         // a GATT link (the demo feeds frames without one)
+      this.voidGapS = Math.round((now - this.lastRxAt) / 1000);
       this.voided.set(true);
       return;
     }

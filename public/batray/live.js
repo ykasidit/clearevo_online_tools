@@ -312,10 +312,10 @@ export class Viewer {
   /** Freshness first: readings still arriving prove the reader is there, whatever the room says (2026-09-17); once
    *  they stop, the room's word decides. Re-judged on every status and every 2 s tick. */
   judgeReader(force = false) {
-    const reader = readerPresent({ serverLive: this.serverLive, lastRxAt: this.lastRxAt, openAt: this.sock ? this.openAt : null, now: this.now() });
+    const reader = readerPresent({ serverLive: this.serverLive, lastRxAt: this.lastRxAt, openAt: this.sock ? this.openAt : null, lastAnyAt: this.lastAnyAt, now: this.now() });
     const live = reader === true && this.state.sig === true;
     if (!force && reader === this.state.reader && live === this.state.live) return;
-    if (this.state.reader !== false && reader === false) this.log(this.serverLive ? `live: the reader's socket is in the room but nothing has come from it for ${Math.round((this.now() - Math.max(this.openAt || 0, this.lastRxAt || 0)) / 1000)} s - reader offline (frozen or hung)` : 'live: the reader is not in the room and nothing has arrived for a while - reader offline');
+    if (this.state.reader !== false && reader === false) this.log(this.serverLive ? `live: the reader's socket is in the room but nothing has come from it for ${Math.round((this.now() - Math.max(this.openAt || 0, this.lastRxAt || 0, this.lastAnyAt || 0)) / 1000)} s - reader offline (frozen or hung)` : 'live: the reader is not in the room and nothing has arrived for a while - reader offline');
     this.state.reader = reader; this.state.live = live; this.emit();
   }
   async onData(m) {
@@ -324,6 +324,7 @@ export class Viewer {
     catch { if (!this.state.error) this.log('live: a message could not be decrypted (wrong or missing key)'); this.state.error = 'cannot decrypt: wrong or missing key'; this.emit(); return; }
     if (!validEnvelope(env)) return;
     this.state.received++;
+    if (typeof m.ago !== 'number') this.lastAnyAt = this.now();            // something came from the reader now (fresh or stale): it is not frozen
     if (typeof m.ago === 'number') {                                         // from the room's retained set: its age is the relay's measure
       env.retained = true; env.ageS = Math.round(m.ago / 1000); env.stale = m.ago > FRESH_MS;
     } else env.stale = staleEnvelope(env, this.now());                       // a frozen tab gets the whole queue on resume: old ones are stored, not painted

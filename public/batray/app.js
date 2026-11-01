@@ -1594,8 +1594,9 @@ async function doResume(plan) {
     p.conn.tell('known');
     await sleep(1500);
   }
-  if (plan.cannot.length) toast(T.resumeTap(plan.cannot.map((x) => x.name || x.id).join(', ')), 15000);
   if (sharing !== null) await sharing;
+  // last, so the share's own toast (the link copied) does not cover it
+  if (plan.cannot.length) toast(T.resumeTap(plan.cannot.map((x) => x.name || x.id).join(', ')), 15000);
 }
 
 // ---- the reader setup checklist (0.9.72, setup-logic.js): checked on Connect (Continue anyway is always there), and

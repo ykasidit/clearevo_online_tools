@@ -105,14 +105,14 @@ export function dataFlowing(lastRxAt, now = Date.now(), freshMs = FRESH_MS) {
  * by fresh data, never the other way round.
  */
 export const SILENT_MS = 35000;          // a sharing reader sends its hello every 10 s: this much silence with its socket in the room = frozen or hung
-export function readerPresent({ serverLive, lastRxAt, openAt = null, now = Date.now(), freshMs = FRESH_MS, silentMs = SILENT_MS }) {
+export function readerPresent({ serverLive, lastRxAt, openAt = null, lastAnyAt = null, now = Date.now(), freshMs = FRESH_MS, silentMs = SILENT_MS }) {
   if (dataFlowing(lastRxAt, now, freshMs)) return true;
   if (serverLive === null || serverLive === undefined) return null;
   // The room's "live" only means a reader socket exists. Android froze the reader tab with its socket up: the relay
   // answers its pings by itself, so the room said live for hours with nothing arriving (share review 2026-11-01).
   // A sharing reader sends at least its hello every 10 s; nothing for silentMs since this viewer's socket opened (and
-  // since the last thing received) = not there, whatever the room says.
-  if (serverLive && openAt !== null && now - Math.max(openAt, lastRxAt || 0) > silentMs) return false;
+  // since the last thing received - stale or not: a reader phone whose clock is off still sends) = not there.
+  if (serverLive && openAt !== null && now - Math.max(openAt, lastRxAt || 0, lastAnyAt || 0) > silentMs) return false;
   return !!serverLive;
 }
 

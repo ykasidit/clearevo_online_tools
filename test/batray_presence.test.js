@@ -252,4 +252,5 @@ test('2026-11-01 review: a reader whose socket is in the room but who sends noth
   assert.equal(readerPresent({ serverLive: true, lastRxAt: t0 + 20_000, openAt: t0, now: t0 + 20_000 + SILENT_MS + 1 }), false);
   assert.equal(readerPresent({ serverLive: true, lastRxAt: null, openAt: null, now: t0 + 999_999 }), true, 'no socket of our own: no judgement of silence');
   assert.equal(readerPresent({ serverLive: false, lastRxAt: t0, openAt: t0, now: t0 + 1000 }), true, 'fresh data beats the room');
+  assert.equal(readerPresent({ serverLive: true, lastRxAt: null, openAt: t0, lastAnyAt: t0 + 30_000, now: t0 + 50_000 }), true, 'readings judged stale (a reader clock that is off) still prove it is not frozen');
 });

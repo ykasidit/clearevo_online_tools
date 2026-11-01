@@ -14,7 +14,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, BoxSplitter, takeSegments, tvLink, isSegmentStart , tvPreviewToggle , tvMp4Link, previewState, previewEvent, previewSource, PREVIEW_GRACE_MS } from '../public/batray/tv-logic.js';
-import { TvStream } from '../public/batray/tv.js';
+import { TvStream, REBUILD_MAX } from '../public/batray/tv.js';
 import { sleep } from '../public/batray/sync.js';
 import { Muxer, StreamTarget } from '../public/batray/mp4-muxer.js';
 
@@ -173,4 +173,33 @@ test('0.9.84 the uploader is a loop with limits: a PUT that never answers ends a
   assert.ok(!calls.includes('seg/2'), 'the oldest segments were dropped');
   assert.ok(lines.some((l) => /the uplink is behind - dropped \d+ old segment/.test(l)), lines.join('\n'));
   delete globalThis.fetch;
+});
+
+test('2026-11-01 review: a stop while start() still waits on the relay ends start() there - no encoder made, no loops left running', async () => {
+  globalThis.VideoEncoder = class { static async isConfigSupported() { return { supported: true }; } };
+  globalThis.VideoFrame = class {};
+  let posted = 0;
+  globalThis.fetch = (_url, init) => { posted++; return new Promise((_, rej) => { init.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))); }); };
+  const t = new TvStream({ log: () => {} });
+  const started = t.start();
+  await sleep(5);
+  assert.equal(posted, 1, 'the POST is out');
+  await t.stop();
+  await assert.rejects(started, (e) => e.name === 'AbortError');
+  assert.equal(t.encoder, undefined, 'no encoder was configured after the stop');
+  assert.equal(t.task, null, 'no frame loop'); assert.equal(t.sendTask, null, 'no uploader');
+  delete globalThis.fetch; delete globalThis.VideoEncoder; delete globalThis.VideoFrame;
+});
+
+test('2026-11-01 review: an encoder that dies is rebuilt (a new init goes first); one that keeps dying stops the stream instead of sitting "live" on a frozen picture', () => {
+  const lines = [];
+  const t = new TvStream({ log: (l) => lines.push(l) });
+  let made = 0; t.makeEncoder = () => { made++; t.encoder = { state: 'configured', close() {} }; };
+  t.encoder = { state: 'closed', close() {} }; t.state.live = true;
+  for (let i = 0; i < REBUILD_MAX; i++) { t.encErr = new Error('codec reclaimed'); t.recover(); }
+  assert.equal(made, REBUILD_MAX); assert.equal(t.died, false); assert.equal(t.state.episodes, REBUILD_MAX);
+  assert.ok(lines.some((l) => /the encoder failed \(codec reclaimed\) - building a new one \(1 in the last hour\)/.test(l)), lines.join('\n'));
+  t.encErr = new Error('codec reclaimed'); t.recover();
+  assert.equal(t.died, true); assert.equal(t.state.live, false); assert.match(t.state.error, /keeps failing/);
+  assert.equal(made, REBUILD_MAX, 'no sixth encoder within the hour');
 });

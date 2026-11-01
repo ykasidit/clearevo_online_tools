@@ -75,8 +75,8 @@ The tests, all in `test/`, all in `./test.sh`:
 | `batray_i18n.test.js` | EN and TH have the same keys, types and arities |
 | `test/browser/*.mjs` | the real page in headless Chrome over fake Bluetooth, a fake relay and real OPFS / SQLite / uPlot / WebCodecs: the I/O shells are covered here, not by unit tests |
 
-Done as loops: the live link (0.9.53, `live.js`) and the Bluetooth connection (0.9.83, `conn.js`). Rounds still to
-come, one per release with a phone test between: the TV upload chain, then the app shell's handlers.
+Done as loops: the live link (0.9.53, `live.js`), the Bluetooth connection (0.9.83, `conn.js`), the TV stream and
+every periodic job (0.9.84). Still to come: the app shell's button and sheet handlers (the async-callback ratchet).
 
 ## Code layout: functional core, imperative shell
 
@@ -133,6 +133,57 @@ The look and the interaction rules are in [UI_GUIDELINES.md](UI_GUIDELINES.md).
 No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
+
+## 0.9.84 (2026-11-01): the rest of the house rules, and a bug review of every area
+
+- **Why** (owner, after 0.9.83: "check what other parts are still not following house rules, and check for bugs and
+  reliability so I can test in one go"). Four independent reviews (Bluetooth, TV / Cast, live share, history /
+  storage) read the code without the author's conclusions; every finding below was checked against the code first.
+- **`sync.js`**: `Channel.ready()` / `take()` - the arm for `select()`. `next()` as an arm takes the item the moment it
+  runs, so when another arm won the same turn the item was lost: a Disconnect tapped as the link fell came back as a
+  reconnect, a socket message could vanish in a turn the 2 s tick won. Every select arm over a channel now only
+  waits; the loop takes the item once its arm won (gate in `test/rules/batray.mjs`). `every(ms, job)`: a periodic
+  job as a loop - the next run starts after the previous one ended (setInterval let a slow flush overlap the next).
+- **Periodic jobs are loops**: history flush, log flush, memory line / measure, the 1 s age tick, the heartbeat, the
+  TV preview check and the alerts tick (app.js 27 -> 15 timers, all one-shot UI timers now).
+- **TV (`tv.js`)**: three loops under one stop signal - frames, the status poll, the uploader over a queue (each PUT
+  ends after 15 s; past 20 queued the oldest segments are dropped; segments are numbered when sent, so a drop leaves
+  no gap in the playlist). A stop while `start()` waits on the relay ends `start()` there (an encoder and two loops
+  had been left running for good). A dead or wedged encoder (Chrome reclaims a hardware codec) is rebuilt, a new init
+  first; five rebuilds within an hour stop the stream and say so. The poll, the encoder flush and the DELETE have
+  timeouts. App: one AbortController per preview (every start had added ten more listeners to the same `<video>`,
+  and an old retry could put a stopped stream's URL back); an old stream's state no longer repaints the card; each
+  cast tap is its own generation (an earlier tap's tick, sheet answer or media watcher could end a newer flow).
+- **Bluetooth (`conn.js`, `jkbms.js`)**: a connect that answers after its attempt gave up (Cancel, the 15 s) is closed
+  once it has settled - it had stayed up with nobody serving it, holding the BMS's one Bluetooth slot, and the
+  Disconnect tap was ignored in idle; idle closes any link still up. A loop that dies on an error goes back to idle
+  (it had frozen the pack until a reload); a hook that throws is logged, the loop goes on. `getDevices()` has a 2 s
+  deadline. The attempt's 15 s and the countdown are wall-clock deadlines (a throttled hidden tab had stretched
+  them to minutes). One
+  notification listener per characteristic object. The button, card and chip follow the loop's phase, not
+  `gatt.connected` (a link still in service discovery had shown "Disconnect").
+- **Live share (`live.js`)**: a share cancelled while it starts ends there (its loop had started anyway and its
+  socket fought the next share for the room); the start's fetches time out after 10 s, and the resume reconnects the
+  BMS without waiting on the share. A viewer judges a reader whose socket is in the room but sends nothing for 35 s
+  as offline (Android froze the tab with its socket up; the relay answers pings by itself, so the room said "live"
+  for hours). A page that slept (a frozen tab, timers once a minute) pings before judging its socket instead of
+  tearing a healthy one down; the retry countdown is wall-clock. The app's own envelope errors are no longer
+  reported as decrypt failures; a retained reading's age counts from the relay's clock; each remote pack keeps the
+  reader's own connected flag; a transfer keeps its own record (an old one's `finally` had wiped a newer one's); a
+  chunk 0 restarts the assembly (a file sent again after a drop was lost for a round).
+- **History (`history.js`, app)**: the chart asks every day of its window (after 00:00 UTC the live day was missing
+  until a reload); rows read while the store opens get their ids once today's file is read (they had been numbered
+  from 1 and dropped as already stored); the batch in flight is spilled at pagehide too; a full disk is recognised
+  as the pool reports it (SQLITE_FULL / IOERR); a corrupt live file renumbers every queued row of today; a failing
+  chart query backs off 30 s (it had re-run on every frame). The store restarts its worker only when it has been
+  silent 20 s (a slow worker still answers, and killing one mid-wasm keeps its files locked until a reload); a failed
+  first open stops its worker; memory-only tries the store again every 2 min for an hour; after pagehide the store
+  refuses calls (a log flush there had started a fresh worker) and reopens through its gate on a back/forward-cache
+  return. Lines of a failed debug-log write go back to the queue (the newest MB).
+- **Not changed, on purpose**: a viewer judges a live reading's age by the reader phone's clock (a phone more than
+  15 s wrong would see every reading as stale - phones on Wi-Fi keep NTP time; a relay timestamp would fix it, a relay
+  change for later); the reader's "last words" on freeze / pagehide go through async encryption and rarely leave a
+  page that is going (a browser limit); the 7-day query still runs over every day file in one call.
 
 ## 0.9.83 (2026-11-01): the Bluetooth connection is one loop per pack
 
