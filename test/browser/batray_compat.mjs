@@ -50,17 +50,17 @@ await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(500);
 let st = await sheetNow();
 check('Chrome 96 + Connect: a warning sheet, saying version 96, needing 108, the Play Store steps, and that it may still work', st.shown && st.sheet && st.sheet.kind === 'compat' && st.title === 'This browser may not work as the reader' && /96/.test(st.lead) && /108/.test(st.lead) && /Play Store/.test(st.lead) && /You can still try/.test(st.lead) && st.acts.join('|') === 'anyway:Connect anyway|update:Open the Play Store|cancel:Cancel', st);
-let logs = await logSince('/compat: reader|conn: tap-connect|chooser/');
-check('the log names the verdict, and no connect step ran', logs.some((l) => /compat: reader chrome 96 \(chromium\) on android: BLOCKED - version 96 < 108/.test(l)) && !logs.some((l) => /conn: tap-connect|chooser/.test(l)), logs);
+let logs = await logSince('/compat: reader|conn: idle -> choosing|chooser/');
+check('the log names the verdict, and no connect step ran', logs.some((l) => /compat: reader chrome 96 \(chromium\) on android: BLOCKED - version 96 < 108/.test(l)) && !logs.some((l) => /conn: idle -> choosing|chooser/.test(l)), logs);
 await act('update');
 const opened = await evalJs('window.__opened');
 check('"Open the Play Store" opens Chrome\'s store page', opened.length === 1 && opened[0] === 'https://play.google.com/store/apps/details?id=com.android.chrome', opened);
 await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(500); await act('cancel');
-logs = await logSince('/compat: reader|conn: tap-connect/');
-check('Cancel: nothing connects, the log says the user stopped', logs.some((l) => /compat: reader stopped \(update\)/.test(l)) && logs.some((l) => /compat: reader stopped \(cancel\)/.test(l)) && !logs.some((l) => /conn: tap-connect/.test(l)), logs);
+logs = await logSince('/compat: reader|conn: idle -> choosing/');
+check('Cancel: nothing connects, the log says the user stopped', logs.some((l) => /compat: reader stopped \(update\)/.test(l)) && logs.some((l) => /compat: reader stopped \(cancel\)/.test(l)) && !logs.some((l) => /conn: idle -> choosing/.test(l)), logs);
 await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(500); await act('anyway');
-logs = await logSince('/compat: reader|conn: tap-connect/');
-check('"Connect anyway" goes on to the connect flow', logs.some((l) => /compat: reader going on anyway/.test(l)) && logs.some((l) => /conn: tap-connect/.test(l)), logs);
+logs = await logSince('/compat: reader|conn: idle -> choosing/');
+check('"Connect anyway" goes on to the connect flow', logs.some((l) => /compat: reader going on anyway/.test(l)) && logs.some((l) => /conn: idle -> choosing/.test(l)), logs);
 const blocked = (await logSince('/compat: reader .*BLOCKED/')).length;
 await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(500);
 st = await sheetNow();
@@ -100,8 +100,8 @@ check('Firefox 131 as a viewer: ok, no sheet', !st.sheet && st.logs.length === 1
 await send('Emulation.setUserAgentOverride', { userAgent: '' });
 await send('Page.navigate', { url: `${BASE}/batray/?test` }); await sleep(2500);
 await evalJs(`document.getElementById('connectBig').click(); 1`); await sleep(800);
-logs = await logSince('/compat: reader|conn: tap-connect/');
-check('a current Chromium: the start line says ok and the tap reaches the connect flow', logs.some((l) => /compat: reader chrom\w+ \d+ \(chromium\) on \w+: ok/.test(l)) && logs.some((l) => /conn: tap-connect/.test(l)), logs);
+logs = await logSince('/compat: reader|conn: idle -> choosing/');
+check('a current Chromium: the start line says ok and the tap reaches the connect flow', logs.some((l) => /compat: reader chrom\w+ \d+ \(chromium\) on \w+: ok/.test(l)) && logs.some((l) => /conn: idle -> choosing/.test(l)), logs);
 
 // ---- 5. the time under "updated": the reader's line with three-digit milliseconds; a viewer pack adds the arrival time ----
 await send('Page.navigate', { url: `${BASE}/batray/?test&demo` }); await sleep(4000);
