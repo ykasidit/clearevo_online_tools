@@ -117,7 +117,7 @@ const to = await evalJs(`(async () => {
 })()`);
 check('a store call past its deadline rejects at the deadline with a TimeoutError, the failure is in the debug log and counted', /^TimeoutError: slow timed out after 0 s$/.test(to.r) && to.ms >= 380 && to.ms < 1200 && to.logs.some((l) => /history: slow TIMED OUT after \d+ ms/.test(l)) && to.raw.timeouts === 1 && to.listOk, to);
 const rs = await evalJs(`(async () => {
-  const T = window.__batrayTest; T.histTimeouts({ slow: 300, days: 300, insert: 300, query: 300 });
+  const T = window.__batrayTest; T.histTimeouts({ slow: 300, days: 300, insert: 300, query: 300 }); T.histStuckSilent(200);   // the test's short deadlines: a silent worker sooner too
   const before = T.logLines().length;
   const a = await T.histSlow(2500).catch((e) => e.name), b = await T.histSlow(2500).catch((e) => e.name), c = await T.histSlow(2500).catch((e) => e.name);
   const restarted = T.logLines().slice(before).find((l) => /looks stuck: restarting it/.test(l));
@@ -257,7 +257,7 @@ check('the store is empty afterwards, a toast says so, and the History tab shows
 // this sandbox 2026-09-24: not after 2 min), so the fresh worker cannot take the pool; the store must not fail
 // every call for the rest of the session - it goes memory-only, says so, and a reload takes the pool back ----
 const lock = await evalJs(`(async () => {
-  const T = window.__batrayTest; T.histTimeouts({ spin: 300, days: 8000, insert: 8000, query: 15000 });
+  const T = window.__batrayTest; T.histTimeouts({ spin: 300, days: 8000, insert: 8000, query: 15000 }); T.histStuckSilent(200);
   const before = T.logLines().length; const t0 = Date.now();
   await T.histSpin(2500).catch(() => 0); await T.histSpin(2500).catch(() => 0); await T.histSpin(2500).catch(() => 0);
   const list = await T.histList().then((l) => 'ok ' + l.length, (e) => 'failed: ' + e.message);
