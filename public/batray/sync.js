@@ -54,6 +54,16 @@ export class Channel {
   constructor() { this.q = []; this.w = []; }
   push(x) { this.q.push(x); const w = this.w; this.w = []; for (const f of w) f(); }
   get size() { return this.q.length; }
+  /** The arm for select(): resolves 'item' once something is queued, WITHOUT taking it; the loop take()s it after the
+   *  select says this arm won. next() inside a select loses the item whenever another arm wins the same turn (a
+   *  Disconnect tap queued just as the link fell came back as a reconnect - BLE review 2026-11-01).
+   *  @param {{ ms?: number, signal?: AbortSignal }} [opts] */
+  async ready(opts = {}) {
+    while (!this.q.length) { const r = await waitOn(this.w, opts, 'item'); if (r === TIMEOUT) return TIMEOUT; }
+    if (opts.signal && opts.signal.aborted) throw abortError();
+    return 'item';
+  }
+  take() { return this.q.shift(); }
   /** Forget what nobody took (taps made while the loop could not listen, e.g. with the Bluetooth chooser open). */
   clear() { this.q.length = 0; }
   /** Take out the first queued item that matches (a live stream drops its oldest segment when the uplink falls behind). */

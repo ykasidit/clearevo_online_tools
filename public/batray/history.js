@@ -21,6 +21,7 @@
 // card says "not stored".
 
 import { opTimeoutMs, statsState, statsAdd, stuckDecision, statsLine, statsReset, bucketsFromRows, energyFromRows, daysInRange } from './history-logic.js';
+import { sleep } from './sync.js';
 
 const WORKER_URL = 'history-worker.js';
 
@@ -79,9 +80,9 @@ class MemoryBackend {
 class WorkerBackend {
   constructor(log, makeWorker, store = null) { this.log = log; this.store = store; this.makeWorker = makeWorker || (() => new Worker(WORKER_URL, { type: 'module' })); this.seq = 0; this.waiting = new Map(); this.generation = 0; this.start(); }
   start() {
-    this.generation++;
+    this.generation++; this.lastReplyAt = Date.now();
     this.w = this.makeWorker();
-    this.w.onmessage = (ev) => { const m = ev.data; if (m && m.log) { this.log('history worker: ' + m.log); return; } if (m && m.id === 0) { if (!m.ok) this.log('history: the worker refused its store: ' + m.error); return; } const p = this.waiting.get(m.id); if (!p) return; this.waiting.delete(m.id); clearTimeout(p.timer); m.ok ? p.res(m.r) : p.rej(Object.assign(new Error(m.error), { name: m.name || 'Error' }, m.data || {})); };
+    this.w.onmessage = (ev) => { const m = ev.data; this.lastReplyAt = Date.now(); if (m && m.log) { this.log('history worker: ' + m.log); return; } if (m && m.id === 0) { if (!m.ok) this.log('history: the worker refused its store: ' + m.error); return; } const p = this.waiting.get(m.id); if (!p) return; this.waiting.delete(m.id); clearTimeout(p.timer); m.ok ? p.res(m.r) : p.rej(Object.assign(new Error(m.error), { name: m.name || 'Error' }, m.data || {})); };
     this.w.onerror = (e) => { this.log('history: worker error ' + (e.message || e)); this.failAll(new Error('worker failed')); };
     // every fresh worker is told its tab's store first (0.9.77); the worker handles it before the next message
     if (this.store) { try { this.w.postMessage({ id: 0, op: 'config', args: { store: this.store } }); } catch { /* the next call fails and says so */ } }
@@ -103,13 +104,16 @@ class WorkerBackend {
   }
 }
 
+// a worker silent this long while its calls time out is stuck (not just busy); memory-only retries the store
+export const STUCK_SILENT_MS = 20000, RETRY_MS = 120000, RETRY_TRIES = 30;
 const POOL_LOCKED_RX = /Access Handles? cannot be created|pool not taken/i;
 const KIND = { ping: 'ping', pause: 'other', resume: 'other', insert: 'insert', days: 'days', info: 'days', rows: 'rows', last: 'rows', query: 'query', span: 'query', remove: 'remove', clear: 'clear', export: 'export', import: 'import', oldFiles: 'days', slow: 'other', spin: 'other', corrupt: 'other', note: 'log', logAppend: 'log', logList: 'log', logRead: 'log', logRemove: 'log', logClear: 'log', logAllGz: 'export', estimate: 'days', config: 'other', stores: 'days', dropStore: 'remove' };
 
 export class HistoryStore {
-  /** opts: { log(msg), store (this tab's store id, or a promise of it: 0.9.77), forceMemory, backend (tests), makeWorker (tests), timeouts (tests: {op: ms}) } */
+  /** opts: { log(msg), store (this tab's store id, or a promise of it: 0.9.77), forceMemory, backend (tests), makeWorker (tests), timeouts (tests: {op: ms}), stuckSilentMs / retryMs / retryTries (tests) } */
   constructor(opts = {}) {
     this.log = opts.log || (() => {}); this.backend = 'none'; this.b = null; this.persistent = null; this.stats = statsState(); this.onBackend = null;   // the app's hook when the backend changes (lock-out)
+    this.stuckSilentMs = opts.stuckSilentMs !== undefined ? opts.stuckSilentMs : STUCK_SILENT_MS; this.retryMs = opts.retryMs || RETRY_MS; this.retryTries = opts.retryTries !== undefined ? opts.retryTries : RETRY_TRIES;
     this.timeouts = opts.timeouts || {}; this.makeWorker = opts.makeWorker || null; this.lastFail = ''; this.store = null; this.storeP = Promise.resolve(opts.store || null);
     this.ready = opts.backend ? this.adopt(opts.backend, opts.backendName || 'test') : this.open(!!opts.forceMemory);
   }
@@ -118,10 +122,15 @@ export class HistoryStore {
     if (!forceMemory && typeof Worker === 'function' && typeof navigator !== 'undefined' && navigator.storage && navigator.storage.getDirectory) {
       try {
         this.store = await this.storeP;
-        const wb = new WorkerBackend(this.log, this.makeWorker, this.store);
+        const wb = new WorkerBackend(this.log, this.makeWorker, this.store); this.pending = wb;
         const t0 = Date.now(); const r = await wb.call('ping', {}, this.timeoutFor('ping'));
+        this.pending = null;
         this.b = wb; this.backend = 'opfs'; this.log(`history: SQLite ${r.version} over ${r.vfs}, ${r.files} files, ${Date.now() - t0} ms to open`);
-      } catch (e) { this.log('history: no SQLite store (' + (e && e.message) + '), keeping this session in memory only'); }
+      } catch (e) {
+        this.log('history: no SQLite store (' + (e && e.message) + '), keeping this session in memory only - trying again in the background');
+        if (this.pending) { try { this.pending.stop(); } catch { /* gone */ } this.pending = null; }   // a worker whose ping failed must not stay running
+        void this.retryLater();
+      }
     }
     if (!this.b) { this.b = new MemoryBackend(); this.backend = 'memory'; }
     return this.backend;
@@ -129,7 +138,8 @@ export class HistoryStore {
   timeoutFor(op) { return this.timeouts[op] || opTimeoutMs(KIND[op] || 'other'); }
   /** One store call: deadline, statistics, a log line on a failure or a timeout, a worker restart when stuck. */
   async call(op, args = {}, n = 0) {
-    await this.ready; if (this.reopening) await this.reopening;               // a fresh worker is taking the pool: calls wait for it (bounded by the ping deadline)
+    await this.ready; if (this.reopening) await this.reopening;
+    if (this.released) throw Object.assign(new Error('the page is being left: the store is released'), { name: 'RestartError' });   // a call during pagehide must not start a worker               // a fresh worker is taking the pool: calls wait for it (bounded by the ping deadline)
     const kind = KIND[op] || 'other', t0 = Date.now();
     try {
       const r = this.b instanceof WorkerBackend ? await this.b.call(op, args, this.timeoutFor(op)) : await this.b[op](args);
@@ -141,7 +151,10 @@ export class HistoryStore {
       const key = `${op}:${timeout ? 'timeout' : e && e.message}`;               // the same failure again and again is logged once (a full disk every 10 s)
       if (key !== this.lastFail || timeout) this.log(`history: ${op} ${timeout ? 'TIMED OUT' : 'failed'} after ${Date.now() - t0} ms${timeout ? '' : `: ${e && e.message}`}`);
       this.lastFail = key;
-      if (timeout && this.b instanceof WorkerBackend && stuckDecision(this.stats).action === 'restart') {
+      // stuck = timeouts in a row AND the worker silent: a slow worker (a 7-day query) still answers other calls, and
+      // killing it mid-wasm keeps its files locked until a reload (history review 2026-11-01)
+      const silentMs = this.b instanceof WorkerBackend ? Date.now() - this.b.lastReplyAt : 0;
+      if (timeout && this.b instanceof WorkerBackend && stuckDecision(this.stats).action === 'restart' && silentMs >= this.stuckSilentMs) {
         this.stats.restarts++; this.stats.timeoutsInRow = 0;
         this.log(`history: ${this.stats.timeouts} timeouts, the worker looks stuck: restarting it (restart ${this.stats.restarts})`);
         this.reopen();
@@ -168,6 +181,26 @@ export class HistoryStore {
     const why = e && e.name === 'TimeoutError' ? 'no answer' : POOL_LOCKED_RX.test(String(e && e.message)) ? 'a killed worker keeps its files open' : String(e && e.message);
     this.log(`history: the storage pool stayed locked ${Math.round(ms / 1000)} s after the worker restart (${why}): readings are not kept until the page is reloaded`);
     if (this.onBackend) { try { this.onBackend(this.backend); } catch { /* ui */ } }
+    void this.retryLater();
+  }
+  /** Memory-only is not for ever on a phone that runs for days: a fresh worker is tried every RETRY_MS for a while
+   *  (a worker killed while busy keeps its files until a reload, a timer-hung one lets go - 2026-09-24 probes). */
+  async retryLater() {
+    if (this.retrying || typeof Worker !== 'function') return;
+    this.retrying = true;
+    try {
+      for (let i = 0; i < this.retryTries && this.backend === 'memory'; i++) {
+        await sleep(this.retryMs);
+        const wb = new WorkerBackend(this.log, this.makeWorker, this.store);
+        try {
+          const r = await wb.call('ping', {}, this.timeoutFor('ping'));
+          this.b = wb; this.backend = 'opfs';
+          this.log(`history: the store opened on a later try (${i + 1}): SQLite over ${r.vfs}, ${r.files} files - readings are kept again`);
+          if (this.onBackend) { try { this.onBackend(this.backend); } catch { /* ui */ } }
+          return;
+        } catch (e) { try { wb.stop(); } catch { /* gone */ } if (i === 0 || i === this.retryTries - 1) this.log(`history: the store is still locked (${e && e.message}) - ${i === this.retryTries - 1 ? 'giving up until a reload' : 'trying again'}`); }
+      }
+    } finally { this.retrying = false; }
   }
   statsLine() { return statsLine(this.stats); }
   statsReset(now = Date.now()) { statsReset(this.stats, now); }
@@ -193,7 +226,10 @@ export class HistoryStore {
   /** Hand the pool back (pagehide): the worker is stopped, which releases its access handles; the next call starts
    *  a new one. Not SQLite's pauseVfs(): pausing the VFS while the page went into the back/forward cache crashed
    *  the renderer in the sandbox (2026-09-24). */
-  release() { if (this.b instanceof WorkerBackend) { this.b.stop(); this.log('history: worker stopped for the page hide (a fresh one starts on the next call)'); } }
+  release() { this.released = true; if (this.b instanceof WorkerBackend) { this.b.stop(); this.log('history: worker stopped for the page hide (a fresh one starts when the page is shown again)'); } }
+  /** The page is back from the back/forward cache: a fresh worker through the same gate as a restart (its ping waits
+   *  for the pool; calls wait for the ping), not a cold first call racing the pool's own retries. */
+  rejoin() { if (!this.released) return; this.released = false; if (this.b instanceof WorkerBackend) this.reopen(); }
   estimate() { return this.call('estimate'); }
   slow(ms) { return this.call('slow', { ms }); }
   spin(ms) { return this.call('spin', { ms }); }

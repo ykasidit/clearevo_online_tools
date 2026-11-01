@@ -114,6 +114,10 @@ test('chunks: a file in base64 chunks reassembles in order; an out-of-order chun
   assert.equal(rxChunk(hs, cs[0]).action, 'wait'); assert.equal(rxChunk(hs, cs[1]).action, 'wait');
   const r = rxChunk(hs, cs[2]); assert.equal(r.action, 'file'); assert.deepEqual([r.file.day, r.file.after, r.file.b64 === b64], ['2026-09-24', 100, true]);
   assert.equal(rxChunk(hs, cs[0]).action, 'wait'); assert.equal(rxChunk(hs, cs[2]).action, 'drop'); assert.equal(hs.rx, null);
+  // 2026-11-01 review: the link dropped after chunk 1, the reader sends the same file again from chunk 0 - it assembles
+  assert.equal(rxChunk(hs, cs[0]).action, 'wait'); assert.equal(rxChunk(hs, cs[1]).action, 'wait');
+  assert.equal(rxChunk(hs, cs[0]).action, 'wait', 'chunk 0 again: a fresh assembly, not out of order');
+  assert.equal(rxChunk(hs, cs[1]).action, 'wait'); assert.equal(rxChunk(hs, cs[2]).action, 'file');
 });
 
 test('chart window, bucket step and series from per-day buckets', () => {

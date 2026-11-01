@@ -44,7 +44,6 @@ export default {
     // `.then(` chains: the ceiling per file and why they are still there (round 2/3 of the conversion)
     then: {
       'app.js': [5, 'rollover -> maintain, span read, two sheet results, init chain: the app shell is round 3'],
-      'tv.js': [1, 'the upload chain (a serialised queue): round 2 makes it a Channel loop'],
       'history-worker.js': [1, 'the OPFS directory handle memo'],
       'alerts.js': [3, 'two fan-out sends with per-channel results, the service-worker registration lookup'],
     },
@@ -52,19 +51,19 @@ export default {
     asyncCb: {
       'app.js': [14, 'button and sheet handlers in the app shell: round 3'],
       'live.js': [1, 'the j() fetch helper is an async arrow, not a callback'],
-      'tv.js': [2, 'the j() helper and the upload chain step (round 2)'],
+      'tv.js': [1, 'the j() fetch helper is an async arrow, not a callback'],
       'history.js': [1, 'the reopen IIFE awaited by every call'],
       'history-worker.js': [2, 'the init IIFE and the worker onmessage (one handler per op, a dispatcher)'],
       'alerts.js': [3, 'three settings handlers that await a send'],
     },
     // hand-rolled `new Promise(`: sync.js has Flag / Channel / sleep / select; what remains wraps a platform event
     promise: {
-      'app.js': [6, 'rAF, file reads, sheet results, timers in the app shell: round 3'],
+      'app.js': [4, 'rAF, file reads, sheet results, the cast library load in the app shell: round 3'],
       'history.js': [2, 'the worker reply wait with its deadline, the pool reopen'],
       'history-worker.js': [2, 'the sync access handle waits'],
     },
     // timers belong to sync.js (sleep / select); a shell that sets its own is a lifecycle written as callbacks
-    timers: { 'app.js': [27, 'the app shell: round 3 (the Bluetooth timers went into the conn.js loop, 0.9.83)'], 'tv.js': [2, 'encoder cadence and upload retry: round 2'], 'history.js': [2, 'the per-call deadline and restart pacing'], 'history-worker.js': [2, 'pool retry pacing'], 'alerts.js': [1, 'the evaluator tick'] },
+    timers: { 'app.js': [15, 'one-shot UI timers (toast, blob URL revoke, reload after a restore, the cast tick and media poll, the reach hold): the periodic jobs are every() loops since 0.9.84'], 'history.js': [2, 'the per-call deadline and restart pacing'], 'history-worker.js': [2, 'pool retry pacing'], },
     // innerHTML built with interpolated values: BatRay's are language-table strings and numbers, never a BMS string
     innerHtml: { 'app.js': [6, 'sheet and chip templates filled from T (the language table) and formatted numbers; the BMS name goes through textContent'] },
     logic: (f) => /-logic\.js$/.test(f) || f === 'trend.js',          // the pure modules
@@ -94,6 +93,14 @@ export default {
         assert.equal(cb.length, 2, cb.join('\n'));
         assert.ok(/down\.set\(true\)/.test(cb[0]) && !/_emit|await|this\.\w+\(/.test(cb[0].replace(/this\.down\.set\(true\)/, '')), `the disconnect callback only sets the Flag: ${cb[0]}`);
       });
+      test('a channel arm of select() only waits (ready) and the loop takes the item after it won - next() inside a select loses the item whenever another arm wins the same turn (review 2026-11-01)', () => {
+        for (const f of ['app.js', 'live.js', 'conn.js', 'tv.js']) {
+          const src = h.strip(h.read(f));
+          const bad = src.split('\n').filter((l) => /select\(/.test(l) && /\.next\(\{ signal/.test(l));
+          assert.deepEqual(bad, [], `${f}: a Channel.next() as a select arm`);
+        }
+        assert.ok(!/cmd: \(s\) => this\.next\(/.test(h.strip(h.read('conn.js'))), 'conn.js arms use cmdArm');
+      });
       test('lifecycle loops: each link class has exactly one run(signal), start() refuses a second loop, stop() aborts it', () => {
         const src = h.strip(h.read('live.js'));
         const classes = src.split(/^export class /m).slice(1);
@@ -111,7 +118,7 @@ export default {
       });
       test('every wait in the live link takes the stop signal', () => {
         const src = h.strip(h.read('live.js'));
-        const calls = src.match(/\b(sleep|select)\([^;]*?\)|\.(wait|next)\(\{?[^;]*?\)/g) || [];
+        const calls = src.match(/\b(sleep|select)\([^;]*?\)|\.(wait|next|ready)\(\{?[^;]*?\)/g) || [];
         assert.ok(calls.length >= 12, `found ${calls.length} waits`);
         for (const c of calls) assert.ok(/\bsignal\b|\(s\)|, s\)|: s \}/.test(c), `a wait without the stop signal: ${c.slice(0, 80)}`);
       });

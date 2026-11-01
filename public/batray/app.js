@@ -34,16 +34,16 @@ import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
 import { Flag, Channel, select, sleep, every, isAbort, TIMEOUT } from './sync.js';
 import { TAB_SS, TAB_PREFIX, LEGACY, validTabId, LEGACY_DROP, tabLock, tabKey, metaKey, tabMeta, tabRecords, chooseTab, orphanDrops, legacyMoves, storeRows } from './tab-logic.js';
-import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs } from './history-logic.js';
+import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysInRange, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
-import { logState, logQueue, flushPlan, logTake, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, logKeepOn } from './log-logic.js';
+import { logState, logQueue, flushPlan, logTake, logUntake, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, logKeepOn } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.83';
+export const APP_VERSION = '0.9.84';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -287,7 +287,8 @@ class Pack {
     this.iEma = new Ema(60);                                 // smoothed current for the time-to-go; readings go to the stored history
     if (this.bms) this.wire();
   }
-  get connected() { return this.remote ? this.remoteLive : (!!this.demo || (this.bms && this.bms.connected)); }
+  /** Connected = the loop serves the link (a link still being set up is 'connecting', whatever gatt.connected says). */
+  get connected() { return this.remote ? this.remoteLive : (!!this.demo || (!!this.bms && this.bms.connected && this.cs.phase === 'connected')); }
   /** The connection state the loop writes; read-only here (a remote pack has none). */
   get cs() { return this.conn ? this.conn.cs : NO_CONN; }
   get label() { return this.demo ? 'DEMO' : (this.device && (this.device.name || this.device.id)) || this.name; }
@@ -379,10 +380,10 @@ function setActive(pack) {
   if (pack.info) renderDevice(pack.info); else els.device.hidden = true;
   if (pack.settings) renderSettings(pack.settings); else els.settingsCard.hidden = true;
   if (pack.data) render(pack.data, true); else clearReadouts();
-  $('oneApp').hidden = !(pack.bms && pack.bms.connected); $('btNote').hidden = !(pack.bms && pack.bms.connected);
+  $('oneApp').hidden = !(pack.bms && pack.connected); $('btNote').hidden = !(pack.bms && pack.connected);
   if (pack.demo) setStatus(() => T.demoStatus, 'demo');
   else if (pack.remote) setStatus(() => (pack.remoteLive ? T.viewingPack(pack.label) : (readerGone() ? T.viewOfflineShort : T.viewReconnecting)), pack.remoteLive ? 'good' : 'bad');
-  else if (pack.bms.connected) setStatus(() => T.connectedTo(pack.label), 'good');
+  else if (pack.connected) setStatus(() => T.connectedTo(pack.label), 'good');
   else setStatus(() => T.disconnectedFrom(pack.label), 'bad');
   refreshCard(); tickAge(); renderPackBar();
 }
@@ -397,7 +398,7 @@ function clearReadouts() {
 // The one Bluetooth button in the toolbar changes in place: Connect / Connecting (tap cancels) / Disconnect (sunk).
 function renderConnButton() {
   const p = active, ble = p && p.bms && !p.demo ? p : null;
-  const db = ble ? connButton(ble.cs, !!ble.bms.connected) : { on: false, busy: false, disabled: !!(p && p.remote), label: 'connect' };
+  const db = ble ? connButton(ble.cs, ble.connected) : { on: false, busy: false, disabled: !!(p && p.remote), label: 'connect' };
   const b = els.disconnect;
   b.disabled = db.disabled; b.classList.toggle('on', db.on); b.classList.toggle('busy', db.busy); b.setAttribute('aria-pressed', db.on);
   b.querySelector('.lbl').textContent = { connect: T.btConnect, connecting: T.btConnecting, disconnect: T.disconnect }[db.label];
@@ -411,7 +412,7 @@ function refreshCard() {
   renderConnButton();
   if (p.remote) { body.toggle('offline', !p.remoteLive); body.remove('loading'); $('reState').hidden = true; $('reIdle').hidden = true; $('offlineTxt').textContent = readerGone() ? T.viewOffline : T.viewReconnectingLong; return; }
   if (p.demo) { body.remove('offline', 'loading'); return; }
-  const c = connCard(p.cs, { gattConnected: !!p.bms.connected, hasData: !!p.data });
+  const c = connCard(p.cs, { gattConnected: p.connected, hasData: !!p.data });
   body.toggle('offline', c.offline); body.toggle('loading', c.loading);
   if (c.loading && p.loadThunk) $('loadTxt').textContent = p.loadThunk();
   $('offlineTxt').textContent = p.offlineThunk ? p.offlineThunk() : T.disconnectedFrom(p.label);
@@ -654,13 +655,15 @@ function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 // from bucket queries and logs what happened. ----
 const histS = historyState();
 const hist = new HistoryStore({ log, store: TAB.id });
-hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') dropMemoryRows(); renderHistOff(); };   // memory-only after a locked pool: the Storage box says so
-const histMem = { pending: new Map(), plot: null, plotParams: '', cursorIdx: null, series: null, drawAt: 0, drawing: false, redraw: false, spanAt: 0, demoId: 0 };
+hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') dropMemoryRows(); renderHistOff(); if (name === 'opfs') { histMem.ready = false; void initHistory(); } };   // memory-only after a locked pool: the Storage box says so; the store back on a later try: today's counters again   // memory-only after a locked pool: the Storage box says so
+const histMem = { ready: false, inflight: null, failAt: 0, pending: new Map(), plot: null, plotParams: '', cursorIdx: null, series: null, drawAt: 0, drawing: false, redraw: false, spanAt: 0, demoId: 0 };
 const utf8 = new TextEncoder();
 function pendingRows() { let n = 0; for (const l of histMem.pending.values()) n += l.length; return n; }
 function queueRow(row, day = dayKey(row.t)) { const l = histMem.pending.get(day) || []; l.push(row); histMem.pending.set(day, l); }
 /** Which databases hold a pack's rows: the DEMO pack lives in the worker's in-memory database, never on disk. */
-const daysFor = (p, from, to) => (p.demo ? ['demo'] : daysNeeded(histS.days, from, to));
+// every day of the window, listed or not: after 00:00 UTC the new day's file exists before any listing knows it, and
+// the chart had stopped at midnight until a reload (history review 2026-11-01); the worker skips a day without a file
+const daysFor = (p, from, to) => (p.demo ? ['demo'] : daysInRange(from, to));
 /** One reading -> one stored row. The reader numbers its rows (dense ids per day); a viewer stores the reader's
  *  row under the reader's id and asks for the ones it missed. DEMO readings and remote readings without a row
  *  (the 10 s snapshot resend) are never stored. */
@@ -671,6 +674,12 @@ function recordRow(p, d, t, remoteRow = null) {
   }
   if (histS.backend === 'memory') return null;                          // no file storage: nothing is kept in RAM either (0.9.74, the card says why)
   const day = dayKey(t);
+  if (!histMem.ready) {                                                  // the store is still opening: ids come once today's file says where it stands
+    if (p.remote || !rowDue(p.lastRowAt, t)) return null;                // (they were numbered from 1 and dropped as "already stored", history review 2026-11-01)
+    p.lastRowAt = t;
+    const row = rowFromReading(p.label, d, t); row.id = null; queueRow(row);
+    return null;
+  }
   if (!histS.day || day > histS.day) {                                   // a new UTC day: ids start again at 1 in its database
     const ro = rolloverDecision(histS, day);
     log(`history: ${ro.action} ${ro.day}`);
@@ -697,12 +706,15 @@ function recordRow(p, d, t, remoteRow = null) {
   return row;
 }
 let histFlushing = false;
+/** A full disk: the SQLite pool turns the browser's QuotaExceededError into SQLITE_FULL / SQLITE_IOERR on write
+ *  (history review 2026-11-01: the old check never matched, a store full at noon failed every insert to midnight). */
+const diskFull = (e) => !!e && (e.name === 'QuotaExceededError' || /SQLITE_FULL|SQLITE_IOERR|quota|disk is full/i.test(String(e.message)));
 /** The queue into the day databases, one insert per day. A failed insert keeps its rows for the next flush
  *  (bounded); the store has already logged why. */
 async function flushHistory() {
-  if (histFlushing || !histMem.pending.size) return;
+  if (histFlushing || !histMem.pending.size || !histMem.ready) return;
   histFlushing = true;
-  const batch = histMem.pending; histMem.pending = new Map();
+  const batch = histMem.pending; histMem.pending = new Map(); histMem.inflight = batch;   // pagehide spills the batch in flight too
   try {
     if (hist.persistent === null) { const ok = await hist.persist(); histS.persistent = ok; log(`history: ${hist.backend}, persistent=${ok}`); }
     for (const [day, rows] of batch) {
@@ -713,7 +725,7 @@ async function flushHistory() {
           break;
         } catch (e) {
           if (isCorrupt(e)) { await corruptDb(e, 'live write', rows); break; }
-          if (e.name === 'QuotaExceededError' && attempt === 0) {           // full: the oldest past day goes, then one more try
+          if (diskFull(e) && attempt === 0) {                              // full: the oldest past day goes, then one more try
             const q = quotaDecision(await hist.days().catch(() => histS.days), histS.day);
             log(`history: quota exceeded -> ${q.action} ${q.day || ''}`);
             if (q.action === 'delete') { await hist.remove(q.day).catch(() => {}); continue; }
@@ -722,7 +734,7 @@ async function flushHistory() {
         }
       }
     }
-  } finally { histFlushing = false; }
+  } finally { histFlushing = false; histMem.inflight = null; }
   if (active && !$('trendCard').hidden) scheduleDraw(false);   // the throttle decides (half a bucket at least): a 7-day window is not re-queried every 10 s
 }
 void every(HISTORY_FLUSH_MS, flushHistory, { onError: jobError('history flush') });   // a loop: a slow flush never overlaps the next
@@ -732,7 +744,8 @@ void every(HISTORY_FLUSH_MS, flushHistory, { onError: jobError('history flush') 
 // page (or another tab) can take the pool. A page back from the back/forward cache starts a fresh worker on its
 // next call. Not SQLite's pauseVfs(): that crashed the renderer under the cache in the sandbox (2026-09-24).
 function spillPending() {
-  const rows = []; for (const [day, l] of histMem.pending) for (const r of l) if (day !== 'demo') rows.push(r);
+  const rows = [];
+  for (const m of [histMem.inflight, histMem.pending]) if (m) for (const [day, l] of m) for (const r of l) if (day !== 'demo') rows.push(r);   // the insert in flight may never land: INSERT OR IGNORE makes a second copy harmless
   histMem.pending = new Map();
   if (!rows.length) return 0;
   try { const prev = JSON.parse(localStorage.getItem(tk('spill')) || '[]'); localStorage.setItem(tk('spill'), JSON.stringify(prev.concat(rows).slice(-2000))); } catch { /* no room: those rows are lost */ }
@@ -761,7 +774,10 @@ async function corruptDb(e, where, rows) {
   histMem.series = null;
   if (d.live && rows && rows.length) {
     try {
-      if (!viewer) for (const r of rows) r.id = nextRowId(histS);                // the reader numbers its new file from 1; a viewer keeps the reader's ids
+      if (!viewer) {                                                            // the reader numbers its new file from 1: the flush's rows, then every row of today still queued (else they collide later and are dropped)
+        for (const r of rows) r.id = nextRowId(histS);
+        for (const r of histMem.pending.get(day) || []) r.id = nextRowId(histS);
+      }
       const r = await hist.insert(day, rows); const info = await hist.info(day);
       histS.todayRows = info.rows; histS.nextId = info.maxId + 1; histS.contig = info.contig;
       log(`history: ${r.inserted} rows written into the new ${day}.sqlite`);
@@ -826,9 +842,15 @@ async function initHistory() {
     histS.days = await hist.days();
     const info = await hist.info(today);
     histS.todayRows = info.rows; histS.nextId = info.maxId + 1; histS.contig = info.contig;
+    let early = 0;
+    for (const [day, l] of histMem.pending) for (const r of l) if (r.id === null) { if (day === today) { r.id = nextRowId(histS); early++; } }
+    for (const [day, l] of histMem.pending) if (day !== today && day !== 'demo') histMem.pending.set(day, l.filter((r) => r.id !== null));
+    if (early) log(`history: ${early} rows read while the store opened are numbered from id ${histS.nextId - early}`);
     const sum = historySummary(histS.days, histS.todayRows, { usage: histS.usage, quota: histS.quota, today });
     log(`history: ${histS.backend}, ${sum.days} days, ${Math.round(sum.bytes / 1024)} KB, oldest ${sum.oldest || '-'}, today ${info.rows} rows (highest id ${info.maxId}, complete to ${info.contig})`);
   } catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); else log(`history: load failed: ${e.message}`); }
+  histMem.ready = true;
+  for (const l of histMem.pending.values()) for (const r of l) if (r.id === null) r.id = nextRowId(histS);   // a failed load: number them anyway
   await maintainHistory();
   if (active) renderTrend(active);
 }
@@ -894,11 +916,15 @@ async function flushLog() {
     flushDone(logS, plan.file, r.bytes, text.length);
     // eslint-disable-next-line house/ui-after-await -- paints the file list just read; flushLog is single-flight (logFlushing)
     if (plan.roll) { logS.files = await hist.logList(); for (const f of logRetention(logS.files, logS.filesMax)) { await hist.logRemove(f.name); } logS.files = await hist.logList(); renderLogNote(); }
-  } catch (e) { if (!logS.failedOnce) { logS.failedOnce = true; console.warn('debug log write failed', e); } }
+  } catch (e) {
+    logUntake(logS, lines);                                                   // the lines describing the failure are the ones worth keeping: back to the front, capped
+    if (!logS.failedOnce) { logS.failedOnce = true; console.warn('debug log write failed', e); }
+  }
   finally { logFlushing = false; }
 }
 void every(LOG_FLUSH_MS, flushLog, { onError: jobError('log flush') });
-window.addEventListener('pagehide', () => { void flushLog(); });
+// no log flush in pagehide: the store has been released by then (a flush would start a fresh worker on a page being left)
+window.addEventListener('pageshow', (e) => { if (e.persisted) { log('page shown again from the back/forward cache'); hist.rejoin(); } });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void flushLog(); });
 async function initLogStore() {
   logS.backend = await hist.ready;
@@ -1153,17 +1179,18 @@ async function drawHistory(p, force = false) {
   const now = Date.now();
   if (histMem.drawing) { histMem.redraw = histMem.redraw || force; return; }
   if (!force && histMem.series && now - histMem.drawAt < trendRefreshMs(histMem.series.stepMs)) return;
+  if (!force && histMem.failAt && now - histMem.failAt < 30000) return;   // a query that failed is not re-run on every frame (2-3 a second fed the timeouts)
   histMem.drawing = true;
   try {
     const first = histS.days[0] ? dayStartMs(histS.days[0].day) : null;
     const { from, to } = chartRange(histS.range, now, first);
     const stepMs = bucketStep(from, to);
     const q = await hist.query({ p: p.label, from, to, stepMs, days: daysFor(p, from, to) });
-    histMem.series = { s: seriesFromBuckets(q.parts), energy: q.energy, from, to, stepMs }; histMem.drawAt = Date.now();
+    histMem.series = { s: seriesFromBuckets(q.parts), energy: q.energy, from, to, stepMs }; histMem.drawAt = Date.now(); histMem.failAt = 0;
     if (q.first !== null) { histS.spanFirst = q.first; histS.spanLast = q.last; }
     // eslint-disable-next-line house/ui-after-await -- drawHistory is single-flight (histMem.drawing); a range change meanwhile sets histMem.redraw and is drawn right after
     paintHistory();
-  } catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); /* else the store logged it */ }
+  } catch (e) { histMem.failAt = Date.now(); if (isCorrupt(e)) await corruptDb(e, 'history read'); /* else the store logged it */ }
   finally { histMem.drawing = false; }
   if (histMem.redraw) { histMem.redraw = false; scheduleDraw(true); }
 }
@@ -1532,10 +1559,11 @@ async function runResume(plan) {
   void sheetAnswer(answer, 'resume');
   const ac = new AbortController();
   for (;;) {
-    const r = await select(ac.signal, { tick: (sg) => sleep(1000, sg), answer: (sg) => answer.next({ signal: sg }) });
+    const r = await select(ac.signal, { tick: (sg) => sleep(1000, sg), answer: (sg) => answer.ready({ signal: sg }) });
     if (r.key === 'answer') {
-      if (r.value === 'now') { log('resume: Now tapped'); break; }
-      log(`resume: cancelled (${r.value || 'dismissed'}) - nothing resumed`); resumeS.plan = null; return;
+      const a = answer.take();
+      if (a === 'now') { log('resume: Now tapped'); break; }
+      log(`resume: cancelled (${a || 'dismissed'}) - nothing resumed`); resumeS.plan = null; return;
     }
     resumeS.left--;
     if (resumeS.left <= 0) { log('resume: countdown over'); break; }
@@ -1545,14 +1573,17 @@ async function runResume(plan) {
   resumeS.plan = null;
   await doResume(plan);
 }
+async function resumeShare() {
+  const saved = savedShare();
+  let name = ''; try { name = localStorage.getItem(tk('share_name')) || ''; } catch { /* no storage */ }
+  $('shareName').value = name; $('shareReuse').checked = !!saved;
+  log(`resume: sharing again${saved ? ` on room ${saved.room}` : ' (no saved link: a new one)'}`);
+  await beginShare();
+}
 async function doResume(plan) {
-  if (plan.share && !publisher) {
-    const saved = savedShare();
-    let name = ''; try { name = localStorage.getItem(tk('share_name')) || ''; } catch { /* no storage */ }
-    $('shareName').value = name; $('shareReuse').checked = !!saved;
-    log(`resume: sharing again${saved ? ` on room ${saved.room}` : ' (no saved link: a new one)'}`);
-    await beginShare();
-  }
+  // the share and the Bluetooth reconnect go together: a relay that does not answer must not hold the BMS back
+  // (share review 2026-11-01: the reconnect waited on the share's fetches)
+  const sharing = plan.share && !publisher ? resumeShare() : null;
   let devs = []; try { devs = navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function' ? await navigator.bluetooth.getDevices() : []; } catch (e) { log(`resume: getDevices failed: ${e.message}`); }
   for (const x of plan.connect) {
     const dev = devs.find((d) => d.id === x.id);
@@ -1564,6 +1595,7 @@ async function doResume(plan) {
     await sleep(1500);
   }
   if (plan.cannot.length) toast(T.resumeTap(plan.cannot.map((x) => x.name || x.id).join(', ')), 15000);
+  if (sharing !== null) await sharing;
 }
 
 // ---- the reader setup checklist (0.9.72, setup-logic.js): checked on Connect (Continue anyway is always there), and
@@ -1709,7 +1741,7 @@ $('connectAgain').addEventListener('click', () => { void startConnect(active && 
 els.disconnect.dataset.title = els.disconnect.title;
 els.disconnect.addEventListener('click', () => {
   const p = active && active.bms && !active.demo ? active : null;
-  const db = p ? connButton(p.cs, !!p.bms.connected) : { label: 'connect' };
+  const db = p ? connButton(p.cs, p.connected) : { label: 'connect' };
   if (db.label === 'disconnect') { if (p.device && p.device.id) intentNote('disconnected', { id: p.device.id, name: p.label }); p.conn.tell('disconnect'); return; }
   if (db.label === 'connecting') {                                  // the busy button is a cancel
     p.plog('connect: cancelled from the toolbar');
@@ -1807,7 +1839,7 @@ async function beginShare() {
   const pub = publisher;
   try {
     await pub.start(b.reuse);
-    if (publisher !== pub) return;                                    // cancelled from the toolbar meanwhile
+    if (publisher !== pub) { void pub.stop(); return; }               // cancelled from the toolbar meanwhile: a loop started anyway must go
     try { localStorage.setItem(tk('share_last'), JSON.stringify(publisher.credentials)); } catch {}
     const st = shareStarted(shareS, { link: publisher.link, reused: publisher.reused });
     intentNote('share-on');
@@ -1837,17 +1869,20 @@ const gunzipBytes = async (bytes) => new Uint8Array(await new Response(new Blob(
  *  backlog, only while live. */
 async function histRequest(m) {
   if (!publisher || histS.backend === 'memory') { log(`history: request from ${String(m.from || '').slice(0, 6)} ignored (${!publisher ? 'not sharing' : 'nothing stored'})`); return; }
-  await flushHistory();
-  histS.days = await hist.days();
+  try { await flushHistory(); histS.days = await hist.days(); }
+  catch (e) { log(`history: request not answered, the store failed: ${e.message}`); if (isCorrupt(e)) await corruptDb(e, 'history read'); return; }
   const plan = transferPlan(histS.days, Array.isArray(m.have) ? m.have : []).map((x) => ({ ...x, to: m.from }));   // to the viewer that asked
   log(`history: request from ${String(m.from || '').slice(0, 6)}: viewer has ${Array.isArray(m.have) ? m.have.length : 0} days -> ${plan.length ? plan.map((x) => `${x.day} after id ${x.after} (${x.rows} rows)`).join(', ') : 'nothing to send'}`);
   if (!plan.length) return;
   if (histS.xfer) { histS.xfer.queue = plan; log('history: a transfer is running, the new plan replaces its queue'); return; }
-  histS.xfer = { queue: plan, sent: 0 };
+  // this transfer's own record: a share stopped and started again meanwhile has its own (an old finally had wiped the
+  // new one's state, share review 2026-11-01)
+  const x = { queue: plan, sent: 0 };
+  histS.xfer = x;
   const pub = publisher;
   try {
-    while (histS.xfer && histS.xfer.queue.length && publisher === pub && pub.state.live) {
-      const item = histS.xfer.queue.shift();
+    while (histS.xfer === x && x.queue.length && publisher === pub && pub.state.live) {
+      const item = x.queue.shift();
       let after = item.after;
       for (;;) {
         const rows = await hist.rows(item.day, after, XFER_ROWS); if (!rows.length) break;
@@ -1859,7 +1894,7 @@ async function histRequest(m) {
           while (pub.backlog() > XFER_BACKLOG && waited < 30000 && publisher === pub) { await sleep(100); waited += 100; }
           if (publisher !== pub || !pub.state.live) { log('history: transfer stopped (link gone)'); return; }
           await pub.publish(envelope('hist-file', { id: '*', name: '*' }, { day: item.day, after, n: i, of: chunks.length, b64: chunks[i], rows: rows.length, bytes: gz.length }), item.to);
-          histS.xfer.sent += chunks[i].length;
+          x.sent += chunks[i].length;
           await sleep(20);
         }
         after = rows[rows.length - 1].id;
@@ -1867,7 +1902,7 @@ async function histRequest(m) {
       }
     }
   } catch (e) { log(`history: transfer failed: ${e.message}`); if (isCorrupt(e)) await corruptDb(e, 'history read'); }
-  finally { histS.xfer = null; }
+  finally { if (histS.xfer === x) histS.xfer = null; }
 }
 function sendSnapshots() {
   if (!publisher) return;
@@ -1940,8 +1975,7 @@ function watchReach(s) {
 // the viewer's own copy: ask the reader for the rows this device lacks, per day by id (share-logic never sees rows)
 async function requestHistory() {
   if (!viewer || histS.backend === 'memory') return;
-  await flushHistory();
-  try { histS.days = await hist.days(); } catch { /* keep the old listing */ }
+  try { await flushHistory(); histS.days = await hist.days(); } catch (e) { log(`history: asking the reader with the old listing (the store failed: ${e.message})`); }
   const have = [];
   for (const d of histS.days) {
     if (d.day === histS.day) { have.push({ day: d.day, maxId: Math.max(d.maxId || 0, histS.todayRows), contig: histS.contig }); continue; }
@@ -2051,7 +2085,7 @@ async function startView() {
     room: viewMode.room, keyB64: viewMode.key, log,
     onState: (s) => {
       renderViewChip(); watchReach(s);
-      for (const p of packs.values()) { p.remoteLive = s.live; }
+      for (const p of packs.values()) { p.remoteLive = s.live && p.readerConnected !== false; }   // the reader's own word on each pack stands (a BMS it lost stays offline)
       if (histReqDecision(histS, { live: s.live, now: Date.now() }).action === 'request') void requestHistory();
       const ve = viewerEvent(viewS, s);           // the reader's presence: share-logic.js decides what is worth an alert
       if (ve && alerts) alerts.notify('reader', ve.readerAlert === 'on' ? T.evReaderOn : T.evReaderOff, ve.readerAlert === 'on' ? T.evReaderOnBody : T.evReaderOffBody);
@@ -2068,7 +2102,7 @@ async function startView() {
         viewPacks(viewS, env.v);
         const ids = new Set(env.v.map((x) => x.id));
         for (const p of [...packs.values()]) if (!ids.has(p.id)) { log(`live: pack "${p.label}" removed (the reader no longer lists it)`); removePack(p); }
-        for (const x of env.v) { const p = packs.get(x.id) || addRemotePack(x.id, x.name, 'listed'); p.name = x.name; if (x.demo && !p.demo) p.demo = { stop() {} }; p.remoteLive = viewer.state.live && x.connected; }
+        for (const x of env.v) { const p = packs.get(x.id) || addRemotePack(x.id, x.name, 'listed'); p.name = x.name; if (x.demo && !p.demo) p.demo = { stop() {} }; p.readerConnected = !!x.connected; p.remoteLive = viewer.state.live && p.readerConnected; }
         renderPackBar(); return;
       }
       if (env.k === 'hist-file') { rxHistFile(env); return; }
@@ -2117,7 +2151,10 @@ function renderPreview() {
   const src = previewSource(previewS, canPlayHls(), Date.now());
   $('tvVideo').hidden = src !== 'video'; $('tvLocal').hidden = src !== 'local';
 }
-function unloadPreview(v) { try { v.pause(); } catch { /* not playing */ } v.removeAttribute('src'); v.load(); previewEvent(previewS, 'unload'); renderPreview(); }
+// One preview at a time: its listeners and its retries live under one AbortController (0.9.84: every start had added
+// ten more listeners to the same <video>, and an old retry could put a stopped stream's URL back).
+let previewAc = null;
+function unloadPreview(v) { if (previewAc) { previewAc.abort(); previewAc = null; } try { v.pause(); } catch { /* not playing */ } v.removeAttribute('src'); v.load(); previewEvent(previewS, 'unload'); renderPreview(); }
 function renderTv(s) {
   if (!tv || !s.live) return;
   $('tvLink').textContent = s.url;
@@ -2133,25 +2170,34 @@ function renderTv(s) {
   $('tvStat').textContent = (s.error ? T.tvErr(s.error) + ' · ' : '') + T.tvStat(s.segs, Math.round(s.bytes / 1024), pull) + (s.segs < 3 ? ' · ' + T.tvStarting : '');
 }
 function startPreview(v, url) {
+  if (previewAc) previewAc.abort();
+  const ac = new AbortController(), signal = ac.signal, on = { signal };
+  previewAc = ac;
   v.src = url;
   let tries = 0;
   const kick = () => v.play().catch((e) => log(`tv preview: play refused: ${e.message}`));
-  v.addEventListener('loadedmetadata', () => { log('tv preview: metadata loaded'); kick(); });
+  v.addEventListener('loadedmetadata', () => { log('tv preview: metadata loaded'); kick(); }, on);
   let frames = 0;                                                            // the phone's own HLS player is the nearest witness to what a TV will do with the stream
   const seen = (ev) => { previewEvent(previewS, ev, Date.now()); renderPreview(); };
-  v.addEventListener('playing', () => { log(`tv preview: playing (${v.videoWidth}x${v.videoHeight})`); seen('playing'); });
-  v.addEventListener('waiting', () => { log('tv preview: waiting for data'); seen('waiting'); });
-  v.addEventListener('stalled', () => { log('tv preview: stalled'); seen('stalled'); });
-  v.addEventListener('ended', () => seen('ended'));
-  v.addEventListener('emptied', () => seen('emptied'));
-  v.addEventListener('timeupdate', () => { if (++frames === 1 || frames === 10 || frames % 60 === 0) log(`tv preview: t=${v.currentTime.toFixed(1)}s (update ${frames})`); });
-  v.addEventListener('canplay', kick, { once: true });
+  v.addEventListener('playing', () => { log(`tv preview: playing (${v.videoWidth}x${v.videoHeight})`); seen('playing'); }, on);
+  v.addEventListener('waiting', () => { log('tv preview: waiting for data'); seen('waiting'); }, on);
+  v.addEventListener('stalled', () => { log('tv preview: stalled'); seen('stalled'); }, on);
+  v.addEventListener('ended', () => seen('ended'), on);
+  v.addEventListener('emptied', () => seen('emptied'), on);
+  v.addEventListener('timeupdate', () => { if (++frames === 1 || frames === 10 || frames % 60 === 0) log(`tv preview: t=${v.currentTime.toFixed(1)}s (update ${frames})`); }, on);
+  v.addEventListener('canplay', kick, { once: true, signal });
   v.addEventListener('error', () => {
     const err = v.error ? `${v.error.code} ${v.error.message || ''}` : '?';
     log(`tv preview: player error ${err} (try ${tries + 1})`); seen('error');
-    if (tv && tries++ < 5) setTimeout(() => { if (tv && $('tvVideo') === v) { v.src = url; v.load(); kick(); } }, 4000);   // the live window has grown meanwhile
-  });
+    if (tries++ < 5) void retryPreview(v, url, signal, kick);
+  }, on);
   kick();
+}
+/** The live window has grown meanwhile: load the same stream again, unless this preview was unloaded or replaced. */
+async function retryPreview(v, url, signal, kick) {
+  try { await sleep(4000, signal); } catch { return; }
+  if (v.getAttribute('src') !== url) return;
+  v.src = url; v.load(); kick();
 }
 // ---- Cast to TV: Google's cast sender library with the built-in media
 // receiver (no registration, no receiver app of ours). Loaded from Google
@@ -2238,7 +2284,9 @@ function wireCastState() {
  *  with its FIRST status update, 19 s after the load was accepted (its player buffered the growing MP4 that long
  *  before PLAYING), so "no media session right after the load" is normal, not a failure - the poll waits for it,
  *  and only CAST_NO_MEDIA_MS without one says the TV reported nothing playing. */
-function watchCastMedia(sess) {
+// one cast flow per tap: an earlier flow's tick, sheet answer and media watcher stand down when a newer tap starts (0.9.84)
+let castGen = 0;
+function watchCastMedia(sess, gen) {
   const t0 = Date.now(); let last = ''; let attached = false;
   const line = (why, alive, m) => {
     const t = (m.getEstimatedTime ? m.getEstimatedTime() : m.currentTime) || 0;
@@ -2248,6 +2296,7 @@ function watchCastMedia(sess) {
     log(`cast: tv ${why} +${Math.round((Date.now() - t0) / 1000)}s: ${txt}`);
   };
   const tick = () => {
+    if (gen !== castGen) { clearInterval(poll); return; }
     const m = sess.getMediaSession && sess.getMediaSession();
     if (m && !attached) {
       attached = true; log(`cast: tv media session ${Math.round((Date.now() - t0) / 1000)} s after the load`);
@@ -2284,6 +2333,7 @@ async function castToTv(opts = {}) {
   // one progress sheet from the tap to the TV's answer; Cancel ends the flow (a picker request already handed to
   // Google's library cannot be taken back: closing its list is the cancel there)
   castFlowStart(castS, Date.now(), 'loading'); renderCastButtons(); castHint(T.castLoading);
+  const gen = ++castGen;
   let ended = null;                                                          // 'cancel' | 'timeout' once the sheet or the clock ended the flow
   const endFlow = (why, hint) => {
     if (!castS.busy) return;
@@ -2292,6 +2342,7 @@ async function castToTv(opts = {}) {
     for (const w of castWaiters) w(); castWaiters = [];
   };
   void openSheet('casting').then((r) => {
+    if (gen !== castGen) return;                                              // a newer tap owns the flow now
     if (castS.busy && (castS.phase === 'waiting' || castS.phase === 'buffering') && r !== 'done') {   // the user stops watching; the TV keeps playing
       log(`cast: sheet closed by the user while ${castS.phase}`); castFlowEnd(castS); renderCastButtons(); return;
     }
@@ -2300,6 +2351,7 @@ async function castToTv(opts = {}) {
   });
   const waitingOnTv = () => castS.busy && (castS.phase === 'waiting' || castS.phase === 'buffering');
   const tick = setInterval(() => {
+    if (gen !== castGen) { clearInterval(tick); return; }
     const castSheet = !!(uiS.sheet && uiS.sheet.kind === 'casting');
     if (!castS.busy && !castSheet) { clearInterval(tick); castFlowEnd(castS); renderCastButtons(); return; }
     if (!castS.busy) { updateSheet('casting'); return; }                                             // a settled result on show
@@ -2343,7 +2395,7 @@ async function castToTv(opts = {}) {
     castS.dev = dev;
     phase('waiting', T.tvCastConnected(dev), Date.now());                    // the sheet stays: the TV's player state shows here until it plays (or a minute passes)
     if (!castS.busy) log('cast: the stream is sent although the user had cancelled - the hint follows the TV, the sheet stays away');
-    watchCastMedia(sess);
+    watchCastMedia(sess, gen);
   } catch (e) {
     const msg = e && (e.message || e.code || String(e));
     const kind = castErrorDecision(msg);
@@ -2363,6 +2415,13 @@ function renderTvButtons() {
   $('tvLive').hidden = b.liveHidden; $('tvNote').hidden = b.noteHidden;
   $('tvPanel').hidden = b.panelHidden; if (!b.panelHidden) $('tvPanel').open = true;
 }
+/** A stream's state: painted only while it is THE stream (an old one emits while it drains after a stop); a stream
+ *  whose encoder kept failing has stopped itself, and the card follows. */
+function tvStateSeen(t, st) {
+  if (tv !== t) return;
+  renderTv(st);
+  if (t.died) void stopTv('encoder failed');
+}
 async function startTv(opts = {}) {
   if (tv) return tv.state.url;
   const d = tvStartDecision(tvS);
@@ -2371,7 +2430,7 @@ async function startTv(opts = {}) {
   renderTvButtons();
   const [w, h] = (opts.res || $('tvRes').dataset.value).split('x').map(Number);
   const local = $('tvLocal'), lctx = local.getContext('2d', { alpha: false });
-  const t = new TvStream({ width: w, height: h, model: tvModel, log, onState: renderTv, onFrame: (c) => { if (!local.hidden) lctx.drawImage(c, 0, 0, local.width, local.height); }, ...opts });
+  const t = new TvStream({ width: w, height: h, model: tvModel, log, onState: (st) => tvStateSeen(t, st), onFrame: (c) => { if (!local.hidden) lctx.drawImage(c, 0, 0, local.width, local.height); }, ...opts });
   tv = t;
   try {
     const url = await t.start();

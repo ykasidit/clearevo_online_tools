@@ -58,6 +58,16 @@ export function logTake(ls) {
   const lines = ls.pending, bytes = ls.pendBytes; ls.pending = []; ls.pendBytes = 0;
   return { lines, bytes };
 }
+/** A write failed: its lines go back in front of what was queued meanwhile, at most maxBytes kept (the newest) - a store
+ *  that stays down must not grow the queue without bound (history review 2026-11-01: they had been dropped). */
+export const LOG_REQUEUE_MAX = 1048576;
+export function logUntake(ls, lines, maxBytes = LOG_REQUEUE_MAX) {
+  const all = lines.concat(ls.pending);
+  let bytes = 0, from = all.length;
+  while (from > 0) { const b = utf8.encode(all[from - 1]).length + 1; if (bytes + b > maxBytes) break; bytes += b; from--; }
+  ls.pending = all.slice(from); ls.pendBytes = bytes;
+  return all.length - ls.pending.length;
+}
 /** After the write landed. */
 export function flushDone(ls, file, fileBytes, wrote) {
   ls.file = file; ls.fileBytes = fileBytes; ls.sessionBytes += wrote;

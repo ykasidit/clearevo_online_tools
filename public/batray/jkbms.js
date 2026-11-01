@@ -495,6 +495,8 @@ export class JkBms extends EventTarget {
     this.voidGapS = 0;
     this.infoSeen = new Flag(false);
     this.pending = null;              // the oldest browser connect still unsettled: { since, n, done: Flag }
+    this._charTokens = new WeakMap(); // characteristic -> the link token it serves (one listener per object)
+    this.openedAt = null;             // when this link's notifications came on: the gap check's start before any chunk
     this._resetLink();
   }
 
@@ -504,7 +506,7 @@ export class JkBms extends EventTarget {
 
   _resetLink() {
     this.buf = new Uint8Array(0);
-    this.lastRxAt = null; this.lastDataAt = null; this.firstCellAt = null; this.settingsAt = null;
+    this.lastRxAt = null; this.lastDataAt = null; this.firstCellAt = null; this.settingsAt = null; this.openedAt = null;
     this.rxOther = 0; this.rxOtherAll = 0; this.rxOtherAt = null;     // non-frame notifications: logged (capped), counted
     this.voided.set(false); this.voidGapS = 0;
     this.infoSeen.set(false);
@@ -544,6 +546,10 @@ export class JkBms extends EventTarget {
     this._log(`connecting to ${device.name || device.id}`);
     const t0 = Date.now();
     const server = await this._track(device.gatt.connect());
+    // The attempt gave up (cancel, its 15 s) but the browser connected after all: the connect has SETTLED, so closing
+    // it is safe now (only a pending one must never be closed) - else the link stays up with nobody serving it and
+    // the BMS's one Bluetooth slot taken (BLE review 2026-11-01).
+    if (signal.aborted && token === this._link && device.gatt.connected) { this._log('gatt: connected after its attempt gave up - closing it'); try { device.gatt.disconnect(); } catch { /* already down */ } }
     own();
     this._log(`gatt: server connected in ${Date.now() - t0} ms`);
     this.down.set(!device.gatt.connected);
@@ -553,10 +559,11 @@ export class JkBms extends EventTarget {
     this._log(`gatt: service found in ${Date.now() - t0} ms`);
     const char = await service.getCharacteristic(JK_CHAR);
     up();
-    char.addEventListener('characteristicvaluechanged', (e) => this._onNotify(new Uint8Array(e.target.value.buffer), token));
+    if (!this._charTokens.has(char)) char.addEventListener('characteristicvaluechanged', (e) => this._onNotify(new Uint8Array(e.target.value.buffer), this._charTokens.get(char)));   // once per characteristic object
+    this._charTokens.set(char, token);
     await char.startNotifications();
     up();
-    this.char = char;
+    this.char = char; this.openedAt = Date.now();
     this._log('notifications on');
     await this.write(buildCommand(CMD_DEVICE_INFO));
     up();
@@ -614,8 +621,9 @@ export class JkBms extends EventTarget {
     // would paint an hour-old battery as live, so a long gap voids the link
     // (the loop drops it and reconnects for fresh readings).
     if (this.voided.v) return;
-    if (token !== undefined && queuedAfterGap(this.lastRxAt, now)) {          // a GATT link (the demo feeds frames without one)
-      this.voidGapS = Math.round((now - this.lastRxAt) / 1000);
+    const since = this.lastRxAt !== null ? this.lastRxAt : this.openedAt;   // a freeze right after connect: from the link's start
+    if (token !== undefined && queuedAfterGap(since, now)) {                 // a GATT link (the demo feeds frames without one)
+      this.voidGapS = Math.round((now - since) / 1000);
       this.voided.set(true);
       return;
     }

@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Flag, Channel, sleep, select, isAbort, TIMEOUT } from '../public/batray/sync.js';
+import { Flag, Channel, sleep, select, every, isAbort, TIMEOUT } from '../public/batray/sync.js';
 
 test('Flag: a wait for the current level returns at once, a set wakes the waiters, nothing is lost between a callback and the loop', async () => {
   const f = new Flag(false);
@@ -60,4 +60,30 @@ test('select: the first arm wins, the losers are aborted through their signal, t
 test('sleep resolves TIMEOUT and honours the signal', async () => {
   assert.equal(await sleep(5), TIMEOUT);
   const ac = new AbortController(); const p = sleep(1000, ac.signal); ac.abort(); await assert.rejects(p, (e) => isAbort(e));
+});
+
+test('Channel.ready() is the select arm: a channel arm that loses keeps its item for the next turn (next() inside a select lost it - BLE review 2026-11-01)', async () => {
+  const ch = new Channel(), f = new Flag(true);
+  ch.push('disconnect');
+  const r = await select(null, { down: (s) => f.wait(true, { signal: s }), cmd: (s) => ch.ready({ signal: s }) });
+  assert.ok(r.key === 'down' || r.key === 'cmd');
+  assert.equal(ch.size, 1, 'whoever won, the command is still queued');
+  assert.equal(ch.take(), 'disconnect'); assert.equal(ch.size, 0);
+  const lost = new Channel(); lost.push('x');
+  await select(null, { down: (s) => f.wait(true, { signal: s }), cmd: (s) => lost.next({ signal: s }) });
+  assert.equal(lost.size, 0, 'the old pattern: next() took it although down won (why ready/take exists)');
+  const later = new Channel();
+  const w = select(null, { cmd: (s) => later.ready({ signal: s }), t: (s) => sleep(500, s) });
+  later.push('now');
+  assert.equal((await w).key, 'cmd'); assert.equal(later.take(), 'now');
+  assert.equal(await new Channel().ready({ ms: 10 }), TIMEOUT);
+});
+
+test('every(): the next run starts after the previous one ended (no overlap), a throwing run is reported and the loop goes on, the signal ends it', async () => {
+  let running = 0, most = 0, runs = 0; const errs = [];
+  const ac = new AbortController();
+  const loop = every(5, async () => { running++; most = Math.max(most, running); runs++; await sleep(20); running--; if (runs === 2) throw new Error('flush failed'); }, { signal: ac.signal, onError: (e) => errs.push(e.message), first: 0 });
+  await sleep(150); ac.abort();
+  await assert.rejects(loop, (e) => e.name === 'AbortError');
+  assert.equal(most, 1, 'never two runs at once'); assert.ok(runs >= 3, String(runs)); assert.deepEqual(errs, ['flush failed']);
 });

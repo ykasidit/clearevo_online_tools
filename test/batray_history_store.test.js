@@ -43,7 +43,7 @@ function fakeWorkerFactory(state) {
   };
 }
 const fakeNav = () => { globalThis.Worker = function () {}; Object.defineProperty(globalThis, 'navigator', { value: { storage: { getDirectory() {}, persist: async () => true } }, configurable: true, writable: true }); };
-const store = (state, timeouts = {}) => { fakeNav(); return new HistoryStore({ log: (m) => state.logs.push(m), makeWorker: fakeWorkerFactory(state), timeouts }); };
+const store = (state, timeouts = {}, more = {}) => { fakeNav(); return new HistoryStore({ log: (m) => state.logs.push(m), makeWorker: fakeWorkerFactory(state), timeouts, stuckSilentMs: 30, retryTries: 0, ...more }); };
 
 test('insert then read through the worker protocol; ids handed out; the open line is logged', async () => {
   const st = { logs: [], workers: [] }; const h = store(st);
@@ -150,4 +150,23 @@ test('the memory-only store answers the same calls (and says export gives nothin
 
 test('deadlines per kind are the documented ones', () => {
   assert.equal(OP_TIMEOUT_MS.insert, 8000); assert.equal(OP_TIMEOUT_MS.query, 15000); assert.equal(OP_TIMEOUT_MS.export, 60000);
+});
+
+test('2026-11-01 review: a SLOW worker (it still answers other calls) is not restarted - killing it mid-wasm keeps its files locked; after a lock-out the store is tried again and comes back', async () => {
+  const st = { logs: [], workers: [] }; const h = store(st, { rows: 40, days: 40 }, { stuckSilentMs: 10_000 });
+  await h.ready;
+  st.hang = true;
+  await assert.rejects(h.rows('d')); await assert.rejects(h.days()); await assert.rejects(h.rows('d'));
+  assert.equal(st.workers.length, 1, 'three timeouts, but the worker spoke within stuckSilentMs: no restart');
+  // a lock-out, then the store opens again on a later try
+  const s2 = { logs: [], workers: [] }; const h2 = store(s2, { rows: 40, days: 40 }, { retryTries: 3, retryMs: 20 });
+  await h2.ready; const seen = []; h2.onBackend = (b) => seen.push(b);
+  s2.hang = true; s2.locked = true;
+  await assert.rejects(h2.rows('d')); await assert.rejects(h2.days()); await assert.rejects(h2.rows('d'));
+  assert.deepEqual(await h2.days(), []);
+  assert.equal(h2.backend, 'memory');
+  s2.locked = false; s2.hang = false;
+  for (let i = 0; i < 100 && h2.backend !== 'opfs'; i++) await new Promise((r) => { setTimeout(r, 10); });
+  assert.equal(h2.backend, 'opfs'); assert.deepEqual(seen, ['memory', 'opfs']);
+  assert.ok(s2.logs.some((l) => /the store opened on a later try \(\d\)/.test(l)), s2.logs);
 });

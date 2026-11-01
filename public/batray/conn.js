@@ -35,6 +35,17 @@ import { Channel, select, sleep, isAbort } from './sync.js';
 import { connState, cmdIn, retryDecision, afterEnd, CONNECT_S, CONNECT_GAP_MS, SERVE_TICK_MS, DOWN_WAIT_MS, RECONNECT_S } from './conn-logic.js';
 import { buildCommand, CMD_CELL_INFO, STUCK_MS, HANDSHAKE_WAIT_MS, linkStep } from './jkbms.js';
 
+/** The app's hooks paint and log; one that throws must not take the connection down with it (BLE review 2026-11-01:
+ *  a paint exception in a hook had ended the loop for good). choose and fresh are awaited by the loop: their own
+ *  errors stay theirs. */
+function guardHooks(h) {
+  const g = { ...h };
+  for (const k of Object.keys(h)) {
+    if (k === 'choose' || k === 'fresh' || typeof h[k] !== 'function') continue;
+    g[k] = (...a) => { try { return h[k](...a); } catch (e) { try { h.log(`conn: the app's ${k} hook threw: ${e && e.message}`); } catch { /* the log itself */ } return undefined; } };
+  }
+  return g;
+}
 /** A promise that never rejects: { ok: true, v } or { ok: false, e } - an abandoned wait leaves no unhandled rejection. */
 async function settle(p) { try { return { ok: true, v: await p }; } catch (e) { return { ok: false, e }; } }
 
@@ -44,8 +55,8 @@ export class BleConn {
    *  stuck(). o: the clock for tests - secMs (one countdown / attempt second), tickMs, gapMs, connectS, stuckMs,
    *  downWaitMs, writeMs, link (linkStep limits). */
   constructor(bms, h, o = {}) {
-    this.bms = bms; this.h = h;
-    this.o = { secMs: 1000, tickMs: SERVE_TICK_MS, gapMs: CONNECT_GAP_MS, connectS: CONNECT_S, stuckMs: STUCK_MS, downWaitMs: DOWN_WAIT_MS, writeMs: 2000, link: {}, ...o };
+    this.bms = bms; this.h = guardHooks(h);
+    this.o = { secMs: 1000, tickMs: SERVE_TICK_MS, gapMs: CONNECT_GAP_MS, connectS: CONNECT_S, stuckMs: STUCK_MS, downWaitMs: DOWN_WAIT_MS, writeMs: 2000, freshMs: 2000, link: {}, ...o };
     this.cs = connState();
     this.cmd = new Channel();
     this.ac = null; this.task = null;
@@ -56,7 +67,15 @@ export class BleConn {
   start() {
     if (this.task !== null) return;
     this.ac = new AbortController();
-    this.task = this.run(this.ac.signal).catch((e) => { if (!isAbort(e)) this.h.log(`conn: loop died: ${e.message}`); });
+    const ac = this.ac;
+    this.task = this.run(ac.signal).catch((e) => {
+      if (isAbort(e) || this.ac !== ac) return;
+      // a loop that died is a bug, but the pack must not stay frozen on its last phase: say so, start clean on the next tap
+      this.h.log(`conn: the connection loop ended on an error: ${e && e.message} - back to idle`);
+      this.ac = null; this.task = null; this.cs.phase = 'idle'; this.cs.attempt = 0; this.cs.count = 0;
+      this.bms.close(); this.h.changed();
+      if (this.cmd.size) this.start();                                    // a tap is already waiting
+    });
   }
   stop() { if (this.ac) this.ac.abort(); this.ac = null; this.task = null; }
 
@@ -66,6 +85,12 @@ export class BleConn {
     this.h.changed();
   }
   next(signal) { return this.cmd.next({ signal }); }
+  /** The command arm of a select: it only waits for a queued command; take() takes it once this arm has won, so a
+   *  command never vanishes in a select another arm won (a Disconnect tap queued as the link fell). */
+  cmdArm(s) { return this.cmd.ready({ signal: s }); }
+  take() { return this.cmd.take(); }
+  /** Wall-clock seconds left to a deadline (a throttled hidden tab wakes late: the count must not fall behind). */
+  secsLeft(deadline) { return Math.max(0, Math.ceil((deadline - Date.now()) / this.o.secMs)); }
   /** The oldest browser connect still unsettled has run past STUCK_MS: it ran with Bluetooth off (0.9.81). */
   stuckNow() { const g = this.bms.pending; return !!g && Date.now() - g.since >= this.o.stuckMs; }
 
@@ -95,6 +120,7 @@ export class BleConn {
 
   async idle(signal, why) {
     this.cs.attempt = 0; this.cs.count = 0;
+    if (this.bms.connected) { this.h.log('conn: idle with a link still up (a connect that answered after its attempt gave up) - closing it'); this.bms.close(); }
     this.enter('idle', why);
     for (;;) {
       const c = await this.next(signal);
@@ -137,7 +163,13 @@ export class BleConn {
   async attempt(n, signal) {
     const t0 = Date.now();
     let dev = this.h.device();
-    if (this.cs.origin !== 'chooser') dev = await this.h.fresh(dev);   // getDevices may hand back a newer handle
+    if (this.cs.origin !== 'chooser') {                                  // getDevices may hand back a newer handle; it may also hang
+      const f = await select(signal, { got: () => settle(this.h.fresh(dev)), late: (s) => sleep(this.o.freshMs, s) });
+      if (f.key === 'got' && f.value.ok && f.value.v) dev = f.value.v;
+      else this.h.log(`connect: ${f.key === 'late' ? `getDevices() did not answer in ${this.o.freshMs} ms` : 'getDevices() failed'} - the handle we have`);
+    }
+    signal.throwIfAborted();
+    const deadline = Date.now() + this.o.connectS * this.o.secMs;
     this.h.attempt(n);
     const ac = new AbortController();
     const quit = () => ac.abort();
@@ -146,18 +178,18 @@ export class BleConn {
     const fail = (msg) => { ac.abort(); this.bms.close(); this.h.log(`connect: attempt ${n} failed after ${Date.now() - t0} ms: ${msg}`); return { msg }; };
     try {
       for (;;) {
-        const r = await select(signal, { open: () => opening, tick: (s) => sleep(this.o.secMs, s), cmd: (s) => this.next(s) });
+        const r = await select(signal, { open: () => opening, tick: (s) => sleep(Math.min(this.o.secMs, Math.max(1, deadline - Date.now())), s), cmd: (s) => this.cmdArm(s) });
         if (r.key === 'open') {
           if (r.value.ok) { this.h.log(`connect: ok on attempt ${n} in ${Date.now() - t0} ms`); return { ok: true }; }
           return fail(r.value.e.message);
         }
         if (r.key === 'cmd') {
-          const c = cmdIn('connecting', r.value, this.cs);
-          if (c === 'stop') { ac.abort(); this.bms.close(); this.h.log(`connect: attempt ${n} cancelled (${r.value})`); return { end: 'stop' }; }
-          this.h.log(`conn: ${r.value} ignored (an attempt is in progress)`);
+          const cmd = this.take(), c = cmdIn('connecting', cmd, this.cs);
+          if (c === 'stop') { ac.abort(); this.bms.close(); this.h.log(`connect: attempt ${n} cancelled (${cmd})`); return { end: 'stop' }; }
+          this.h.log(`conn: ${cmd} ignored (an attempt is in progress)`);
           continue;
         }
-        this.cs.left = Math.max(0, this.cs.left - 1);
+        this.cs.left = this.secsLeft(deadline);
         if (this.stuckNow()) { ac.abort(); return { end: 'stuck' }; }
         if (this.cs.left === 0) return fail(`no answer in ${this.o.connectS} s`);
         this.h.changed();
@@ -171,9 +203,10 @@ export class BleConn {
     for (;;) {
       const left = until - Date.now();
       if (left <= 0) return null;
-      const r = await select(signal, { t: (s) => sleep(left, s), cmd: (s) => this.next(s) });
+      const r = await select(signal, { t: (s) => sleep(left, s), cmd: (s) => this.cmdArm(s) });
       if (r.key === 't') return null;
-      if (cmdIn('connecting', r.value, this.cs) === 'stop') { this.h.log(`connect: cancelled between tries (${r.value})`); return { end: 'stop' }; }
+      const cmd = this.take();
+      if (cmdIn('connecting', cmd, this.cs) === 'stop') { this.h.log(`connect: cancelled between tries (${cmd})`); return { end: 'stop' }; }
     }
   }
 
@@ -187,14 +220,14 @@ export class BleConn {
     const l = { askedAt: null, asks: 0, cellLogged: false };
     const end = (e, ageS = 0) => { this.h.down(e === 'stalled', ageS); return { end: e, ageS }; };
     for (;;) {
-      const arms = { down: (s) => b.down.wait(true, { signal: s }), voided: (s) => b.voided.wait(true, { signal: s }), cmd: (s) => this.next(s), tick: (s) => sleep(this.o.tickMs, s) };
+      const arms = { down: (s) => b.down.wait(true, { signal: s }), voided: (s) => b.voided.wait(true, { signal: s }), cmd: (s) => this.cmdArm(s), tick: (s) => sleep(this.o.tickMs, s) };
       if (l.askedAt === null) arms.info = (s) => b.infoSeen.wait(true, { signal: s });
       const r = await select(signal, arms);
       if (r.key === 'down') { this.h.log('gatt disconnected'); return end('down'); }
       if (r.key === 'voided') { b.drop(`${b.voidGapS} s without data - queued readings dropped`); await this.downWait(signal); return end('gap'); }
       if (r.key === 'cmd') {
-        const c = cmdIn('connected', r.value, cs);
-        if (c === 'stop') { this.h.log(`conn: ${r.value} - closing the link`); b.close(); await this.downWait(signal); return end('stop'); }
+        const cmd = this.take(), c = cmdIn('connected', cmd, cs);
+        if (c === 'stop') { this.h.log(`conn: ${cmd} - closing the link`); b.close(); await this.downWait(signal); return end('stop'); }
         if (c === 'choose') return end('choose');                         // choose() closes the link before the picker
         continue;
       }
@@ -242,15 +275,16 @@ export class BleConn {
   }
 
   async countdown(seconds, signal, why) {
+    let deadline = Date.now() + seconds * this.o.secMs;
     this.cs.count = seconds;
     this.enter('countdown', `${why}, ${seconds} s`);
     while (this.cs.count > 0) {
-      const r = await select(signal, { tick: (s) => sleep(this.o.secMs, s), cmd: (s) => this.next(s) });
-      if (r.key === 'tick') { this.cs.count--; if (this.stuckNow()) return 'stuck'; this.h.changed(); continue; }
-      const c = cmdIn('countdown', r.value, this.cs);
-      if (c === 'go') { this.cs.origin = r.value === 'known' ? 'known' : 'manual'; this.h.log(`reconnect: now (${r.value})`); return 'go'; }
+      const r = await select(signal, { tick: (s) => sleep(Math.min(this.o.secMs, Math.max(1, deadline - Date.now())), s), cmd: (s) => this.cmdArm(s) });
+      if (r.key === 'tick') { this.cs.count = this.secsLeft(deadline); if (this.stuckNow()) return 'stuck'; this.h.changed(); continue; }
+      const cmd = this.take(), c = cmdIn('countdown', cmd, this.cs);
+      if (c === 'go') { this.cs.origin = cmd === 'known' ? 'known' : 'manual'; this.h.log(`reconnect: now (${cmd})`); return 'go'; }
       if (c === 'choose' || c === 'stop') return c;
-      if (c === 'short') { this.cs.count = Math.min(this.cs.count, RECONNECT_S.adapter); this.h.log(`reconnect: Bluetooth is back, in ${this.cs.count} s`); this.h.changed(); }
+      if (c === 'short') { deadline = Math.min(deadline, Date.now() + RECONNECT_S.adapter * this.o.secMs); this.cs.count = this.secsLeft(deadline); this.h.log(`reconnect: Bluetooth is back, in ${this.cs.count} s`); this.h.changed(); }
     }
     this.cs.origin = 'auto';
     return 'go';
@@ -266,9 +300,9 @@ export class BleConn {
     this.h.stuck();
     if (!g) return { end: 'settled' };
     for (;;) {
-      const r = await select(signal, { done: (s) => g.done.wait(true, { signal: s }), cmd: (s) => this.next(s) });
+      const r = await select(signal, { done: (s) => g.done.wait(true, { signal: s }), cmd: (s) => this.cmdArm(s) });
       if (r.key === 'done') { this.h.log('gatt: the pending connect settled after all'); return { end: 'settled' }; }
-      const c = cmdIn('stuck', r.value, this.cs);
+      const c = cmdIn('stuck', this.take(), this.cs);
       if (c === 'sheet') this.h.stuck();
       else if (c === 'stop') return { end: 'stop' };
     }

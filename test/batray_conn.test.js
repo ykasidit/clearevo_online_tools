@@ -131,7 +131,7 @@ const open = [];                                                      // every h
 afterEach(() => { for (const t of open.splice(0)) t.end(); });
 
 /** The loop with an app that records what it was told. One "second" = 20 ms; the attempt gives up after 15 of them. */
-function harness(dev, { autoRe = true, chooser = true, device = null, o = {} } = {}) {
+function harness(dev, { autoRe = true, chooser = true, device = null, o = {}, hooks = {} } = {}) {
   const bms = new JkBms(), log = [], ev = [];
   let dv = device;
   bms.addEventListener('log', (e) => log.push(e.detail));
@@ -140,8 +140,9 @@ function harness(dev, { autoRe = true, chooser = true, device = null, o = {} } =
     choose: async () => { ev.push('chooser'); await sleep(1); if (!chooser) return null; dv = dev; return dev; },
     fresh: async (d) => d, attempt: (n) => ev.push(`attempt ${n}`), connected: () => ev.push('connected'),
     failed: (m) => ev.push(`failed: ${m}`), stalled: () => ev.push('stalled'), down: (st) => ev.push(st ? 'down (stalled)' : 'down'), stuck: () => ev.push('stuck'),
+    ...hooks,
   };
-  const c = new BleConn(bms, h, { secMs: 20, tickMs: 10, gapMs: 30, downWaitMs: 100, writeMs: 200, stuckMs: 60_000, link: { staleMs: 300, startupMs: 600, handshakeMs: 60, nudgeMs: 100, quickMs: 40 }, ...o });
+  const c = new BleConn(bms, h, { secMs: 20, tickMs: 10, gapMs: 30, downWaitMs: 100, writeMs: 200, freshMs: 100, stuckMs: 60_000, link: { staleMs: 300, startupMs: 600, handshakeMs: 60, nudgeMs: 100, quickMs: 40 }, ...o });
   const until = async (pred, what, ms = 4000) => {
     const t0 = Date.now();
     while (!pred()) { if (Date.now() - t0 > ms) throw new Error(`no ${what} in ${ms} ms: phase ${c.cs.phase}; ${ev.join(' | ')}\n${log.slice(-12).join('\n')}`); await sleep(5); }
@@ -334,4 +335,64 @@ test('stop() ends the loop wherever it waits; start() refuses a second loop', as
   t.c.stop(); await task;
   assert.equal(t.c.running, false);
   dev.stopStream();
+});
+
+// ---------------------------------------------------------------- the 2026-11-01 review of the loop
+test('a command is never lost in a select another arm won: Disconnect tapped as the link falls stays a Disconnect, no reconnect', async () => {
+  const dev = new FakeDev(), t = harness(dev);
+  t.c.tell('connect');
+  await t.until(() => t.c.cs.gotData, 'data');
+  const n = dev.connects;
+  dev.fall(); t.c.tell('disconnect');                                  // the same turn: both arms are ready
+  await t.phase('idle');
+  await sleep(RECONNECT_S.auto * 20 + 150);
+  assert.equal(t.c.cs.phase, 'idle', 'the person\'s Disconnect was obeyed');
+  assert.equal(dev.connects, n, 'no reconnect against their wish');
+});
+
+test('a connect that answers after its attempt gave up is closed (the BMS has one Bluetooth slot), never left up with nobody serving it', async () => {
+  const dev = new FakeDev({ hang: 1 }), t = harness(dev);
+  t.c.tell('connect');
+  await t.until(() => dev.pending.length === 1, 'the pending connect');
+  t.c.tell('cancel');
+  await t.phase('idle');
+  assert.equal(dev.disconnects, 0, 'nothing closed while it was pending');
+  dev.gatt.connected = true; dev.pending[0].resolve(dev.server());     // the browser connects after all
+  await t.until(() => dev.gatt.connected === false, 'the late link closed');
+  assert.ok(t.log.includes('gatt: connected after its attempt gave up - closing it'), t.log.join('\n'));
+  assert.equal(t.c.cs.phase, 'idle');
+});
+
+test('a hook that throws is logged and the loop goes on; a loop that dies anyway goes back to idle and the next tap works', async () => {
+  let boom = 3;
+  const dev = new FakeDev(), t = harness(dev, { hooks: { changed: () => { if (boom-- > 0) throw new Error('paint failed'); } } });
+  t.c.tell('connect');
+  await t.phase('connected');
+  assert.ok(t.log.some((l) => /^conn: the app's changed hook threw: paint failed$/.test(l)), t.log.join('\n'));
+  t.end();
+  let first = true;
+  const d2 = new FakeDev(), t2 = harness(d2, { device: d2, hooks: { choose: async () => { if (first) { first = false; throw new Error('chooser broke'); } return d2; } } });
+  t2.c.tell('connect');
+  await t2.until(() => t2.log.some((l) => /connection loop ended on an error: chooser broke - back to idle/.test(l)), 'the recovery');
+  assert.equal(t2.c.cs.phase, 'idle'); assert.equal(t2.c.running, false);
+  t2.c.tell('connect');
+  await t2.phase('connected');
+});
+
+test('getDevices() that never answers does not hold the attempt: the handle we have is used after freshMs', async () => {
+  const dev = new FakeDev(), t = harness(dev, { device: dev, hooks: { fresh: () => new Promise(() => {}) } });
+  t.c.tell('known');
+  await t.phase('connected');
+  assert.ok(t.log.includes('connect: getDevices() did not answer in 100 ms - the handle we have'), t.log.join('\n'));
+});
+
+test('the countdown and the attempt count wall-clock seconds: a tab whose timers woke late is not owed the missed seconds', async () => {
+  const dev = new FakeDev(), t = harness(dev);
+  t.c.tell('connect');
+  await t.until(() => t.c.cs.gotData, 'data');
+  dev.refuse = 99; dev.fall();
+  await t.phase('countdown');
+  const t0 = Date.now();
+  while (t.c.cs.phase === 'countdown') await sleep(5);
+  assert.ok(Date.now() - t0 < RECONNECT_S.auto * 20 + 120, 'ends on its deadline');
 });

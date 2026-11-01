@@ -211,7 +211,9 @@ export function chunkB64(b64, size = Math.ceil(XFER_CHUNK * 4 / 3)) {
  *  next request fetches it again). Returns the complete file {day, after, b64} when the last chunk lands. */
 export function rxChunk(hs, c) {
   const key = `${c.day}:${c.after || 0}`;
-  if (!hs.rx || hs.rx.key !== key || hs.rx.of !== c.of) hs.rx = { key, day: c.day, after: c.after || 0, of: c.of, next: 0, parts: [] };
+  // a chunk 0 always starts a fresh assembly: the same file sent again after a link drop would otherwise land on the
+  // half-finished parts of the first try and be dropped for a whole request round (share review 2026-11-01)
+  if (!hs.rx || hs.rx.key !== key || hs.rx.of !== c.of || c.n === 0) hs.rx = { key, day: c.day, after: c.after || 0, of: c.of, next: 0, parts: [] };
   if (c.n !== hs.rx.next) { hs.rx = null; return { action: 'drop', why: `chunk ${c.n} of ${c.of} out of order` }; }
   hs.rx.parts.push(c.b64); hs.rx.next++;
   if (hs.rx.next < hs.rx.of) return { action: 'wait', have: hs.rx.next, of: c.of };

@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, logTake, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LASTRUN_KEY, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX, logKeepOn } from '../public/batray/log-logic.js';
+import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, logTake, logUntake, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LASTRUN_KEY, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX, logKeepOn } from '../public/batray/log-logic.js';
 
 test('one file per session, rolled at 10 MB with the same session id; names sort by time and parse back', () => {
   const ls = logState(true, 'abc123');
@@ -85,4 +85,16 @@ test('the debug log is kept only after the person ticks the box (owner 2026-10-0
   assert.equal(logKeepOn('0'), false);
   assert.equal(logKeepOn('1'), true);
   assert.equal(logKeepOn('true'), false, 'only the value the box writes');
+});
+
+test('2026-11-01 review: lines of a failed write go back in front of the ones queued meanwhile, the newest MB kept', () => {
+  const ls = logState(true, 'abc123');
+  logQueue(ls, 'a'); logQueue(ls, 'b');
+  const { lines } = logTake(ls);
+  logQueue(ls, 'c');                                                     // logged while the write failed
+  assert.equal(logUntake(ls, lines), 0);
+  assert.deepEqual(ls.pending, ['a', 'b', 'c']); assert.equal(ls.pendBytes, 6);
+  const big = new Array(10).fill('x'.repeat(99));                       // 100 B a line with its newline
+  assert.equal(logUntake(ls, big, 550), 5, 'over the cap: the oldest go');
+  assert.equal(ls.pending.length, 8); assert.deepEqual(ls.pending.slice(-3), ['a', 'b', 'c']); assert.ok(ls.pendBytes <= 550);
 });

@@ -20,7 +20,7 @@
 // resumed tab does not sit out the countdown, stop() ends everything.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readerPresent, dataFlowing, FRESH_MS, makeKeyB64, importKey, encrypt, envelope, sigDecision, SIG_PING_MS, SIG_DEAD_MS } from '../public/batray/live-logic.js';
+import { readerPresent, dataFlowing, FRESH_MS, makeKeyB64, importKey, encrypt, envelope, sigDecision, SIG_PING_MS, SIG_DEAD_MS, SILENT_MS } from '../public/batray/live-logic.js';
 
 // ---- fakes for the browser globals live.js touches ----
 const sockets = [];
@@ -222,9 +222,34 @@ test('2026-09-22 reader log: the socket pings the relay every 10 s and reopens i
   assert.equal(ws.pings, 1, 'a ping goes out after 10 s of silence');
   t += 1000; ws.push({ type: 'pong' }); await settle();
   t += SIG_PING_MS; v.nudge(); await settle(); assert.equal(ws.pings, 2, 'the pong kept it alive; the next ping is due');
-  t += SIG_DEAD_MS; v.nudge(); await settle();
+  for (let i = 0; i < SIG_DEAD_MS / 2000; i++) { t += 2000; v.nudge(); await settle(); }   // 30 s of silence, turn by turn as the loop lives it
   assert.equal(ws.readyState, 3, 'no message for 30 s: the socket is closed');
   assert.ok(logs.some((m) => /the socket is dead, reopening/.test(m)), logs.slice(-3));
   assert.ok(logs.some((m) => /socket dead - reopening in 1 s/.test(m)), 'and the normal countdown follows');
   v.stop();
+});
+
+test('2026-11-01 review: a page that slept (a frozen tab, timers once a minute) asks the relay before judging its socket - one long gap is not 30 s of silence', async () => {
+  const logs = [];
+  const v = new Viewer({ room: 'r1', keyB64: makeKeyB64(), log: (m) => logs.push(m), onState: () => {}, onEnvelope: () => {}, retryS: 1 });
+  let t = 9_000_000; v.now = () => t;
+  await v.start(); await settle();
+  const ws = last(); ws.open(); await settle();
+  t += 90_000; v.nudge(); await settle();                                // the tab was frozen 90 s
+  assert.notEqual(ws.readyState, 3, 'the socket is not torn down for the page\'s own sleep');
+  assert.ok(ws.pings >= 1, 'it asks the relay at once');
+  assert.ok(logs.some((m) => /the page slept 90 s - asking the relay before judging the socket/.test(m)), logs.slice(-4));
+  for (let i = 0; i < SIG_DEAD_MS / 2000; i++) { t += 2000; v.nudge(); await settle(); }   // and the relay never answers
+  assert.equal(ws.readyState, 3, 'then 30 s of real silence closes it');
+  v.stop();
+});
+
+test('2026-11-01 review: a reader whose socket is in the room but who sends nothing (Android froze the tab; the relay answers its pings by itself) is offline after SILENT_MS, not live for hours', () => {
+  const t0 = 5_000_000;
+  assert.equal(readerPresent({ serverLive: true, lastRxAt: null, openAt: t0, now: t0 + 10_000 }), true, 'just joined: the room\'s word');
+  assert.equal(readerPresent({ serverLive: true, lastRxAt: null, openAt: t0, now: t0 + SILENT_MS + 1 }), false, 'nothing since the socket opened');
+  assert.equal(readerPresent({ serverLive: true, lastRxAt: t0 + 20_000, openAt: t0, now: t0 + 50_000 }), true, 'a hello 30 s ago: still there');
+  assert.equal(readerPresent({ serverLive: true, lastRxAt: t0 + 20_000, openAt: t0, now: t0 + 20_000 + SILENT_MS + 1 }), false);
+  assert.equal(readerPresent({ serverLive: true, lastRxAt: null, openAt: null, now: t0 + 999_999 }), true, 'no socket of our own: no judgement of silence');
+  assert.equal(readerPresent({ serverLive: false, lastRxAt: t0, openAt: t0, now: t0 + 1000 }), true, 'fresh data beats the room');
 });

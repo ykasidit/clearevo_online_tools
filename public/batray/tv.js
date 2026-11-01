@@ -15,7 +15,7 @@
 import { Muxer, StreamTarget } from './mp4-muxer.js';
 import { BoxSplitter, takeSegments, tvLink, tvMp4Link, isSegmentStart } from './tv-logic.js';
 import { drawTvFrame } from './tv-draw.js';
-import { Channel, select, sleep, every, isAbort } from './sync.js';
+import { Channel, select, sleep, every, isAbort, abortError } from './sync.js';
 
 const API = '/batray/api';
 // H.264 first (what a Chromecast / Android TV / smart-TV player expects in HLS);
@@ -26,6 +26,10 @@ export const TV_CODECS = ['avc1.42E01E', 'avc1.4D401F', 'avc1.640028', 'vp09.00.
 // holding every later segment; a queue longer than QUEUE_MAX (an uplink slower than the stream) drops its oldest
 // segments - a live picture never needs an old one - instead of growing for as long as the phone runs.
 export const UPLOAD_MS = 15000, QUEUE_MAX = 20, STOP_DRAIN_MS = 15000;
+// A WebCodecs encoder can die under the page (Chrome reclaims a hardware codec, MediaCodec fails) or wedge with its
+// queue full: the frame loop builds a new one (a new init segment goes first, as in a revival), at most REBUILD_MAX
+// times an hour; after that the stream stops and says so instead of sitting "live" on a frozen picture.
+export const REBUILD_MAX = 5, BUSY_MS = 10000, RELAY_MS = 15000;
 const END = Symbol('end');
 
 const j = async (path, init = {}) => {
@@ -48,7 +52,8 @@ export class TvStream {
     this.frame = 0; this.n = 0; this.tick = 0; this.sinceKey = 0; this.pendingDurs = []; this.initSent = false; this.initBytes = null; this.reviving = false;
     this.lastErr = null; this.errRepeat = 0;
     this.uploadMs = o.uploadMs || UPLOAD_MS; this.queueMax = o.queueMax || QUEUE_MAX;
-    this.q = new Channel(); this.ac = null; this.task = null; this.sendTask = null; this.stopped = false; this.dropped = 0;
+    this.q = new Channel(); this.ac = new AbortController(); this.task = null; this.sendTask = null; this.stopped = false; this.dropped = 0;
+    this.encErr = null; this.busySince = null; this.rebuilds = []; this.died = false;
   }
   emit() { this.onState({ ...this.state }); }
 
@@ -59,11 +64,33 @@ export class TvStream {
       try { const r = await VideoEncoder.isConfigSupported(cfg); this.log(`tv: codec ${c} ${r.supported ? 'supported' : 'not supported'}`); if (r.supported) { this.codec = c; break; } } catch (e) { this.log(`tv: codec ${c} probe failed: ${e.message}`); }
     }
     if (!this.codec) { const e = new Error('no supported video encoder'); e.code = 'nocodec'; throw e; }
-    const { tv, token } = await j('tv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ codecs: this.codec, target: this.segS + 1 }) });
+    this.own();                                                           // stopped while the codecs were probed
+    const signal = this.ac.signal;
+    const r = await select(signal, {
+      post: (s) => j('tv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ codecs: this.codec, target: this.segS + 1 }), signal: s }),
+      late: (s) => sleep(RELAY_MS, s),
+    });
+    if (r.key === 'late') throw new Error(`the relay did not answer in ${RELAY_MS / 1000} s`);
+    const { tv, token } = r.value;
     this.id = tv; this.token = token;
+    this.own();
     this.state.id = tv; this.state.url = tvLink(location.origin, tv); this.state.mp4Url = tvMp4Link(location.origin, tv); this.state.codec = this.codec;
     this.canvas = document.createElement('canvas'); this.canvas.width = this.width; this.canvas.height = this.height;
     this.ctx = this.canvas.getContext('2d', { alpha: false });
+    this.makeEncoder();
+    this.log(`tv: ${this.width}x${this.height} ${this.codec} ${Math.round(this.bitrate / 1000)} kbps, ${this.segS} s segments -> ${this.state.url}`);
+    this.state.live = true; this.emit();
+    const died = (what) => (e) => { if (!isAbort(e)) this.fail(new Error(`${what} loop died: ${e.message}`)); };
+    this.task = this.frames(signal).catch(died('frame'));
+    void every(5000, () => this.poll(), { signal, onError: (e) => this.uploadFailed(`status: ${e.message}`) }).catch(died('status'));
+    this.sendTask = this.sender().catch(died('upload'));                 // not on the stop signal: stop() drains it first
+    return this.state.url;
+  }
+  /** Stopped meanwhile: end start() here (an encoder made after a stop would never be closed). */
+  own() { if (this.stopped) throw abortError(); }
+  /** A fresh splitter, muxer and encoder: at start, and when the old encoder died. Its first fragment carries a new
+   *  init segment, sent before its segments (the queue keeps the order). */
+  makeEncoder() {
     this.splitter = new BoxSplitter();
     this.muxer = new Muxer({
       target: new StreamTarget({ onData: (d, pos) => this.splitter.push(d, pos) }),
@@ -72,19 +99,28 @@ export class TvStream {
     });
     this.encoder = new VideoEncoder({
       output: (chunk, meta) => {
-        try { this.muxer.addVideoChunk(chunk, meta); if (chunk.type === 'key') this.harvest(); } catch (e) { this.fail(e); }
+        try { this.muxer.addVideoChunk(chunk, meta); if (chunk.type === 'key') this.harvest(); } catch (e) { this.encErr = this.encErr || e; }
       },
-      error: (e) => this.fail(e),
+      error: (e) => { this.encErr = this.encErr || e; },                // the boundary only notes it; the frame loop recovers
     });
     this.encoder.configure(this.encoderConfig(this.codec));
-    this.log(`tv: ${this.width}x${this.height} ${this.codec} ${Math.round(this.bitrate / 1000)} kbps, ${this.segS} s segments -> ${this.state.url}`);
-    this.state.live = true; this.emit();
-    this.ac = new AbortController();
-    const signal = this.ac.signal, died = (what) => (e) => { if (!isAbort(e)) this.fail(new Error(`${what} loop died: ${e.message}`)); };
-    this.task = this.frames(signal).catch(died('frame'));
-    void every(5000, () => this.poll(), { signal, onError: (e) => this.uploadFailed(`status: ${e.message}`) }).catch(died('status'));
-    this.sendTask = this.sender().catch(died('upload'));                 // not on the stop signal: stop() drains it first
-    return this.state.url;
+    this.frame = 0; this.sinceKey = 0; this.pendingDurs = []; this.initSent = false; this.busySince = null;
+  }
+  /** The encoder died or wedged: a new one, or - past REBUILD_MAX an hour - the stream stops and says so. */
+  recover() {
+    const e = this.encErr, now = Date.now(); this.encErr = null;
+    this.rebuilds = this.rebuilds.filter((t) => now - t < 3600e3);
+    if (this.rebuilds.length >= REBUILD_MAX) {
+      this.died = true; this.state.live = false; this.state.error = `the video encoder keeps failing (${e.message})`;
+      this.log(`tv: the encoder failed again (${e.message}) - ${REBUILD_MAX} new ones within an hour, the stream stops`);
+      this.ac.abort(); this.emit();
+      return;
+    }
+    this.rebuilds.push(now);
+    this.log(`tv: the encoder failed (${e.message}) - building a new one (${this.rebuilds.length} in the last hour)`);
+    try { if (this.encoder.state !== 'closed') this.encoder.close(); } catch { /* already gone */ }
+    this.makeEncoder();
+    this.state.episodes++; this.emit();
   }
   encoderConfig(codec) {
     const cfg = { codec, width: this.width, height: this.height, bitrate: this.bitrate, framerate: this.fps, latencyMode: 'realtime' };
@@ -94,13 +130,23 @@ export class TvStream {
   /** Draw and encode one frame every 1 / fps. A frame that throws is reported and the loop goes on. */
   async frames(signal) {
     for (;;) {
-      try { this.tickFrame(); } catch (e) { this.fail(e); }
+      if (this.encErr) this.recover();
+      if (this.died) return;
+      try { this.tickFrame(); } catch (e) { this.encErr = this.encErr || e; }
       await sleep(1000 / this.fps, signal);
     }
   }
   tickFrame() {
-    if (this.stopped || !this.encoder || this.encoder.state !== 'configured') return;
-    if (this.encoder.encodeQueueSize > 2) { this.log('tv: encoder busy, frame skipped'); return; }
+    if (this.stopped || !this.encoder) return;
+    if (this.encoder.state === 'closed') { this.encErr = this.encErr || new Error('the encoder was closed'); return; }
+    if (this.encoder.state !== 'configured') return;
+    if (this.encoder.encodeQueueSize > 2) {                                // busy: skip the frame; wedged for BUSY_MS: a new encoder
+      const now = Date.now();
+      if (this.busySince === null) { this.busySince = now; this.log('tv: encoder busy, frames skipped'); }
+      else if (now - this.busySince > BUSY_MS) this.encErr = new Error(`the encoder has been busy for ${Math.round(BUSY_MS / 1000)} s`);
+      return;
+    }
+    this.busySince = null;
     this.tick++;
     let m; try { m = this.model(); } catch (e) { m = { waiting: true, waitingTxt: e.message }; }
     drawTvFrame(this.ctx, this.width, this.height, { tick: this.tick, ...m });
@@ -116,7 +162,7 @@ export class TvStream {
     const { init, segments } = takeSegments(this.splitter);
     if (init) this.initBytes = init;
     if (init && !this.initSent) { this.initSent = true; this.upload('init.mp4', init); }
-    for (const seg of segments) { const dur = this.pendingDurs.length ? this.pendingDurs.shift() : this.sinceKey / this.fps; this.upload(`seg/${this.n++}`, seg, `&dur=${dur.toFixed(3)}`); }
+    for (const seg of segments) { const dur = this.pendingDurs.length ? this.pendingDurs.shift() : this.sinceKey / this.fps; this.upload('seg', seg, `&dur=${dur.toFixed(3)}`); }   // numbered when sent: a dropped segment leaves no gap in the playlist
   }
   /** Queue an upload; the uploader loop sends them in order. */
   upload(path, bytes, extra = '') {
@@ -139,7 +185,8 @@ export class TvStream {
       try { await this.put(job); } finally { this.state.uploading--; this.emit(); }
     }
   }
-  async put({ path, bytes, extra }) {
+  async put({ path: queued, bytes, extra }) {
+    const path = queued === 'seg' ? `seg/${this.n++}` : queued;
     if (this.stopped && !path.startsWith('seg')) return;
     if (this.reviving && path.startsWith('seg')) return;                    // queued before the init goes again: the relay would refuse them
     if (path === 'init.mp4') this.reviving = false;
@@ -178,10 +225,12 @@ export class TvStream {
   async poll() {
     if (!this.id || this.stopped) return;
     try {
-      const s = await j(`tv/${this.id}/status?token=${this.token}`);
+      const r = await select(this.ac.signal, { s: (sg) => j(`tv/${this.id}/status?token=${this.token}`, { signal: sg }), late: (sg) => sleep(RELAY_MS, sg) });
+      if (r.key === 'late') throw new Error(`no answer in ${RELAY_MS / 1000} s`);
+      const s = r.value;
       this.state.hits = s.hits; this.state.pullAgeS = s.pullAgeS === null || s.pullAgeS === undefined ? null : Math.round(s.pullAgeS);
       this.emit();
-    } catch (e) { this.uploadFailed(`status: ${e.message}`); }
+    } catch (e) { if (!isAbort(e)) this.uploadFailed(`status: ${e.message}`); }
   }
   fail(e) {
     this.log(`tv: ${e.message}`); this.state.error = e.message; this.emit();
@@ -189,14 +238,14 @@ export class TvStream {
   async stop() {
     if (this.stopped) return;
     this.stopped = true;
-    if (this.ac) this.ac.abort();                                         // frames and the status poll end here
-    try { if (this.encoder && this.encoder.state === 'configured') await this.encoder.flush(); } catch { /* */ }
+    this.ac.abort();                                                      // frames, the status poll and a start still running end here
+    try { if (this.encoder && this.encoder.state === 'configured') await select(null, { f: () => this.encoder.flush(), late: (s) => sleep(5000, s) }); } catch { /* a wedged encoder: closed below */ }
     try { if (this.muxer) { this.muxer.finalize(); this.harvest(); } } catch { /* the last partial fragment is optional */ }
     try { if (this.encoder) this.encoder.close(); } catch { /* */ }
     this.q.push(END);                                                     // the uploader sends what is queued, then ends
     if (this.sendTask !== null) { const r = await select(null, { done: () => this.sendTask, late: (s) => sleep(STOP_DRAIN_MS, s) }); if (r.key === 'late') this.log(`tv: uploads still pending after ${STOP_DRAIN_MS / 1000} s - leaving them`); }
     this.flushRepeat();
-    if (this.id) { try { await fetch(`${API}/tv/${this.id}?token=${this.token}`, { method: 'DELETE' }); } catch { /* the relay forgets it in 2 min anyway */ } }
+    if (this.id) { try { await select(null, { d: (s) => fetch(`${API}/tv/${this.id}?token=${this.token}`, { method: 'DELETE', signal: s }), late: (s) => sleep(5000, s) }); } catch { /* the relay forgets it in 2 min anyway */ } }
     this.state.live = false; this.emit();
     this.log('tv: stopped');
   }

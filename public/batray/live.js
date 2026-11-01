@@ -25,14 +25,16 @@
 // Each side is ONE loop (house rule): open the socket, serve it until it dies
 // (messages, a ping every SIG_PING_MS, dead after SIG_DEAD_MS of silence),
 // count down, again. The socket callbacks only set a flag or push a channel.
-import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, readerPresent, FRESH_MS } from './live-logic.js';
-import { Flag, Channel, sleep, select, isAbort } from './sync.js';
+import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, readerPresent, FRESH_MS, SIG_PING_MS } from './live-logic.js';
+import { Flag, Channel, sleep, select, isAbort, abortError } from './sync.js';
 
 const API = '/batray/api';
 const RETRY_S = 4;             // reopen countdown after the socket dies
 const OPEN_MS = 10000;         // a socket that has not opened by then is given up
 const SEND_MAX = 256 * 1024;   // bytes queued on the socket before an envelope is dropped instead of queued
 
+// A share that starts on a Wi-Fi link that is up but not answering must not hang (the resume waits on it).
+export const START_MS = 10000;
 const j = async (path, init = {}) => {
   const r = await fetch(`${API}/${path}`, { headers: { 'Content-Type': 'application/json' }, ...init });
   const body = await r.json().catch(() => ({}));
@@ -69,17 +71,26 @@ async function openSock(url, signal) {
 /** Serve an open socket until it dies: each message to onMsg, a ping when due, a reopen after SIG_DEAD_MS of
  *  silence (a half-open socket after a Wi-Fi change, 2026-09-22), onTick every 2 s. Returns why it ended. */
 async function serve(sock, signal, { onMsg, onTick, log, now, resumed }) {
-  let lastMsgAt = now(), lastPingAt = now();
+  let lastMsgAt = now(), lastPingAt = now(), lastTurn = now();
   for (;;) {
-    const r = await select(signal, { msg: (s) => sock.msgs.next({ signal: s }), closed: (s) => sock.closed.wait(true, { signal: s }), tick: (s) => sleep(2000, s), resume: (s) => resumed.next({ signal: s }) });
+    // channel arms only wait (ready); the item is taken once the arm has won, so a message never vanishes in a turn
+    // the tick or the close won (0.9.84)
+    const r = await select(signal, { msg: (s) => sock.msgs.ready({ signal: s }), closed: (s) => sock.closed.wait(true, { signal: s }), tick: (s) => sleep(2000, s), resume: (s) => resumed.ready({ signal: s }) });
+    const t = now(), gap = t - lastTurn; lastTurn = t;
     if (r.key === 'closed') { const c = sock.closeInfo || {}; return `closed code=${c.code} reason="${c.reason}" clean=${c.clean}`; }
     if (r.key === 'msg') {
-      lastMsgAt = now();
-      let m; try { m = JSON.parse(r.value); } catch { log('signal: unparsable message'); continue; }
+      lastMsgAt = t;
+      const raw = sock.msgs.take();
+      let m; try { m = JSON.parse(raw); } catch { log('signal: unparsable message'); continue; }
       if (m.type !== 'pong') await onMsg(m);
       continue;
     }
-    const d = sigDecision({ lastMsgAt, lastPingAt, now: now() });
+    if (r.key === 'resume') resumed.take();
+    // The page itself slept (Android froze the tab, or Chrome ran its timers once a minute): the socket's silence is
+    // ours, not the relay's - ask before judging it, or a healthy socket is torn down and the relay records the
+    // reader as unanswered (share review 2026-11-01).
+    if (gap > 2 * SIG_PING_MS) { log(`signal: the page slept ${Math.round(gap / 1000)} s - asking the relay before judging the socket`); lastMsgAt = t; lastPingAt = t; sock.send({ type: 'ping' }); if (onTick) onTick(); continue; }
+    const d = sigDecision({ lastMsgAt, lastPingAt, now: t });
     if (d.action === 'reopen') { log(`signal: no answer for ${d.silentS} s - the socket is dead, reopening`); sock.close(4001, 'no pong'); return 'dead'; }
     if (d.action === 'ping' || r.key === 'resume') { lastPingAt = now(); sock.send({ type: 'ping' }); }   // a resumed tab asks at once
     if (onTick) onTick();
@@ -118,18 +129,24 @@ export class Publisher {
    *  the relay says it no longer knows the old one. */
   async start(existing = null) {
     if (this.task !== null) return this.link;
+    // stopped while starting (Cancel on the busy button): end here, or the loop below would start for a share nobody
+    // owns and its socket would fight the next share for the room (share review 2026-11-01)
+    const own = () => { if (this.stopped) throw abortError(); };
     let room = null, pub = null;
     this.reused = false;
     if (existing && existing.room && existing.pub && existing.key) {
       try {
-        const r = await fetch(`${API}/room/${existing.room}`);
+        const r = await fetch(`${API}/room/${existing.room}`, { signal: AbortSignal.timeout(START_MS) });
         if (r.ok) { room = existing.room; pub = existing.pub; this.keyB64 = existing.key; this.reused = true; }
         else this.log(`live: earlier room ${existing.room} is gone (${r.status}) - making a new one`);
       } catch (e) { room = existing.room; pub = existing.pub; this.keyB64 = existing.key; this.reused = true; this.log(`live: could not check the earlier room (${e.message}) - keeping it: the relay remembers rooms, only a 404 means gone`); }
     }
-    if (!room) { ({ room, pub } = await j('room', { method: 'POST' })); this.keyB64 = makeKeyB64(); }
+    own();
+    if (!room) { ({ room, pub } = await j('room', { method: 'POST', signal: AbortSignal.timeout(START_MS) })); this.keyB64 = makeKeyB64(); }
+    own();
     this.room = room; this.pubToken = pub;
     this.key = await importKey(this.keyB64);
+    own();
     this.link = shareLink(location.origin, room, this.keyB64);
     this.log(`live share room ${room} ${this.reused ? 'reused' : 'created'}`);
     watchNet(this);
@@ -162,10 +179,14 @@ export class Publisher {
   }
   /** The countdown on the chip; the tab resuming (nudge) ends it early. */
   async retryWait(seconds, signal) {
-    for (let left = seconds; left > 0; left--) {
+    const deadline = Date.now() + seconds * 1000;                           // wall clock: a throttled tab is not owed the missed seconds
+    for (;;) {
+      const left = Math.ceil((deadline - Date.now()) / 1000);
+      if (left <= 0) break;
       this.state.retryIn = left; this.emit();
-      const r = await select(signal, { tick: (s) => sleep(1000, s), resume: (s) => this.resumed.next({ signal: s }) });
-      if (r.key === 'resume') { this.log('live: tab resumed, reconnecting now'); break; }
+      const step = Math.min(1000, deadline - Date.now());
+      const r = await select(signal, { tick: (s) => sleep(step, s), resume: (s) => this.resumed.ready({ signal: s }) });
+      if (r.key === 'resume') { this.resumed.take(); this.log('live: tab resumed, reconnecting now'); break; }
     }
     this.state.retryIn = null; this.emit();
   }
@@ -235,6 +256,7 @@ export class Viewer {
   async start() {
     if (this.task !== null) return;
     this.key = await importKey(this.keyB64);
+    if (this.stopped) return;                                            // stopped while the key was imported
     watchNet(this);
     this.ac = new AbortController();
     this.task = this.run(this.ac.signal).catch((e) => { if (!isAbort(e)) this.log(`live: viewer loop died: ${e.message}`); });
@@ -253,7 +275,7 @@ export class Viewer {
         await this.retryWait(this.retryS, signal);
         continue;
       }
-      this.sock = sock; this.state.sig = true; this.emit();
+      this.sock = sock; this.state.sig = true; this.openAt = this.now(); this.emit();
       this.log(`signal: socket open (view) in ${Date.now() - t0} ms`);
       const why = await serve(sock, signal, { onMsg: (m) => this.onMsg(m), onTick: () => this.judgeReader(), log: this.log, now: this.now, resumed: this.resumed });
       this.sock = null; sock.close();
@@ -264,10 +286,14 @@ export class Viewer {
   }
   /** The countdown on the chip; the tab resuming ends it early. */
   async retryWait(seconds, signal) {
-    for (let left = seconds; left > 0; left--) {
+    const deadline = Date.now() + seconds * 1000;                           // wall clock: a throttled tab is not owed the missed seconds
+    for (;;) {
+      const left = Math.ceil((deadline - Date.now()) / 1000);
+      if (left <= 0) break;
       this.state.retryIn = left; this.emit();
-      const r = await select(signal, { tick: (s) => sleep(1000, s), resume: (s) => this.resumed.next({ signal: s }) });
-      if (r.key === 'resume') { this.log('live: tab resumed, reconnecting now'); break; }
+      const step = Math.min(1000, deadline - Date.now());
+      const r = await select(signal, { tick: (s) => sleep(step, s), resume: (s) => this.resumed.ready({ signal: s }) });
+      if (r.key === 'resume') { this.resumed.take(); this.log('live: tab resumed, reconnecting now'); break; }
     }
     this.state.retryIn = null; this.emit();
   }
@@ -286,24 +312,25 @@ export class Viewer {
   /** Freshness first: readings still arriving prove the reader is there, whatever the room says (2026-09-17); once
    *  they stop, the room's word decides. Re-judged on every status and every 2 s tick. */
   judgeReader(force = false) {
-    const reader = readerPresent({ serverLive: this.serverLive, lastRxAt: this.lastRxAt, now: this.now() });
+    const reader = readerPresent({ serverLive: this.serverLive, lastRxAt: this.lastRxAt, openAt: this.sock ? this.openAt : null, now: this.now() });
     const live = reader === true && this.state.sig === true;
     if (!force && reader === this.state.reader && live === this.state.live) return;
-    if (this.state.reader !== false && reader === false) this.log('live: the reader is not in the room and nothing has arrived for a while - reader offline');
+    if (this.state.reader !== false && reader === false) this.log(this.serverLive ? `live: the reader's socket is in the room but nothing has come from it for ${Math.round((this.now() - Math.max(this.openAt || 0, this.lastRxAt || 0)) / 1000)} s - reader offline (frozen or hung)` : 'live: the reader is not in the room and nothing has arrived for a while - reader offline');
     this.state.reader = reader; this.state.live = live; this.emit();
   }
   async onData(m) {
-    try {
-      const env = await decrypt(this.key, unb64(m.b));
-      if (!validEnvelope(env)) return;
-      this.state.received++;
-      if (typeof m.ago === 'number') {                                       // from the room's retained set: its age is the relay's measure
-        env.retained = true; env.ageS = Math.round(m.ago / 1000); env.stale = m.ago > FRESH_MS;
-      } else env.stale = staleEnvelope(env, this.now());                     // a frozen tab gets the whole queue on resume: old ones are stored, not painted
-      if (env.stale) this.state.stale++;
-      else { this.lastRxAt = this.now(); this.judgeReader(); }              // fresh data beats the room's word
-      this.onEnvelope(env);
-    } catch { if (!this.state.error) this.log('live: a message could not be decrypted (wrong or missing key)'); this.state.error = 'cannot decrypt: wrong or missing key'; this.emit(); }
+    let env;
+    try { env = await decrypt(this.key, unb64(m.b)); }
+    catch { if (!this.state.error) this.log('live: a message could not be decrypted (wrong or missing key)'); this.state.error = 'cannot decrypt: wrong or missing key'; this.emit(); return; }
+    if (!validEnvelope(env)) return;
+    this.state.received++;
+    if (typeof m.ago === 'number') {                                         // from the room's retained set: its age is the relay's measure
+      env.retained = true; env.ageS = Math.round(m.ago / 1000); env.stale = m.ago > FRESH_MS;
+    } else env.stale = staleEnvelope(env, this.now());                       // a frozen tab gets the whole queue on resume: old ones are stored, not painted
+    if (env.stale) this.state.stale++;
+    else { this.lastRxAt = this.now() - (env.retained ? m.ago : 0); this.judgeReader(); }   // fresh data beats the room's word; a retained one is as old as the relay says
+    // the app's own handler errors are its own (they had been reported as "could not be decrypted", share review 2026-11-01)
+    try { this.onEnvelope(env); } catch (e) { this.log(`live: the app could not handle a ${env.k} message: ${e && e.message}`); }
   }
   /** Ask the reader for the history this device lacks (0.9.30); `have` = this device's day listing. */
   request(have) { if (!this.sock) return false; this.sock.send({ type: 'hist-req', have }); return true; }
