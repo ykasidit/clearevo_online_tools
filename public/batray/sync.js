@@ -56,6 +56,8 @@ export class Channel {
   get size() { return this.q.length; }
   /** Forget what nobody took (taps made while the loop could not listen, e.g. with the Bluetooth chooser open). */
   clear() { this.q.length = 0; }
+  /** Take out the first queued item that matches (a live stream drops its oldest segment when the uplink falls behind). */
+  remove(pred) { const i = this.q.findIndex(pred); return i < 0 ? undefined : this.q.splice(i, 1)[0]; }
   async next(opts = {}) {
     while (!this.q.length) { const r = await waitOn(this.w, opts, 'item'); if (r === TIMEOUT) return TIMEOUT; }
     return this.q.shift();
@@ -75,4 +77,17 @@ export async function select(signal, arms) {
   try {
     return await Promise.race(Object.entries(arms).map(([key, f]) => Promise.resolve().then(() => f(ac.signal)).then((value) => ({ key, value }))));
   } finally { ac.abort(); if (signal) signal.removeEventListener('abort', onAbort); }
+}
+
+/** A periodic job as a loop: the next run starts `ms` after the previous one ENDED, so a slow run (a flush that takes
+ *  longer than its period on a busy phone) never overlaps the next one, as setInterval would let it. A job that
+ *  throws goes to onError and the loop goes on; only the signal ends it. first: the delay before the first run.
+ *  @param {number} ms @param {() => any} job @param {{ signal?: AbortSignal, onError?: (e: any) => void, first?: number }} [opts] */
+export async function every(ms, job, { signal, onError, first = ms } = {}) {
+  let wait = first;
+  for (;;) {
+    await sleep(wait, signal);
+    wait = ms;
+    try { await job(); } catch (e) { if (isAbort(e)) throw e; if (onError) onError(e); }
+  }
 }

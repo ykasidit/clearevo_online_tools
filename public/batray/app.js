@@ -32,7 +32,7 @@ import { Publisher, Viewer } from './live.js';
 import { parseShare, envelope, suggestChannelName, parseSavedShare } from './live-logic.js';
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
-import { Flag, Channel, select, sleep, isAbort, TIMEOUT } from './sync.js';
+import { Flag, Channel, select, sleep, every, isAbort, TIMEOUT } from './sync.js';
 import { TAB_SS, TAB_PREFIX, LEGACY, validTabId, LEGACY_DROP, tabLock, tabKey, metaKey, tabMeta, tabRecords, chooseTab, orphanDrops, legacyMoves, storeRows } from './tab-logic.js';
 import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysNeeded, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
@@ -199,6 +199,8 @@ function renderLog() {
 // "keep debug logs" in the History card (off until then, 0.9.75). Decisions in the log logic module over `logS`; the history worker writes.
 let logKeepPref = false; try { logKeepPref = logKeepOn(localStorage.getItem(LOG_KEY)); } catch {}
 const logS = logState(logKeepPref);
+/** A periodic job's failure: logged once per run, the loop goes on (setInterval used to throw it as UNHANDLED). */
+function jobError(what) { return (e) => log(`ERROR ${what}: ${e && e.message ? e.message : e}`); }
 function log(msg) {
   const line = `${new Date().toISOString().slice(11, 23)}  ${msg}`;
   logLines.push(line);
@@ -723,7 +725,7 @@ async function flushHistory() {
   } finally { histFlushing = false; }
   if (active && !$('trendCard').hidden) scheduleDraw(false);   // the throttle decides (half a bucket at least): a 7-day window is not re-queried every 10 s
 }
-setInterval(flushHistory, HISTORY_FLUSH_MS);
+void every(HISTORY_FLUSH_MS, flushHistory, { onError: jobError('history flush') });   // a loop: a slow flush never overlaps the next
 // Leaving the page (a reload, a navigation, the back/forward cache): everything here is synchronous, because the
 // page may be frozen before any await resumes. The rows still queued go to localStorage (a few KB) and are
 // inserted at the next start; the worker is stopped at once so its OPFS access handles die with it and the next
@@ -895,7 +897,7 @@ async function flushLog() {
   } catch (e) { if (!logS.failedOnce) { logS.failedOnce = true; console.warn('debug log write failed', e); } }
   finally { logFlushing = false; }
 }
-setInterval(flushLog, LOG_FLUSH_MS);
+void every(LOG_FLUSH_MS, flushLog, { onError: jobError('log flush') });
 window.addEventListener('pagehide', () => { void flushLog(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void flushLog(); });
 async function initLogStore() {
@@ -991,10 +993,9 @@ function memTick() {
   renderMemory(m);
   if (m) log(`mem: used=${Math.round(m.used / 1048576)}MB total=${Math.round(m.total / 1048576)}MB limit=${Math.round(m.limit / 1048576)}MB pct=${m.pct}${m.near ? ' NEAR THE LIMIT' : ''} rows=${pendingRows()} log=${logLines.length} precise=${m.precise ? 'yes' : 'no'}${m.parts ? ` measured=${Math.round(m.used / 1048576)}MB(${Object.entries(m.parts).filter(([, v]) => v > 0).map(([k, v]) => `${k} ${Math.round(v / 1048576)}`).join(', ')}MB)` : ''}`);
 }
-setInterval(memTick, MEM_LOG_MS);
-setInterval(() => renderMemory(memModel()), MEM_UI_MS);
-setInterval(memMeasure, MEM_MEASURE_MS);
-setTimeout(memMeasure, 3000);
+void every(MEM_LOG_MS, memTick, { onError: jobError('memory') });
+void every(MEM_UI_MS, () => renderMemory(memModel()), { onError: jobError('memory line') });
+void every(MEM_MEASURE_MS, memMeasure, { first: 3000, onError: jobError('memory measure') });   // takes ~10 s: a loop never runs two at once
 window.addEventListener('pagehide', () => { if (!(window.__batrayTest && window.__batrayTest.skipLastRun)) writeLastRun(true); });
 /** Right after the header lines: what the previous run last reported, then this run's first record. */
 function logLastRun() {
@@ -1310,7 +1311,7 @@ function tickAge() {
   if (viewMode) renderReaderOff(); else renderSetupWarn();
   fitCorner($('updR')); fitCorner($('updL'));
 }
-setInterval(tickAge, 1000);
+void every(1000, tickAge, { onError: jobError('age tick') });
 
 // ---- DEMO: a pack fed by synthetic frames, labelled everywhere ----
 function stopDemo() {
@@ -1855,11 +1856,11 @@ async function histRequest(m) {
         log(`history: sending ${item.day} ids ${rows[0].id}..${rows[rows.length - 1].id} (${rows.length} rows, ${gz.length} B gz) in ${chunks.length} chunks`);
         for (let i = 0; i < chunks.length; i++) {
           let waited = 0;
-          while (pub.backlog() > XFER_BACKLOG && waited < 30000 && publisher === pub) { await new Promise((res) => { setTimeout(res, 100); }); waited += 100; }
+          while (pub.backlog() > XFER_BACKLOG && waited < 30000 && publisher === pub) { await sleep(100); waited += 100; }
           if (publisher !== pub || !pub.state.live) { log('history: transfer stopped (link gone)'); return; }
           await pub.publish(envelope('hist-file', { id: '*', name: '*' }, { day: item.day, after, n: i, of: chunks.length, b64: chunks[i], rows: rows.length, bytes: gz.length }), item.to);
           histS.xfer.sent += chunks[i].length;
-          await new Promise((res) => { setTimeout(res, 20); });
+          await sleep(20);
         }
         after = rows[rows.length - 1].id;
         if (rows.length < XFER_ROWS) break;
@@ -2354,7 +2355,7 @@ async function castToTv(opts = {}) {
   } finally { if (!waitingOnTv()) { clearInterval(tick); if (castS.busy) endFlow('done', T.tvCastReady); } renderCastButtons(); }
 }
 // every button and note of the TV card and the toolbar follow tvS (tv-logic.js)
-setInterval(() => { if (tv && tv.state.live) renderPreview(); }, 1000);   // the stall grace expires without a player event
+void every(1000, () => { if (tv && tv.state.live) renderPreview(); }, { onError: jobError('tv preview') });   // the stall grace expires without a player event
 function renderTvButtons() {
   const b = tvButtons(tvS);
   $('tv').classList.toggle('on', b.on); $('tv').classList.toggle('busy', b.busy); $('tv').setAttribute('aria-pressed', b.on); $('tv').title = b.on ? T.tvOnTitle : b.busy ? T.tvBusyTitle : ($('tv').dataset.title || '');
@@ -2640,7 +2641,7 @@ if (!viewMode && typeof BroadcastChannel === 'function') {
 }
 void logEnvAsync();
 // one line a minute with everything that matters, so a log of a whole night reads as a timeline
-setInterval(() => {
+void every(60000, () => {
   const p = active;
   const age = p && p.lastFrameAt ? Math.round((Date.now() - p.lastFrameAt) / 1000) : null;
   const pub = publisher ? `pub(live=${publisher.state.live} viewers=${publisher.state.viewers} sent=${publisher.state.sent} dropped=${publisher.state.dropped} sig=${publisher.state.sig})` : '';
@@ -2653,7 +2654,7 @@ setInterval(() => {
   if (publisher && pushS.room !== publisher.room) void syncPush('minute');   // notifications allowed later, or a failed sign-up retried (push-logic paces it)
   log(hist.statsLine()); hist.statsReset(Date.now());
   log(`hb: vis=${document.visibilityState} online=${navigator.onLine} packs=${packs.size} active=${p ? p.label : '-'} connected=${p ? p.connected : '-'} phase=${p && p.cs ? p.cs.phase : '-'} share=${shareS.phase} tv=${tvS.phase} frameAge=${age === null ? '-' : age + 's'} wake=${wakeS.held} keep=${wakeS.videoOn ? wakeS.mode : 'off'} drops=${wakeS.drops}/${wakeS.refusals} hist=${histS.backend}/${histS.days.length}d/${histS.todayRows}r/${rate}/${histS.contig}c/${pendingRows()}pend${histS.gap ? '/' + histS.gap : ''}/${Math.round(histS.usage / 1048576)}of${Math.round(histS.quota / 1048576)}MB${histS.xfer ? '/xfer' : ''} ${pub} ${vw} ${tvs}${mem}`.replace(/\s+/g, ' '));
-}, 60000);
+}, { onError: jobError('heartbeat') });
 $('langBtn').addEventListener('click', async () => { const code = await openSheet('lang'); if (code && I18N[code]) { try { localStorage.setItem('batray_lang', code); } catch {} log(`language: ${code}`); applyLang(code); } });
 
 // The Connect buttons stay enabled without Web Bluetooth: a tap opens the compat sheet saying why and what to use

@@ -15,6 +15,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, BoxSplitter, takeSegments, tvLink, isSegmentStart , tvPreviewToggle , tvMp4Link, previewState, previewEvent, previewSource, PREVIEW_GRACE_MS } from '../public/batray/tv-logic.js';
 import { TvStream } from '../public/batray/tv.js';
+import { sleep } from '../public/batray/sync.js';
 import { Muxer, StreamTarget } from '../public/batray/mp4-muxer.js';
 
 const box = (type, payload = []) => { const n = 8 + payload.length; const u = new Uint8Array(n); new DataView(u.buffer).setUint32(0, n); u.set([...type].map((c) => c.charCodeAt(0)), 4); u.set(payload, 8); return u; };
@@ -127,7 +128,8 @@ test('TvStream revives a stream the relay dropped (0.9.50, replay of the 2026-09
   const lines = []; const calls = [];
   const t = new TvStream({ log: (l) => lines.push(l) });
   t.id = 'tvid'; t.token = 'tok'; t.initBytes = new Uint8Array([1, 2, 3, 4]); t.initSent = true;
-  const settle = async () => { let c; do { c = t.chain; await c; } while (c !== t.chain); };   // the revival appends to the chain while a step runs
+  void t.sender();                                                     // the uploader loop (start() runs it on a live stream)
+  const settle = async () => { while (t.state.uploading > 0) await sleep(2); };   // the revival queues the init while a PUT runs
   let status = 404;
   globalThis.fetch = async (/** @type {string} */ url, init) => { const p = String(url).replace(/^.*\/tv\/tvid\//, '').replace(/\?.*$/, ''); calls.push(p); if (p === 'init.mp4') return { ok: true, status: 200 }; return { ok: status === 200, status }; };
   t.upload('seg/7', new Uint8Array([7]), '&dur=1.000'); t.upload('seg/8', new Uint8Array([8]), '&dur=1.000');   // 8 was queued before the 404 came back
@@ -145,5 +147,30 @@ test('TvStream revives a stream the relay dropped (0.9.50, replay of the 2026-09
   assert.equal(lines.filter((l) => /upload failed/.test(l)).length, 4, 'four different paths = four lines');
   t.uploadFailed('x'); t.uploadFailed('x'); t.uploadFailed('x'); lines.length = 0; t.uploadOk();
   assert.deepEqual(lines, ['tv: (that upload error repeated 2 more times)', 'tv: uploads ok again']);
+  delete globalThis.fetch;
+});
+
+test('0.9.84 the uploader is a loop with limits: a PUT that never answers ends after uploadMs and the next goes; an uplink slower than the stream drops the OLDEST queued segments, never the init', async () => {
+  const lines = []; const calls = [];
+  const t = new TvStream({ log: (l) => lines.push(l), uploadMs: 60, queueMax: 3 });
+  t.id = 'tvid'; t.token = 'tok';
+  let hang = true; const held = [];
+  globalThis.fetch = (/** @type {string} */ url, init) => {
+    const p = String(url).replace(/^.*\/tv\/tvid\//, '').replace(/\?.*$/, ''); calls.push(p);
+    if (hang) return new Promise((_, rej) => { held.push(p); init.signal.addEventListener('abort', () => rej(new Error('aborted'))); });
+    return Promise.resolve({ ok: true, status: 200 });
+  };
+  void t.sender();
+  t.upload('seg/1', new Uint8Array([1]));
+  await sleep(120);
+  assert.ok(lines.some((l) => /upload failed: seg\/1: no answer in 0.06 s/.test(l)), lines.join('\n'));
+  assert.equal(t.state.uploading, 0, 'the hung PUT was given up: nothing holds the queue');
+  hang = false; calls.length = 0;
+  t.upload('init.mp4', new Uint8Array([0]));
+  for (let i = 2; i <= 7; i++) t.upload(`seg/${i}`, new Uint8Array([i]));   // queued faster than the loop sends
+  while (t.state.uploading > 0) await sleep(2);
+  assert.ok(calls[0] === 'init.mp4' && calls.includes('seg/7') && calls.length <= 4, `the init and the newest segments went: ${calls.join(' ')}`);
+  assert.ok(!calls.includes('seg/2'), 'the oldest segments were dropped');
+  assert.ok(lines.some((l) => /the uplink is behind - dropped \d+ old segment/.test(l)), lines.join('\n'));
   delete globalThis.fetch;
 });

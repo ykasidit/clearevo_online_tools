@@ -20,6 +20,7 @@
 import { RULES, defaultSettings, loadSettings, Evaluator, formatEvent, ntfyOk } from './alerts-logic.js';
 import { makeKeyB64 } from './live-logic.js';
 import { errorLabels } from './jkbms.js';
+import { every } from './sync.js';
 
 const API = '/batray/api';
 const STORE = 'batray_alerts';
@@ -177,7 +178,7 @@ export function initAlerts({ log, T, getPacks, viewMode, onStatus, toast = (_msg
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistration('/batray/').then((r) => { if (r) swReg = r; }).catch(() => {});
   render();
-  setInterval(tick, TICK_MS);
+  void every(TICK_MS, tick, { onError: (e) => log(`ERROR alerts tick: ${e.message}`) });   // a loop: a slow notify never overlaps the next tick
   onStatus(status());
   return { rerender: render, status, tick, notify };
 }
