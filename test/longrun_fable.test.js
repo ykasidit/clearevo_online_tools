@@ -16,6 +16,7 @@
 // states what the code must do for that to work and fails on the current code for the reason in the review report.
 // The year is driven as iterations of the real code path, never as wall time.
 import test, { afterEach } from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { openSqlite } from './sqlite_node.mjs';
 import { ensureSchema, insertRows, dayCount } from '../public/batray/history-sql.js';
@@ -188,4 +189,18 @@ test('L-F4: the one-row-per-3-s cadence keeps storing rows after the clock is se
   const t = Date.UTC(2026, 10, 5, 12, 0, 0);
   assert.equal(rowDue(t, t + MIN_ROW_MS), true, 'a row 3 s later is due');
   assert.equal(rowDue(t, t - 120e3), true, 'the clock stepped back two minutes: a reading now is still the first in 3 s of readings, not "too soon" - rowDue says no row until the clock catches up');
+});
+
+// ---------------------------------------------------------------- L-F10 (round 3): the waiting trend card walks EVERY stored day file every 5 s
+// app.js refreshSpan() asks hist.span(label, now - 24 h, undefined) for how much of the last 24 h is stored; with
+// `days` undefined history-worker.js span() walks daysOnDisk() - every day file the reader has - and visit()s each
+// (open, query, close). It runs every 5 s for as long as the trend card waits: the first 30 s of every start, and the
+// whole time a pack has no reading in the last 24 h (a BMS off or out of range for a day, a viewer whose reader is
+// away). A year of files = 365 opens and queries every 5 s; and each visit() of a database some other op left open
+// refreshes its idle clock (L-F9). The chart query already passes daysInRange(from, to); the span must too.
+test('L-F10: the trend card\'s 24 h span query names the days of its window (two UTC days), not every stored day file', () => {
+  const src = readFileSync(new URL('../public/batray/app.js', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('function refreshSpan('), src.indexOf('async function readSpan('));
+  assert.ok(fn.length > 0, 'refreshSpan() found');
+  assert.match(fn, /readSpan\([^;]*daysInRange\(/, `refreshSpan() hands readSpan() no day list for a BLE pack, so the worker walks every stored day file every 5 s while the card waits:\n${fn.trim()}`);
 });

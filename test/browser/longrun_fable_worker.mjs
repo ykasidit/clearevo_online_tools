@@ -57,8 +57,8 @@ const today = new Date().toISOString().slice(0, 10);
 const can = await evalJs(`typeof performance.measureUserAgentSpecificMemory === 'function' && window.crossOriginIsolated`);
 check('setup: the page is cross-origin isolated and can measure its own memory (serve.py headers)', can === true, can);
 
-// ---- L-F9: two rounds of 30 past days opened by inserts; between them a 70 s walk (span every 5 s, as the waiting
-// trend card does) beside the 10 s flush (insert into today, which runs closeIdle). If the idle close still works
+// ---- L-F9: two rounds of 30 past days opened by inserts; between them a 70 s walk (a query over the stored days every
+// 5 s: the same visit() the waiting trend card's span makes) beside the 10 s flush (insert into today, which runs closeIdle). If the idle close still works
 // under the walk, round A's connections are closed before round B opens its own and B reuses A's heap: B adds
 // little. If the walk pins them, B adds as much as A did. ----
 const r = await evalJs(`(async () => {
@@ -76,9 +76,15 @@ const r = await evalJs(`(async () => {
   const wA = await walk(70000); const mAw = await measure();                     // 70 s: the idle close had its 60 s - unless the walk kept touching them
   await seed(30, 60); const mB = await measure();                                // thirty more
   const wB = await walk(70000); const mBw = await measure();
-  return { m0, mA, mAw, mB, mBw, dA: Math.round((mA - m0) * 10) / 10, dB: Math.round((mB - mAw) * 10) / 10, wA, wB, stats: T.histStats().slice(0, 300) };
+  // the control: 70 s of the flush alone (inserts into today, no walk) - the idle close gets its chance - then a third
+  // batch of thirty: it must reuse the heap of the sixty closed connections
+  const idle = async (ms) => { const end = performance.now() + ms; let k = 0; while (performance.now() < end) { await T.histInsert('${today}', [{ ...mk(Date.now(), 0), id: null, t: Date.now() + 1000 + k++ }]); await wait(10000); } };
+  await idle(70000); const mBi = await measure();
+  await seed(60, 90); const mC = await measure();
+  return { m0, mA, mAw, mB, mBw, mBi, mC, dA: Math.round((mA - m0) * 10) / 10, dB: Math.round((mB - mAw) * 10) / 10, dC: Math.round((mC - mBi) * 10) / 10, wA, wB, stats: T.histStats().slice(0, 300) };
 })()`, 400000);
-console.log(`L-F9 numbers: worker ${r.m0} MB -> round A (30 open days) ${r.mA} -> after a 70 s walk ${r.mAw} -> round B (30 more) ${r.mB} -> after a 70 s walk ${r.mBw} MB; walks ${JSON.stringify(r.wA)} / ${JSON.stringify(r.wB)}`);
+console.log(`L-F9 numbers: worker ${r.m0} MB -> round A (30 open days) ${r.mA} -> after a 70 s walk ${r.mAw} -> round B (30 more) ${r.mB} -> after a 70 s walk ${r.mBw} MB -> 70 s of the flush alone ${r.mBi} -> round C (30 more) ${r.mC} MB; walks ${JSON.stringify(r.wA)} / ${JSON.stringify(r.wB)}`);
+check(`L-F9 control: without the walk the idle close works - a third batch of thirty after 70 s of the flush alone reuses the closed connections' heap (added ${r.dC} MB)`, r.dC < r.dA / 2, r);
 check('L-F9 setup: thirty open past-day databases cost the worker over 10 MB (a connection + its page cache each)', r.dA > 10, r);
 check(`L-F9: a periodic walk over the stored days (the waiting trend card's span every 5 s, a wide chart query) does not keep open past-day databases alive past the 60 s idle close: a second batch of thirty reuses the first batch's heap (added ${r.dB} MB against the first batch's ${r.dA} MB)`, r.dB < r.dA / 2, r);
 

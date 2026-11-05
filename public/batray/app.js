@@ -1235,7 +1235,7 @@ async function askResetSettings() { const a = await openSheet('resetSettings'); 
  *  5 s while the card waits, plus what is still queued. */
 function refreshSpan(p) {
   const now = Date.now(); if (now - histMem.spanAt < 5000 || !p) return; histMem.spanAt = now;
-  void readSpan(p.label, now - 86400e3, p.demo ? ['demo'] : undefined);
+  void readSpan(p.label, now - 86400e3, p.demo ? ['demo'] : daysInRange(now - 86400e3, now));   // the window's two UTC days, not every stored file every 5 s (long-run review round 3)
 }
 async function readSpan(label, from, days) {
   try { const r = await hist.span(label, from, days); histS.spanFirst = r.first; histS.spanLast = r.last; }

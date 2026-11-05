@@ -106,11 +106,17 @@ function todayKey() { return new Date().toISOString().slice(0, 10); }
 /** Run fn over a stored day's database; a past day this call opened is closed again at once, so a walk over a year
  *  of days holds one page cache at a time (long-run review 2026-11-05: every listing had left every day open, the
  *  wasm heap never shrinks - ~6 MB of page cache per day file). */
-async function visit(day, fn) {
-  const was = dbs.has(day);
-  const db = await open(day, false); if (!db) return null;
-  try { return fn(db); } finally { if (!was && day !== todayKey() && day !== DEMO_DAY) close(day); }
+async function visit(day, fn, create = false) {
+  const o = dbs.get(day); if (o) touching = day;                          // a corrupt error names the day either way
+  const db = o ? o.db : await open(day, create); if (!db) return null;     // one already open is used as it is: a walk is not "use" for the idle clock
+  try { return fn(db); } finally { if (isPast(day)) close(day); }
 }
+/** A day strictly before this device's today: its database is closed after every op that needed it, whoever opened
+ *  it - an open past day costs ~0.25 MB of wasm heap plus its page cache, and the wasm heap never shrinks (long-run
+ *  review round 3: a periodic walk kept every past day another op had opened alive past its idle close, 0.7 MB a
+ *  stored day). Only past days are cached: a viewer's day named by the reader's clock may still be ahead of this
+ *  one's, and a clock set back makes a cached day today again. */
+const isPast = (day) => day !== DEMO_DAY && day < todayKey();
 // What the day listing needs of a PAST day (bytes, rows, highest id) does not change unless something writes that day:
 // kept here and in a small file next to the logs, so a listing - at start, every midnight, every viewer's history
 // request - costs one count per new day, not one scan of every file (the listing had a single 8 s deadline and a year
@@ -196,16 +202,16 @@ const ops = {
   },
   async ping() { await init(); await dir(); return { ok: true, vfs: pool.vfsName, files: pool.getFileCount(), capacity: pool.getCapacity(), version: sqlite3.version.libVersion }; },
   /** Rows into the day's database (one transaction). */
-  async insert({ day, rows }) { const db = await open(day); const r = insertRows(db, rows || []); if (r.inserted && day !== todayKey()) await forget(day); closeIdle(todayKey()); return r; },
+  async insert({ day, rows }) { const r = await visit(day, (db) => insertRows(db, rows || []), true); if (r.inserted) await forget(day); closeIdle(todayKey()); return r; },   // forget is a no-op for a day not cached
   /** Every stored day: {day, bytes, rows, maxId}. */
   async days() {
     await init(); await resume(); await loadInfo(); const out = [], today = todayKey();
     const disk = daysOnDisk();
     for (const day of disk) {
-      let i = day !== today ? infoCache.get(day) : null;
+      let i = isPast(day) ? infoCache.get(day) : null;
       if (!i) {
         i = await visit(day, (db) => ({ bytes: dbBytes(db), ...dayCount(db) })); if (!i) continue;
-        if (day !== today) { infoCache.set(day, i); infoDirty = true; }
+        if (isPast(day)) { infoCache.set(day, i); infoDirty = true; }
       }
       out.push({ day, bytes: i.bytes, rows: i.rows, maxId: i.maxId });
     }
@@ -218,7 +224,7 @@ const ops = {
    *  open, ~0.5 MB of page cache each, plus a full scan per day every 10 min). */
   async info({ day }) {
     const empty = { day, rows: 0, maxId: 0, minT: null, maxT: null, packs: [], contig: 0, bytes: 0 };
-    if (day === DEMO_DAY || day === todayKey()) { const db = await open(day, false); return db ? { day, ...dayInfo(db), bytes: dbBytes(db) } : empty; }
+    if (!isPast(day)) { const i = await visit(day, (db) => ({ ...dayInfo(db), bytes: dbBytes(db) })); return i ? { day, ...i } : empty; }   // today, tomorrow by the reader's clock, DEMO: never cached
     await init(); await resume(); await loadInfo();
     const c = infoCache.get(day);
     if (c && c.contig !== undefined) return { day, ...c };
@@ -226,8 +232,8 @@ const ops = {
     infoCache.set(day, i); infoDirty = true; await saveInfo();
     return { day, ...i };
   },
-  async rows({ day, after = 0, limit = 5000 }) { const db = await open(day, false); return { rows: db ? rowsAfter(db, after, limit) : [] }; },
-  async last({ day, p, n = 1 }) { const db = await open(day, false); return { rows: db ? lastRows(db, p, n) : [] }; },
+  async rows({ day, after = 0, limit = 5000 }) { return { rows: (await visit(day, (db) => rowsAfter(db, after, limit))) || [] }; },
+  async last({ day, p, n = 1 }) { return { rows: (await visit(day, (db) => lastRows(db, p, n))) || [] }; },
   /** One chart: buckets of every stored day the window touches (ascending), the energy of the window, and the
    *  stored time span of the pack over those days. */
   async query({ p, from, to, stepMs, days }) {
