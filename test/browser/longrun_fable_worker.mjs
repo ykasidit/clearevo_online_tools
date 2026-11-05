@@ -83,10 +83,14 @@ const r = await evalJs(`(async () => {
   await seed(60, 90); const mC = await measure();
   return { m0, mA, mAw, mB, mBw, mBi, mC, dA: Math.round((mA - m0) * 10) / 10, dB: Math.round((mB - mAw) * 10) / 10, dC: Math.round((mC - mBi) * 10) / 10, wA, wB, stats: T.histStats().slice(0, 300) };
 })()`, 400000);
-console.log(`L-F9 numbers: worker ${r.m0} MB -> round A (30 open days) ${r.mA} -> after a 70 s walk ${r.mAw} -> round B (30 more) ${r.mB} -> after a 70 s walk ${r.mBw} MB -> 70 s of the flush alone ${r.mBi} -> round C (30 more) ${r.mC} MB; walks ${JSON.stringify(r.wA)} / ${JSON.stringify(r.wB)}`);
-check(`L-F9 control: without the walk the idle close works - a third batch of thirty after 70 s of the flush alone reuses the closed connections' heap (added ${r.dC} MB)`, r.dC < r.dA / 2, r);
-check('L-F9 setup: thirty open past-day databases cost the worker over 10 MB (a connection + its page cache each)', r.dA > 10, r);
-check(`L-F9: a periodic walk over the stored days (the waiting trend card's span every 5 s, a wide chart query) does not keep open past-day databases alive past the 60 s idle close: a second batch of thirty reuses the first batch's heap (added ${r.dB} MB against the first batch's ${r.dA} MB)`, r.dB < r.dA / 2, r);
+console.log(`L-F9 numbers: worker ${r.m0} MB -> round A (30 past days inserted) ${r.mA} -> after a 70 s walk ${r.mAw} -> round B (30 more) ${r.mB} -> after a 70 s walk ${r.mBw} MB -> 70 s of the flush alone ${r.mBi} -> round C (30 more) ${r.mC} MB; walks ${JSON.stringify(r.wA)} / ${JSON.stringify(r.wB)}`);
+// Round 3 (851663c) closes a past day after every op whoever opened it, so a batch of past-day inserts leaves no open
+// connection to pin: each batch must add next to nothing, with or without the walk. On 44594ac batch A added 12.6 MB
+// (thirty open connections) and batch B 21.8 MB under the walk (the first thirty pinned, thirty more opened).
+const CAP = 3;
+check(`L-F9: thirty past days inserted add under ${CAP} MB of lasting worker memory - their connections do not stay open after the op (added ${r.dA} MB)`, r.dA < CAP, r);
+check(`L-F9: a periodic walk over the stored days (the trend card's span every 5 s, a wide chart query) beside the flush pins no past-day connection: thirty more past days add under ${CAP} MB (added ${r.dB} MB)`, r.dB < CAP, r);
+check(`L-F9 control: without the walk, thirty more past days add under ${CAP} MB too (added ${r.dC} MB)`, r.dC < CAP, r);
 
 // ---- L-F11 (measured): a viewer's transfer - 100 files of 2000 rows into past days, each write now rewriting the
 // day facts file (forget -> loadInfo + saveInfo) - against the same 100 inserts into today (no facts write) ----
