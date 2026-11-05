@@ -369,3 +369,40 @@ test('L-O11: a day first listed while it was still "tomorrow" on this device (a 
     assert.equal(d && d.rows, 503, `${NEW} is listed with ${d && d.rows} rows (max id ${d && d.maxId}, ${d && d.bytes} B) - the facts cached at 23:59:59.7, before this device's midnight; insert() never forgets "today", so they stay wrong for good`);
   } finally { clockSkew = 0; }
 });
+
+// L-O12  The year simulation's growing worker (~0.75 MB per stored day on 44594ac). Taping the page's worker calls in
+// the running simulation: `span` with NO day list, 7 times in 45 s. app.js refreshSpan() -> readSpan(label, now - 24 h,
+// undefined) runs every 5 s while the History card waits for 30 s of stored readings (renderTrendWait, ticked every
+// second by tickAge), and the worker's span op then walks EVERY stored day (`days || daysOnDisk()`). visit() closes a
+// day only if this call opened it, and open() refreshes usedAt of a day that is already open - so any day database an
+// other op opened (an insert, a viewer transfer's rows(), info of today) is "used" every 5 s and never idle-closed while
+// the card waits. In the simulation the card waits after every day jump: one more open database per day. On a phone:
+// a reader whose BMS has not given a reading since the page started (p.data null: the card waits all along) while
+// viewers fetch history (histRequest -> rows(day) on every day it sends) keeps every transferred day open, ~0.5 MB of
+// page cache each, and opens every stored day file every 5 s for a 24 h question.
+test('L-O12: while the History card waits (span asked every 5 s), day databases another call opened are still closed when idle', async () => {
+  const h = await workerHarness();
+  const cfg = await h.call('config', { store: 'lrstorec' }); assert.equal(cfg.ok, true, cfg.error);
+  const DAYS = 40, T0 = Date.UTC(2027, 4, 1), dayOf = (k) => new Date(T0 + k * 86400e3).toISOString().slice(0, 10);
+  for (let k = 0; k < DAYS; k++) {
+    const rows = []; for (let i = 0; i < 20; i++) { const r = rowFromReading('m-00', READING, T0 + k * 86400e3 + i * 3000); r.id = i + 1; rows.push(r); }
+    assert.equal((await h.call('insert', { day: dayOf(k), rows })).ok, true);
+  }
+  try {
+    let now = T0 + DAYS * 86400e3 + 3600e3; clockSkew = now - realNow();
+    assert.equal((await h.call('insert', { day: dayOf(DAYS), rows: [Object.assign(rowFromReading('m-00', READING, now), { id: 1 })] })).ok, true);   // today; every idle past day is closed now
+    // a viewer's history transfer reads every stored day (histRequest -> rows), while the card waits: span every 5 s
+    const before = h.openDbs.size;
+    for (let step = 0; step < 36; step++) {                                // 3 minutes of the waiting card
+      if (step < DAYS) await h.call('rows', { day: dayOf(DAYS - 1 - step), after: 0, limit: 2000 });
+      const r = await h.call('span', { p: 'm-00', since: now - 86400e3 }); assert.equal(r.ok, true, r.error);   // app.js readSpan: no day list
+      now += 5000; clockSkew = now - realNow();
+      if (step % 6 === 5) await h.call('insert', { day: dayOf(DAYS), rows: [Object.assign(rowFromReading('m-00', READING, now), { id: step + 2 })] });   // closeIdle runs
+    }
+    now += 70000; clockSkew = now - realNow();                            // the card still waits a minute later
+    await h.call('span', { p: 'm-00', since: now - 86400e3 });
+    await h.call('insert', { day: dayOf(DAYS), rows: [Object.assign(rowFromReading('m-00', READING, now), { id: 99 })] });
+    const after = h.openDbs.size;
+    assert.ok(after <= 3, `${after} day databases open (${before} before the transfer): every day a viewer transfer read stays open while the card asks span every 5 s - span walks all ${DAYS + 1} stored days for a 24 h question and each walk keeps an open day "used"`);
+  } finally { clockSkew = 0; }
+});

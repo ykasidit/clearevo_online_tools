@@ -18,6 +18,9 @@
 // on every stored day, a 7-day chart query. The worker's own memory (measureUserAgentSpecificMemory) must stop growing
 // with the stored days. Chrome on CDP 9341, serve.py on 8091; DAYS (default 90), SEED (default 17280).
 const PORT = 8091, CDP = 9341, DAYS = Number(process.env.DAYS || 90), SEED = Number(process.env.SEED || 17280);
+// FREEZE=1: the worker's clock stays on its first day (61 s later each simulated day) while the day names move on - what the year test does (it moves
+// only the page's clock), so every simulated day is "not today" to the worker
+const FREEZE = process.env.FREEZE === '1';
 const page = await (await fetch(`http://127.0.0.1:${CDP}/json/new?about:blank`, { method: 'PUT' })).json();   // its own tab (another test may drive the first one)
 const ws = new WebSocket(page.webSocketDebuggerUrl);
 let id = 0; const pending = new Map();
@@ -34,21 +37,22 @@ await evalJs(`(() => { window.stop(); document.documentElement.innerHTML = '<bod
 const setup = `(async () => {
   const wrap = "const RD = Date; let off = 0; globalThis.Date = class extends RD { constructor(...a) { if (a.length) super(...a); else super(RD.now() + off); } static now() { return RD.now() + off; } };" +
     "self.addEventListener('message', (e) => { if (e.data && e.data.clock !== undefined) { off = e.data.clock - RD.now(); e.stopImmediatePropagation(); self.postMessage({ clockSet: true }); } });" +
-    "await import('${`http://127.0.0.1:${PORT}`}/batray/history-worker.js');";
+    "await import('${`http://127.0.0.1:${PORT}`}/batray/history-worker.js'); self.postMessage({ ready: true });";
   const w = new Worker(URL.createObjectURL(new Blob([wrap], { type: 'text/javascript' })), { type: 'module' });
+  await new Promise((res, rej) => { w.addEventListener('message', (e) => { if (e.data && e.data.ready) res(); }); w.onerror = (e) => rej(new Error('worker: ' + e.message)); setTimeout(() => rej(new Error('worker did not start')), 15000); });   // messages before its import ends would be lost
   const waiting = new Map(); let seq = 0;
   w.onmessage = (e) => { const m = e.data; if (m && m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); } };
   window.__call = (op, args = {}) => new Promise((res) => { const i = ++seq; waiting.set(i, res); w.postMessage({ id: i, op, args }); });
   window.__clock = (t) => new Promise((res) => { const f = (e) => { if (e.data && e.data.clockSet) { w.removeEventListener('message', f); res(); } }; w.addEventListener('message', f); w.postMessage({ clock: t }); });
   window.__w = w;
   await window.__clock(Date.UTC(2027, 0, 1, 6));
-  const c = await window.__call('config', { store: 'lrworker' + Math.random().toString(36).slice(2, 6) });
+  const c = await window.__call('config', { store: 'lw' + Math.random().toString(36).slice(2, 8).padEnd(6, '0') });
   const p = await window.__call('ping'); return { c: c.ok, p: p.ok ? p.r : p.error, iso: crossOriginIsolated };
 })()`;
 console.log('setup', await evalJs(setup));
 const dayJs = (d) => `(async () => {
   const R = { soc: 50, v: 52.1, i: -3.2, w: -166, ah: 100, tm: 30, t1: 25, t2: 26, ch: 1, ds: 1, bal: 0, err: 0, c: Array.from({ length: 16 }, (_, k) => 3250 + k) };
-  const t0 = Date.UTC(2027, 0, 1, 6) + ${d} * 86400e3; await window.__clock(t0);
+  const t0 = Date.UTC(2027, 0, 1, 6) + ${d} * 86400e3; await window.__clock(${FREEZE} ? Date.UTC(2027, 0, 1, 6) + ${d} * 61000 : t0);
   const day = new Date(t0).toISOString().slice(0, 10); let id = 0;
   for (let k = 0; k < 30; k++) { const rows = []; for (let i = 0; i < 6; i++) rows.push({ ...R, id: ++id, t: t0 - 50000 + k * 1000 + i * 100, p: i % 2 ? 's-01' : 'm-00' }); const r = await window.__call('insert', { day, rows }); if (!r.ok) return { err: r.error }; }
   await window.__call('info', { day });
