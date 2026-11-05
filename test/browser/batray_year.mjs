@@ -194,8 +194,10 @@ for (let d = 1; d <= DAYS; d++) {
     await sleep(Math.max(50, Math.round(DAY_MS * 0.6 / Math.max(1, ev.length))));
     if (e === 'freeze') await evalJs('window.__sim.mute = false; 1');
   }
-  // the rest of the day streams; then the clock moves to 06:00 UTC of the next day
+  // the rest of the day streams (a bad night's few hundred refusals take their time: they run out first); then the
+  // clock moves to 06:00 UTC of the next day
   const left = DAY_MS - (Date.now() - t0); if (left > 0) await sleep(left);
+  if (!(await until('window.__sim.refuse === 0', 180000, 250))) fail(`day ${d}: the run of refused connects is worked through (the loop keeps trying)`, await evalJs('window.__sim'));
   await evalJs(`(() => { const now = Date.now(), next = Math.floor(now / 86400000) * 86400000 + 86400000 + 6 * 3600000; window.__simOff += next - now; return 1; })()`);
   // the reader must be back on its own: connected, sharing, storing (the day jump looks like a frozen tab to it)
   const ok = await until(`(${connected}) && (${sharing})`, 15000, 200);
@@ -223,7 +225,9 @@ for (let d = 1; d <= DAYS; d++) {
 }
 
 // ---- the year's verdict: nothing grows with the days ----
-const hs = report.heaps.filter((h) => h.day >= 10);
+// the trend starts once the log ring is full (it fills to 4000 lines in the first weeks: growth that stops by design)
+const ringFull = (report.days.find((x) => x.ring >= 4000) || { d: 10 }).d;
+const hs = report.heaps.filter((h) => h.day >= Math.max(10, ringFull));
 if (hs.length >= 3) {
   const first = hs[0], last = hs[hs.length - 1], span = last.day - first.day;
   const perDay = (k) => (last[k] - first[k]) / span;
