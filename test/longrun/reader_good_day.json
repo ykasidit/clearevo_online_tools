@@ -1,0 +1,36 @@
+{
+  "source": "BatRay v0.9.80 reader log, 28.4 h",
+  "hours": 28.45,
+  "counts": {
+    "connectTry": 9,
+    "refused": 4,
+    "serverUp": 6,
+    "serviceUp": 3,
+    "gattDown": 4,
+    "stall": 12,
+    "socketClose": 0,
+    "socketOpen": 3,
+    "hidden": 4,
+    "visible": 4,
+    "offline": 0,
+    "online": 0,
+    "wakeDrop": 0,
+    "frameLog": 51
+  },
+  "perHour": {
+    "connectTry": 0.32,
+    "refused": 0.14,
+    "serverUp": 0.21,
+    "serviceUp": 0.11,
+    "gattDown": 0.14,
+    "stall": 0.42,
+    "socketClose": 0,
+    "socketOpen": 0.11,
+    "hidden": 0.14,
+    "visible": 0.14,
+    "offline": 0,
+    "online": 0,
+    "wakeDrop": 0,
+    "frameLog": 1.79
+  }
+}

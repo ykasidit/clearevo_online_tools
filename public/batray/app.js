@@ -287,12 +287,15 @@ const fmtSpan = (h) => fmtSpanT(h, T), fmtRuntime = (sec) => fmtRuntimeT(sec, T)
 // pack bar shows every pack's SOC and current at a glance.
 // ---------------------------------------------------------------------------
 const NO_CONN = Object.freeze(connState());                  // a remote pack's connection state: never connecting
+// test hook (only with ?test): ?connsec=N makes one second of the connection loop N ms, so the long-run browser test
+// can run a simulated day's drops, refusals and countdowns in a few real seconds; the default is the real 1000 ms
+const CONN_OPTS = (() => { const q = new URLSearchParams(location.search), ms = Number(q.get('connsec')); return q.has('test') && ms > 0 ? { secMs: ms, gapMs: Math.round(1.5 * ms) } : {}; })();   // gapMs: the 1.5 s gap between tries, scaled alike
 class Pack {
   constructor(id, name, { remote = false } = {}) {
     this.id = id; this.name = name; this.remote = remote;
     this.bms = remote ? null : new JkBms();
     this.device = null; this.info = null; this.settings = null; this.data = null; this.lastFrameAt = null;
-    this.conn = remote ? null : new BleConn(this.bms, connHooks(this));   // the connection: one loop per pack (conn.js), started by the first tap
+    this.conn = remote ? null : new BleConn(this.bms, connHooks(this), CONN_OPTS);   // the connection: one loop per pack (conn.js), started by the first tap
     this.demo = null; this.fresh = false;
     this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.dumped = false;
     this.remoteLive = false; this.lastRowAt = null;              // last stored row: readings closer than MIN_ROW_MS apart are shown, not stored
