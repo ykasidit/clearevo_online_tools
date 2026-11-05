@@ -27,6 +27,7 @@ import { ensureSchema, insertRows } from '../public/batray/history-sql.js';
 import { makeKeyB64 } from '../public/batray/live-logic.js';
 import { Muxer, StreamTarget } from '../public/batray/mp4-muxer.js';
 import { BoxSplitter, takeSegments } from '../public/batray/tv-logic.js';
+import { muxerOptions } from '../public/batray/tv.js';
 
 // ---- the browser, faked once for the whole file ----
 const sockets = [];
@@ -78,6 +79,7 @@ test('L-O1: a store that went memory-only keeps trying, so a reader whose pool f
   assert.equal(await h.ready, 'memory', 'the first open fails: memory-only');
   await until(() => h.backend === 'opfs' || logs.some((l) => /giving up until a reload/.test(l)), 3000);
   await settle(50);
+  h.release();                                         // ends a retry loop that is still waiting (the test must end on its own)
   assert.equal(h.backend, 'opfs', `the store never came back: ${made} workers tried, then "${logs.filter((l) => /giving up/.test(l)).join('')}" - with RETRY_TRIES=30 x RETRY_MS=2 min the reader stores nothing (rows nor debug log) from 1 h after a lock-out until someone reloads the page`);
 });
 
@@ -91,21 +93,24 @@ test('L-O1: a store that went memory-only keeps trying, so a reader whose pool f
 // against the 8 s 'days' deadline (a timeout counts toward the stuck-worker restart).
 // The real worker module runs here over the node build of the same sqlite3.wasm (a fake sahpool on its in-memory FS).
 // =====================================================================================================================
+let hooked = false, workerN = 0;
+/** A fresh instance of the real worker module (a query string = a new module) over its own fake pool. */
 async function workerHarness() {
-  const hooks = "export async function resolve(spec, ctx, next) { if (spec === './sqlite3.js' && ctx.parentURL && ctx.parentURL.endsWith('/history-worker.js')) return { url: 'data:text/javascript,export default async function init() { return globalThis.lrSqlite3; }', shortCircuit: true }; return next(spec, ctx); }";
-  register('data:text/javascript,' + encodeURIComponent(hooks));
+  const hooks = "export async function resolve(spec, ctx, next) { if (spec === './sqlite3.js' && ctx.parentURL && ctx.parentURL.includes('/history-worker.js')) return { url: 'data:text/javascript,export default async function init() { return globalThis.lrSqlite3; }', shortCircuit: true }; return next(spec, ctx); }";
+  if (!hooked) { hooked = true; register('data:text/javascript,' + encodeURIComponent(hooks)); }
   const s = await openSqlite();
-  const files = new Set(), openDbs = new Set(); let cap = 16, peak = 0;
+  const files = new Set(), openDbs = new Set(), tag = workerN + 1; let cap = 16, peak = 0;
   class PoolDb extends s.oo1.DB {
-    constructor(name) { super('/tmp' + name); files.add(name); openDbs.add(this); peak = Math.max(peak, openDbs.size); }
+    constructor(name) { super(`/tmp/w${tag}-${name.slice(1)}`); files.add(name); openDbs.add(this); peak = Math.max(peak, openDbs.size); }
     close() { openDbs.delete(this); return super.close(); }
   }
   s.installOpfsSAHPoolVfs = async () => ({ vfsName: 'fake-sahpool', getFileNames: () => [...files], getFileCount: () => files.size, getCapacity: () => cap, addCapacity: async (n) => { cap += n; }, isPaused: () => false, unpauseVfs: async () => {}, unlink: (n) => { files.delete(n); }, OpfsSAHPoolDb: PoolDb });
   globalThis.lrSqlite3 = s;
   const waiting = new Map(); let seq = 0;
-  globalThis.self = { postMessage: (m) => { const f = waiting.get(m.id); if (f) { waiting.delete(m.id); f(m); } } };
-  await import('../public/batray/history-worker.js');
-  const call = (op, args = {}) => new Promise((res) => { const id = ++seq; waiting.set(id, res); globalThis.self.onmessage({ data: { id, op, args } }); });
+  const me = { postMessage: (m) => { const f = waiting.get(m.id); if (f) { waiting.delete(m.id); f(m); } } };
+  globalThis.self = me;
+  await import(`../public/batray/history-worker.js?w=${++workerN}`);
+  const call = (op, args = {}) => new Promise((res) => { const id = ++seq; waiting.set(id, res); globalThis.self = me; me.onmessage({ data: { id, op, args } }); });
   return { s, call, openDbs, PoolDb, peak: () => peak };
 }
 /** SQLite's page cache in use by one connection (SQLITE_DBSTATUS_CACHE_USED), bytes. */
@@ -159,7 +164,7 @@ test('L-O3: the Show on TV muxer keeps a bounded heap - a day of 1 s fragments m
   v8.setFlagsFromString('--expose-gc');
   const gc = vm.runInNewContext('gc');
   const s = new BoxSplitter();
-  const muxer = new Muxer({ target: new StreamTarget({ onData: (d, pos) => s.push(d, pos) }), video: { codec: 'avc', width: 1920, height: 1080 }, fastStart: 'fragmented', minFragmentDuration: 0.5, firstTimestampBehavior: 'strict' });   // tv.js options (segS 1)
+  const muxer = new Muxer(muxerOptions({ codec: 'avc1.42E01E', width: 1920, height: 1080, segS: 1 }, new StreamTarget({ onData: (d, pos) => s.push(d, pos) })));   // exactly what TvStream.makeEncoder builds (1080p, 1 s segments)
   const avcC = new Uint8Array([1, 0x42, 0xE0, 0x1E, 0xFF, 0xE1, 0, 4, 0x67, 0x42, 0xE0, 0x1E, 1, 0, 2, 0x68, 0xCE]);
   const data = new Uint8Array(400); let f = 0;
   const run = (n) => { for (let k = 0; k < n; k++, f++) { muxer.addVideoChunkRaw(data, 'key', f * 1e6, 1e6, f === 0 ? { decoderConfig: { codec: 'avc1.42E01E', description: avcC } } : undefined); takeSegments(s); } };
@@ -243,4 +248,60 @@ test('L-O6: asking for persistent storage gives up after a deadline instead of h
     const r = await Promise.race([h.persist().then(() => 'answered'), settle(26000).then(() => 'hung')]);
     assert.equal(r, 'answered', 'persist() still pending after 26 s: the first flush (and every one after it) waits on it with no deadline');
   } finally { Object.defineProperty(globalThis, 'navigator', { value: nav, configurable: true, writable: true }); }
+});
+
+// =====================================================================================================================
+// Round 2 (on 325e484)
+// =====================================================================================================================
+// L-O8  live.js supervise() (the round-1 fix for L-O4) starts run() again after a throw, but the socket the failed run
+// had open is never closed: run() only closes it on the normal path after serve() returns. On a viewer that socket
+// stays in the room (the relay never times a viewer out), keeps receiving every data message (2-3 a second per pack)
+// and its Sock pushes each one into a Channel nobody will ever take from again - the tab's heap grows until it dies.
+// A publisher's old socket is closed by the relay (4000 replaced); a viewer's is not.
+test('L-O8: after the share loop is restarted by its supervisor, the socket of the failed run is closed (not left in the room filling an undrained queue)', async () => {
+  let threw = 0;
+  const logs = [];
+  const v = new Viewer({ room: 'r8', keyB64: makeKeyB64(), retryS: 1, onState: () => {}, log: (m) => { logs.push(m); if (/^status: viewers=3/.test(m) && !threw) { threw++; throw new Error('a log write failed'); } } });
+  await v.start(); await settle();
+  const first = lastSock(); first.open(); await settle();
+  first.push({ type: 'status', viewers: 3, live: true }); await settle();   // the run fails here; the supervisor starts it again
+  const second = await until(() => lastSock() !== first, 2500) ? lastSock() : null;
+  if (second) { second.open(); await settle(); }
+  const orphanOpen = first.readyState === 1;
+  v.stop();
+  assert.ok(second, `the supervisor did not restart the loop: ${logs.slice(-3).join(' | ')}`);
+  assert.equal(orphanOpen, false, `the failed run's socket is still open next to the new one (${logs.filter((l) => /loop failed/.test(l)).join('')}): the room counts two viewers and every data message to it is queued in a Channel nothing reads - about 2 KB x 2.5 per second per pack, ~430 MB a day for one pack`);
+});
+
+// L-O9  The round-1 fix for L-O2 (visit(): close a past day after the walk, the day facts cache) covers `days`, `query`
+// and `span` but not `info`. A viewer's requestHistory() (app.js: at link up, every 10 min, and on gap asks) lists the
+// days and then calls hist.info(day) for EVERY stored past day - each opens that day and leaves it open (closeIdle only
+// closes days idle > 60 s), and each runs dayInfo's full scans (count, DISTINCT p, contigId). So every request still
+// opens a year of day databases at once and scans every row of every one.
+test('L-O9: a viewer asking the reader for history (info() on every stored past day) leaves at most a few day databases open', async () => {
+  const h = await workerHarness(), s = h.s;
+  assert.equal((await h.call('config', { store: 'lrstore9' })).ok, true);
+  const SMALL = 80, REAL = 3, T0 = Date.UTC(2025, 0, 1), dayOf = (k) => new Date(T0 + k * 86400e3).toISOString().slice(0, 10);
+  for (let k = 0; k < SMALL; k++) {
+    const rows = []; for (let i = 0; i < 20; i++) { const r = rowFromReading('m-00', READING, T0 + k * 86400e3 + i * 3000); r.id = i + 1; rows.push(r); }
+    const r = await h.call('insert', { day: dayOf(k), rows }); assert.equal(r.ok, true, r.error);
+  }
+  for (let k = SMALL; k < SMALL + REAL; k++) {
+    const db = new h.PoolDb(`/${dayOf(k)}.sqlite`); ensureSchema(db);
+    const rows = []; for (let i = 0; i < 57600; i++) { const r = rowFromReading(i % 2 ? 's-01' : 'm-00', READING, T0 + k * 86400e3 + i * 1500); r.id = i + 1; rows.push(r); }
+    insertRows(db, rows); db.close();
+  }
+  clockSkew = 61000;
+  try {
+    const r0 = rowFromReading('m-00', READING, Date.now()); r0.id = 1;
+    await h.call('insert', { day: new Date(Date.now()).toISOString().slice(0, 10), rows: [r0] });   // every idle past day closed
+    const list = await h.call('days'); assert.equal(list.ok, true, list.error);
+    const after = h.openDbs.size;
+    const t0 = realNow();
+    for (const d of list.r.days.slice(0, -1)) { const i = await h.call('info', { day: d.day }); assert.equal(i.ok, true, i.error); }   // app.js requestHistory: every day but today
+    const ms = realNow() - t0, open = h.openDbs.size;
+    const realDb = [...h.openDbs].find((x) => x.filename && x.filename.includes(dayOf(SMALL)));
+    const cache = realDb ? cacheUsed(s, realDb) : 0;
+    assert.ok(open <= 4, `after the listing ${after} day databases were open; after the viewer's info() per past day ${open} are (held until a later call finds them idle > 60 s). A real day keeps ${(cache / 1048576).toFixed(2)} MB of page cache open -> ~${Math.round(365 * cache / 1048576)} MB at once for a year of days, plus ${ms} ms of full scans here (~${Math.round(ms / REAL)} ms per real day: ~${Math.round(365 * ms / REAL / 1000)} s for a year on a desktop) at every request, every 10 min`);
+  } finally { clockSkew = 0; }
 });
