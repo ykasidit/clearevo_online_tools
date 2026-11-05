@@ -891,7 +891,15 @@ function renderHistOff() {
   const why = histOffWhy();
   el.textContent = why === 'old' ? T.histOffOld(`${T.compatName[browserInfo.name] || browserInfo.name} ${fmtVersion(browserInfo.version)}`) : T.histOffStuck;
 }
+/** One start of the store's counters at a time: a store that opens on a later try calls this again, and a start that
+ *  waits for today's counters must not run beside a second one (long-run review 2026-11-05). */
+let histInit = null;
 async function initHistory() {
+  if (histInit !== null) { await histInit; return; }
+  histInit = initHistoryOnce();
+  try { await histInit; } finally { histInit = null; }
+}
+async function initHistoryOnce() {
   await hist.ready;
   histS.backend = hist.backend;                                               // the store's backend NOW: a store that opened on a later try is 'opfs' although its first open said 'memory' (Fable review 2026-11-01)
   if (histS.backend === 'memory') dropMemoryRows();

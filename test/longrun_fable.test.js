@@ -18,7 +18,7 @@
 import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { openSqlite } from './sqlite_node.mjs';
-import { ensureSchema, insertRows, dayInfo } from '../public/batray/history-sql.js';
+import { ensureSchema, insertRows, dayCount } from '../public/batray/history-sql.js';
 import { OP_TIMEOUT_MS, rowDue, MIN_ROW_MS } from '../public/batray/history-logic.js';
 import { HistoryStore, MemoryBackend } from '../public/batray/history.js';
 import { BleConn } from '../public/batray/conn.js';
@@ -27,13 +27,12 @@ import { RECONNECT_S } from '../public/batray/conn-logic.js';
 import { sleep } from '../public/batray/sync.js';
 import * as F from './batray_frames.js';
 
-// ---------------------------------------------------------------- L-F1: the day listing walks every file, and the per-file cost scales with the rows in it
-// history-worker.js `days()` opens every day database and runs history-sql.js `dayInfo()` on each (count, max id, min/max
-// t, distinct packs, the contiguous-id scan): the whole listing has ONE deadline, OP_TIMEOUT_MS.days = 8 s, and it is
-// called at every start (app.js initHistory, before today's counters are read), at every midnight (maintainHistory) and
-// for every viewer history request (every 10 min). Two packs at one row per 3 s = 57,600 rows a day. The per-file cost
-// must therefore not grow with the rows of the file (an index-only or meta-table answer), or the listing passes its
-// deadline once enough days are stored - a year of two-pack days at the cost measured here, far sooner on a phone.
+// ---------------------------------------------------------------- L-F1: the day listing walks every file; its per-file cost must not scale with the rows
+// Round 1: history-worker.js `days()` ran history-sql.js `dayInfo()` (the contiguous-id scan, min/max t) on every file under
+// ONE 8 s deadline: 18.8 ms per two-pack day here, 6.9 s for a year, 3-4x that on a phone. Round 2 (325e484): the listing
+// calls `dayCount()` (count + max id, index-only) and caches past days' facts in the worker and in dayinfo-<store>.json;
+// what the reader pays for the real `days` op over a year of OPFS files is measured in the browser test
+// (longrun_fable_history.mjs, L-F1). This keeps the per-file property under test on the real wasm.
 const sqlite3 = await openSqlite();
 const T0 = Date.UTC(2026, 8, 24);
 function dayDb(rowsPerPack) {
@@ -45,14 +44,13 @@ function dayDb(rowsPerPack) {
 }
 function msOf(fn, reps = 5) { let best = Infinity; for (let r = 0; r < reps; r++) { const t = performance.now(); fn(); best = Math.min(best, performance.now() - t); } return best; }
 
-test('L-F1: the per-file cost of the day listing (dayInfo) does not grow with the rows in the file, so a year of day files still fits the 8 s deadline of days()', () => {
+test('L-F1: what the day listing runs on each file (dayCount) is cheap enough that a cold listing of a year of two-pack day files fits the 8 s deadline of days() on a phone', () => {
   const small = dayDb(2880), full = dayDb(28800);                              // 10 % of a two-pack day, and a whole one (57,600 rows)
   try {
-    const msSmall = msOf(() => dayInfo(small)), msFull = msOf(() => dayInfo(full));
-    const yearMs = Math.round(msFull * 365);
-    const note = `dayInfo: ${msSmall.toFixed(1)} ms at ${2880 * 2} rows, ${msFull.toFixed(1)} ms at ${28800 * 2} rows; 365 such files = ${yearMs} ms per days() call against a ${OP_TIMEOUT_MS.days} ms deadline (this machine; a phone is slower)`;
-    assert.ok(msFull < 2 * msSmall, `the listing's per-file cost scales with the rows of the file (the contiguous-id scan, min/max t): ${note}`);
-    assert.ok(yearMs < OP_TIMEOUT_MS.days / 2, note);
+    const msSmall = msOf(() => dayCount(small)), msFull = msOf(() => dayCount(full));
+    const yearMs = msFull * 365;
+    const note = `dayCount: ${msSmall.toFixed(2)} ms at ${2880 * 2} rows, ${msFull.toFixed(2)} ms at ${28800 * 2} rows; 365 such files = ${yearMs.toFixed(0)} ms of counting per cold days() call against a ${OP_TIMEOUT_MS.days} ms deadline (this machine; a phone is 3-4x slower)`;
+    assert.ok(yearMs * 4 < OP_TIMEOUT_MS.days, `a cold listing of a year on a phone (4x this machine) passes the deadline: ${note}`);   // count(*) walks the smallest index, so it still grows with the rows (0.3 -> 2.5 ms): the margin is this budget
   } finally { small.close(); full.close(); }
 });
 
@@ -77,16 +75,19 @@ function fakeWorkerFactory(state) {
 }
 const fakeNav = () => { globalThis.Worker = function () {}; Object.defineProperty(globalThis, 'navigator', { value: { storage: { getDirectory() {}, persist: async () => true } }, configurable: true, writable: true }); };
 
-test('L-F2: a store locked out longer than the retry budget (30 x 2 min) is taken again once its pool is free - a reader nobody reloads must not stay memory-only for the rest of the year', async () => {
+test('L-F2: a store locked out longer than the old retry budget (30 x 2 min) is taken again once its pool is free - a reader nobody reloads must not stay memory-only for the rest of the year', async () => {
   fakeNav();
   const st = { logs: [], workers: [], locked: true };
-  const h = new HistoryStore({ log: (m) => st.logs.push(m), makeWorker: fakeWorkerFactory(st), retryTries: 3, retryMs: 10 });   // the real 30 x 120 s, scaled: 3 tries 10 ms apart
-  assert.equal(await h.ready, 'memory', 'the first open found the pool locked');
-  await sleep(120);                                                             // the whole retry budget passes with the pool still locked
-  assert.ok(st.logs.some((l) => /giving up until a reload/.test(l)), st.logs.join('\n'));
-  st.locked = false;                                                            // the pool is free again (the lock went with whatever held it)
-  await sleep(200);
-  assert.equal(h.backend, 'opfs', `the pool has been free for 200 ms (20 retry periods) and the store is still '${h.backend}': readings and the debug log are dropped until a human reloads the page`);
+  const h = new HistoryStore({ log: (m) => st.logs.push(m), makeWorker: fakeWorkerFactory(st), retryTries: 3, retryMs: 10 });   // the real 30 x 120 s, scaled: 3 tries 10 ms apart (then the slower rhythm, 75 ms here = 15 min there)
+  try {
+    assert.equal(await h.ready, 'memory', 'the first open found the pool locked');
+    await sleep(120);                                                           // the whole first retry budget passes with the pool still locked
+    assert.equal(h.backend, 'memory', 'still locked: still memory');
+    st.locked = false;                                                          // the pool is free again (the lock went with whatever held it)
+    for (let i = 0; i < 100 && h.backend !== 'opfs'; i++) await sleep(10);     // up to 1 s = many slow-rhythm periods
+    assert.equal(h.backend, 'opfs', `the pool has been free for 1 s (a dozen retry periods of the slow rhythm) and the store is still '${h.backend}': readings and the debug log are dropped until a human reloads the page`);
+    assert.ok(st.logs.some((l) => /the store opened on a later try/.test(l)), st.logs.join('\n'));
+  } finally { h.release(); }                                                    // the retry loop lives as long as the store (0.9.86): release() ends it, so node exits
 });
 
 // ---------------------------------------------------------------- L-F3: a BMS out of range looks like "Bluetooth was off" every round
@@ -138,7 +139,7 @@ test('L-F3: a BMS that is out of range (Android rejects each direct connect afte
   assert.ok(!t.ev.includes('stuck'), t.ev.join(' | '));
 });
 
-// ---------------------------------------------------------------- L-F4: a clock set back stretches every wall-clock deadline by the jump
+// ---------------------------------------------------------------- L-F4: a clock set back stretches every wall-clock deadline by the jump (round 2: sync.js deadline() and rowDue fixed)
 // conn.js secsLeft() and the countdown's deadline, live.js retryWait() and history-logic.js rowDue() all take
 // Date.now() differences. A phone clock corrected backwards (NTP after weeks without network, a manual change) makes
 // `deadline - Date.now()` grow by the jump: a 10 s reconnect countdown waits out the jump before it reconnects, and

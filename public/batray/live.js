@@ -115,6 +115,7 @@ async function supervise(self, what, signal) {
     catch (e) {
       if (isAbort(e) || signal.aborted) return;
       self.log(`live: ${what} loop failed (${e && e.message ? e.message : e}) - starting it again`);
+      if (self.sock) { try { self.sock.close(4003, 'loop restart'); } catch { /* gone */ } self.sock = null; }   // the failed run's socket goes with it (a viewer's would keep queueing every message: long-run review 2026-11-05)
       self.state.sig = false; self.state.live = false; self.emit();
       const ms = (self.retryS || RETRY_S) * 1000;
       try { await sleep(ms, signal); } catch { return; }
