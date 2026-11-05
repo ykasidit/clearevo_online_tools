@@ -52,7 +52,12 @@ async function until(cond, ms) { const end = Date.now() + ms; while (Date.now() 
 // The phone's wall clock as the app reads it (Date.now), with an offset the test can step; timers stay monotonic.
 const realNow = Date.now.bind(Date);
 let clockSkew = 0;
-Date.now = () => realNow() + clockSkew;
+const RealDate = Date;
+class SkewDate extends RealDate {
+  constructor(...a) { if (a.length) super(...a); else super(realNow() + clockSkew); }
+  static now() { return realNow() + clockSkew; }
+}
+globalThis.Date = SkewDate;                            // `new Date()` too: the worker's todayKey() reads it
 
 const READING = { soc: 50, packV: 52.1, current: -3.2, power: -166, remainAh: 100, tempMos: 30, temp1: 25, temp2: 26, chgMos: true, dsgMos: true, balancing: false, errors: 0, cells: Array.from({ length: 16 }, (_, i) => ({ v: 3.25 + i * 0.001 })) };
 
@@ -303,5 +308,64 @@ test('L-O9: a viewer asking the reader for history (info() on every stored past 
     const realDb = [...h.openDbs].find((x) => x.filename && x.filename.includes(dayOf(SMALL)));
     const cache = realDb ? cacheUsed(s, realDb) : 0;
     assert.ok(open <= 4, `after the listing ${after} day databases were open; after the viewer's info() per past day ${open} are (held until a later call finds them idle > 60 s). A real day keeps ${(cache / 1048576).toFixed(2)} MB of page cache open -> ~${Math.round(365 * cache / 1048576)} MB at once for a year of days, plus ${ms} ms of full scans here (~${Math.round(ms / REAL)} ms per real day: ~${Math.round(365 * ms / REAL / 1000)} s for a year on a desktop) at every request, every 10 min`);
+  } finally { clockSkew = 0; }
+});
+
+// =====================================================================================================================
+// Round 3 (on 44594ac): the year simulation's lead - the history worker's memory grew ~0.58 MB per stored day on
+// 325e484. Here the real worker module runs 60 simulated days the way the reader drives it (the worker's clock IS the
+// page's clock, as on a phone): every day 30 flushes of live rows, the year test's seed (info, an insert of 5760
+// rows, info), a listing, a viewer's history request (info() on every stored day), a 7-day chart query. What must
+// hold: the wasm heap and the open databases stop growing with the stored days.
+// =====================================================================================================================
+test('L-O2/L-O9 plateau: 60 days of the reader\'s own use of the store - the worker\'s wasm heap and its open day databases do not grow with the stored days', async () => {
+  const h = await workerHarness(), s = h.s;
+  const cfg = await h.call('config', { store: 'lrstorep' }); assert.equal(cfg.ok, true, cfg.error);
+  const PER = 5760, samples = [];
+  let id = 0, lastDay = null;
+  clockSkew = Date.UTC(2027, 0, 1, 6) - realNow();
+  try {
+    for (let d = 1; d <= 60; d++) {
+      const day = new Date(Date.now()).toISOString().slice(0, 10);
+      if (day !== lastDay) { id = 0; lastDay = day; }
+      for (let k = 0; k < 30; k++) {
+        const rows = []; for (let i = 0; i < 6; i++) { const r = rowFromReading(i % 2 ? 's-01' : 'm-00', READING, Date.now() - 50000 + k * 1000 + i * 100); r.id = ++id; rows.push(r); }
+        const r = await h.call('insert', { day, rows }); assert.equal(r.ok, true, r.error);
+      }
+      await h.call('info', { day });
+      const rows = [], from = Date.parse(`${day}T00:00:00Z`); for (let i = 0; i < PER; i++) { const r = rowFromReading(i % 2 ? 's-01' : 'm-00', READING, from + i * 3600 + 7); r.id = ++id; rows.push(r); }
+      await h.call('insert', { day, rows }); await h.call('info', { day });
+      const list = await h.call('days'); assert.equal(list.ok, true, list.error);
+      for (const x of list.r.days) await h.call('info', { day: x.day });
+      await h.call('query', { p: 'm-00', from: Date.now() - 7 * 86400e3, to: Date.now(), stepMs: 756000 });
+      clockSkew += 86400e3;
+      if (d === 20 || d === 60) samples.push({ d, wasm: s.wasm.heap8u().length, open: h.openDbs.size });
+    }
+  } finally { clockSkew = 0; }
+  const [a, b] = samples, mb = (x) => (x / 1048576).toFixed(1);
+  assert.ok(b.wasm - a.wasm < 2 * 1048576 && b.open <= 3, `day ${a.d}: wasm ${mb(a.wasm)} MB, ${a.open} open; day ${b.d}: wasm ${mb(b.wasm)} MB, ${b.open} open`);
+});
+
+// L-O11  The day-facts cache keys "today" on the WORKER's clock, but a viewer's day files are named by the READER's
+// clock (file.day, and dayKey(row.t) of the reader's rows). A viewer whose clock is behind the reader's rolls over at
+// the reader's first row of the new day while its own worker still says yesterday: rollover -> maintainHistory ->
+// days() caches the NEW day as a "past" day (a few rows). Seconds later the viewer's clock passes midnight, that day
+// is today, and insert() skips forget() for today - so the stale entry stays, and from the next midnight on every
+// listing reports that day with the few rows (and bytes) of its first second, for good: the Storage box, and the
+// low-space retention, which counts those bytes when it decides how many past days to delete.
+test('L-O11: a day first listed while it was still "tomorrow" on this device (a viewer behind the reader\'s clock at midnight) is listed with all its rows once it is a past day', async () => {
+  const h = await workerHarness();
+  const cfg = await h.call('config', { store: 'lrstoreb' }); assert.equal(cfg.ok, true, cfg.error);
+  const NEW = '2027-03-02', mid = Date.UTC(2027, 2, 2), mk = (n0, n, t0) => Array.from({ length: n }, (_, i) => { const r = rowFromReading('m-00', READING, t0 + i * 3000); r.id = n0 + i; return r; });
+  try {
+    clockSkew = mid - 300 - realNow();                                     // this device: 23:59:59.700; the reader is already past midnight
+    assert.equal((await h.call('insert', { day: NEW, rows: mk(1, 3, mid) })).ok, true);   // the reader's first rows of the new day
+    const early = await h.call('days'); assert.equal(early.ok, true, early.error);        // the rollover's maintainHistory listing
+    clockSkew = mid + 5000 - realNow();                                    // a few seconds later the viewer's clock passes midnight
+    assert.equal((await h.call('insert', { day: NEW, rows: mk(4, 500, mid + 9000) })).ok, true);   // the rest of the day arrives (today now)
+    clockSkew = mid + 86400e3 + 3600e3 - realNow();                        // the next day: NEW is a past day
+    const later = await h.call('days'); assert.equal(later.ok, true, later.error);
+    const d = later.r.days.find((x) => x.day === NEW);
+    assert.equal(d && d.rows, 503, `${NEW} is listed with ${d && d.rows} rows (max id ${d && d.maxId}, ${d && d.bytes} B) - the facts cached at 23:59:59.7, before this device's midnight; insert() never forgets "today", so they stay wrong for good`);
   } finally { clockSkew = 0; }
 });
