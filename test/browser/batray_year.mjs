@@ -67,6 +67,24 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   const RealDate = Date; window.__simOff = 0;
   class SimDate extends RealDate { constructor(...a) { if (a.length) super(...a); else super(RealDate.now() + window.__simOff); } static now() { return RealDate.now() + window.__simOff; } }
   window.Date = SimDate;
+  // the history worker lives on the same clock: a wrapper module moves its Date by the page's offset (a phone's worker
+  // and page share one clock; with the worker on the real clock every simulated day was "not today" to it and the
+  // run overstated what a phone sees - the Opus round-3 finding). Clock messages are taken before the worker's own
+  // handler sees them.
+  const RealWorker = window.Worker; window.__workers = [];
+  window.Worker = function (url, opts) {
+    const u = new URL(String(url), location.href).href;
+    if (!/history-worker/.test(u)) return new RealWorker(url, opts);
+    const wrap = 'const RD = Date; let off = ' + window.__simOff + '; globalThis.Date = class extends RD { constructor(...a) { if (a.length) super(...a); else super(RD.now() + off); } static now() { return RD.now() + off; } };' +
+      ' self.addEventListener("message", (e) => { if (e.data && e.data.__simOff !== undefined) { off = e.data.__simOff; e.stopImmediatePropagation(); } });' +
+      // the page's first messages (its store config) arrive while the real module loads: held, then handed to it
+      ' const held = []; const hold = (e) => { held.push(e.data); e.stopImmediatePropagation(); }; self.addEventListener("message", hold);' +
+      ' await import(' + JSON.stringify(u) + ');' +
+      ' self.removeEventListener("message", hold); for (const d of held) self.onmessage({ data: d });';
+    const w = new RealWorker(URL.createObjectURL(new Blob([wrap], { type: 'text/javascript' })), { type: 'module' });
+    window.__workers.push(w); return w;
+  };
+  window.__moveClock = (ms) => { window.__simOff += ms; for (const w of window.__workers) { try { w.postMessage({ __simOff: window.__simOff }); } catch { /* ended */ } } };
   // the BMS: answers the device-info ask (0x97) and the settings ask (0x96), streams cell frames while connected
   const DEV = ${bytes(AIO_32S_DEV)}, SET = ${bytes(ESPHOME_24S_SETTINGS)}, CELL = ${bytes(OWNER_32S_CELL)};
   const char = new EventTarget();
@@ -195,7 +213,7 @@ for (let d = 1; d <= DAYS; d++) {
   for (const e of ev.sort(() => rand() - 0.5)) {
     if (e === 'drop') await evalJs('window.__dropLink(); 1');
     else if (e.startsWith('refuse:')) await evalJs(`window.__sim.refuse += ${Number(e.slice(7))}; window.__dropLink(); 1`);   // a run of refusals, then the BMS answers again
-    else if (e === 'freeze') await evalJs('window.__sim.mute = true; window.__simOff += 20000; 1');   // 20 s with nothing from the BMS (a short freeze of the tab)
+    else if (e === 'freeze') await evalJs('window.__sim.mute = true; window.__moveClock(20000); 1');   // 20 s with nothing from the BMS (a short freeze of the tab)
     else if (e === 'hidden') { await send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {}); await evalJs(`Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }); Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); document.dispatchEvent(new Event('freeze')); 1`); await sleep(150); await evalJs(`delete document.visibilityState; delete document.hidden; document.dispatchEvent(new Event('resume')); document.dispatchEvent(new Event('visibilitychange')); 1`); }
     else if (e === 'socket') await evalJs('window.__killSockets(1006); 1');
     else if (e === 'restart') await evalJs('window.__killSockets(1012); 1');
@@ -215,7 +233,7 @@ for (let d = 1; d <= DAYS; d++) {
   // clock moves to 06:00 UTC of the next day
   const left = DAY_MS - (Date.now() - t0); if (left > 0) await sleep(left);
   if (!(await until('window.__sim.refuse === 0', 180000, 250))) fail(`day ${d}: the run of refused connects is worked through (the loop keeps trying)`, await evalJs('window.__sim'));
-  await evalJs(`(() => { const now = Date.now(), next = Math.floor(now / 86400000) * 86400000 + 86400000 + 6 * 3600000; window.__simOff += next - now; return 1; })()`);
+  await evalJs(`(() => { const now = Date.now(), next = Math.floor(now / 86400000) * 86400000 + 86400000 + 6 * 3600000; window.__moveClock(next - now); return 1; })()`);
   // the reader must be back on its own: connected, sharing, storing (the day jump looks like a frozen tab to it)
   const ok = await until(`(${connected}) && (${sharing})`, 15000, 200);
   await sleep(600);
