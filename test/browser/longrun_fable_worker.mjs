@@ -92,24 +92,28 @@ check(`L-F9: thirty past days inserted add under ${CAP} MB of lasting worker mem
 check(`L-F9: a periodic walk over the stored days (the trend card's span every 5 s, a wide chart query) beside the flush pins no past-day connection: thirty more past days add under ${CAP} MB (added ${r.dB} MB)`, r.dB < CAP, r);
 check(`L-F9 control: without the walk, thirty more past days add under ${CAP} MB too (added ${r.dC} MB)`, r.dC < CAP, r);
 
-// ---- L-F11 (measured): a viewer's transfer - 100 files of 2000 rows into past days, each write now rewriting the
-// day facts file (forget -> loadInfo + saveInfo) - against the same 100 inserts into today (no facts write) ----
+// ---- L-F11 (measured): a viewer's transfer into past days, now that a past day is opened and closed per op (round 3)
+// and every write to a cached past day rewrites the day facts file (round 2): 100 new past-day files of 2000 rows (open
+// + insert + close; nothing cached, nothing to forget), a listing (caches their facts), 100 more files of 2000 rows into
+// those days (open + insert + close + forget -> facts file rewritten), against 100 inserts of 2000 rows into today ----
 const x = await evalJs(`(async () => {
   const T = window.__batrayTest;
   const base = Date.parse('${today}T00:00:00Z') - 400 * 86400e3;
   const dayOf = (d) => new Date(base + d * 86400e3).toISOString().slice(0, 10);
   const mk = (from, i) => ({ id: i + 1, t: from + i * 40000, p: 'r1', soc: 50, v: 52.1, i: 12, w: 620 });
-  let t0 = performance.now();
-  for (let d = 0; d < 100; d++) { const from = base + d * 86400e3, rows = []; for (let i = 0; i < 2000; i++) rows.push(mk(from, i)); await T.histInsert(dayOf(d), rows); }
-  const past = Math.round(performance.now() - t0);
-  t0 = performance.now();
-  for (let d = 0; d < 100; d++) { const from = Date.parse('${today}T00:00:00Z') + d * 600e3, rows = []; for (let i = 0; i < 2000; i++) rows.push({ ...mk(from, i), id: 100000 + d * 2000 + i, t: from + i * 100 }); await T.histInsert('${today}', rows); }
-  const todayMs = Math.round(performance.now() - t0);
-  const facts = await (async () => { try { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('batray-history'); const f = await (await d.getFileHandle('dayinfo-' + T.tab().id + '.json')).getFile(); return { bytes: f.size, days: Object.keys(JSON.parse(await f.text())).length }; } catch (e) { return { error: e.message }; } })();
-  return { past, todayMs, perFile: Math.round((past - todayMs) / 100), facts };
+  const time = async (fn) => { const t0 = performance.now(); await fn(); return Math.round(performance.now() - t0); };
+  const newFiles = await time(async () => { for (let d = 0; d < 100; d++) { const from = base + d * 86400e3, rows = []; for (let i = 0; i < 2000; i++) rows.push(mk(from, i)); await T.histInsert(dayOf(d), rows); } });
+  await T.histList();                                                            // the 100 days are past days: their facts are cached and saved
+  const known = await time(async () => { for (let d = 0; d < 100; d++) { const from = base + d * 86400e3 + 2000 * 40000, rows = []; for (let i = 0; i < 2000; i++) rows.push({ ...mk(from, i), id: 2001 + i }); await T.histInsert(dayOf(d), rows); } });
+  const todayMs = await time(async () => { for (let d = 0; d < 100; d++) { const from = Date.parse('${today}T00:00:00Z') + d * 600e3, rows = []; for (let i = 0; i < 2000; i++) rows.push({ ...mk(from, i), id: 100000 + d * 2000 + i, t: from + i * 100 }); await T.histInsert('${today}', rows); } });
+  const written = new Set(Array.from({ length: 100 }, (_, d) => dayOf(d)));
+  const facts = await (async () => { try { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('batray-history'); const f = await (await d.getFileHandle('dayinfo-' + T.tab().id + '.json')).getFile(); const keys = Object.keys(JSON.parse(await f.text())); return { bytes: f.size, days: keys.length, writtenStillCached: keys.filter((k) => written.has(k)).length }; } catch (e) { return { error: e.message }; } })();
+  const relisted = (await T.histList()).filter((x) => written.has(x.day)).map((x) => x.rows);
+  return { newFiles, known, todayMs, reopen: Math.round((newFiles - todayMs) / 100), reopenAndFacts: Math.round((known - todayMs) / 100), facts, relisted: { n: relisted.length, all4000: relisted.every((n) => n === 4000) } };
 })()`, 300000);
-console.log(`L-F11 numbers: 100 past-day files of 2000 rows (each write rewrites the facts file) ${x.past} ms, the same 100 inserts into today ${x.todayMs} ms -> the facts write costs about ${x.perFile} ms per received file; facts file ${JSON.stringify(x.facts)}`);
-check('L-F11: the facts-file write per received past-day file stays under 50 ms on this machine (a 100-file transfer under 5 s of extra worker time)', x.perFile < 50, x);
+console.log(`L-F11 numbers: 100 new past-day files of 2000 rows ${x.newFiles} ms, 100 more files into those (now cached) days ${x.known} ms, 100 inserts into today ${x.todayMs} ms -> open+close of a past day ~${x.reopen} ms per file, plus the facts-file rewrite ~${x.reopenAndFacts - x.reopen} ms per file; facts file ${JSON.stringify(x.facts)}`);
+check('L-F11: a received past-day file costs under 50 ms of worker time beyond its insert (open + close + the facts-file rewrite) on this machine - a 100-file transfer well under 5 s extra', x.reopenAndFacts < 50, x);
+check('L-F11: every written past day was forgotten from the facts file by its own write (none of the 100 stays cached with its old count), and the next listing counts them again (4000 rows each)', x.facts.writtenStillCached === 0 && x.relisted.n === 100 && x.relisted.all4000, { facts: x.facts, relisted: x.relisted });
 await evalJs('window.__batrayTest.clearHistory()').catch(() => 0); await sleep(500);
 
 const thrown = events.filter((e) => e.method === 'Runtime.exceptionThrown').map((e) => e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text);

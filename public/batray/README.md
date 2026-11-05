@@ -134,6 +134,53 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.86 (2026-11-05): a reader that runs for a year
+
+- **Why** (owner: "the reader is supposed to run 24/7 - any accumulation, out of memory, anything for running a
+  month or a year at a time that can make the program stop is a problem. Fork an Opus and a Fable agent to review
+  and make tests for each finding instead of just arguing; fix, let each review again, until no more findings;
+  use a reader log as a template to simulate a year in an integration test, run it between each loop and before
+  the final deploy").
+- **How it was found**: two independent reviewers, four rounds; every finding came with a test that failed on
+  the code of that round (`test/longrun_opus.test.js`, `test/longrun_fable.test.js`, browser `test/browser/
+  longrun_*.mjs`, relay `src/longrun_opus_tests.rs`); the fixes were reviewed again by both until neither found
+  anything. 20 distinct problems, 6 of them found by both independently.
+- **A year in the real page**: `test/longrun/year.sh` runs `test/browser/batray_year.mjs` - the real page for a
+  simulated year without a reload, a fake JK BMS over fake Web Bluetooth, a fake relay, the real SQLite store,
+  the debug log on. Each day replays the event mix of the owner's own reader logs (`test/longrun/reader_good_day
+  .json`, and every 30th day the worst night on record, `reader_bad_night.json`: 480 refused connects and 150
+  drops an hour - numbers only, made by `profile_from_log.mjs`), seeds the day file to a real size, then jumps
+  the clock (page and worker) to the next UTC day. It checks every day that the reader is connected, sharing and
+  storing again, and over the year that the page heap after a GC, DOM nodes, listeners, the log ring, log files,
+  queues, localStorage, the day listing's time and the worker's memory do not grow. A/B on 120 days x 17280 rows:
+  the 0.9.85 worker went 89.6 -> 314 MB (an "Aw, Snap" within months on an old phone), 0.9.86 stays at 10.9 MB.
+- **What would have stopped the reader** (fixed):
+  - the day listing (at start, every midnight, every viewer's history request) opened and scanned EVERY day file
+    and kept them open; a year of two-pack days passed its 8 s deadline, and a timed-out start left today's
+    counters at 1 so every new row was dropped as a duplicate until midnight. Now: a past day's facts are cached
+    (and kept in `dayinfo-<store>.json`, rewritten at every write that forgets a day), only days strictly before
+    this device's today are cached, today's counters are read first and on their own;
+  - no past-day database stays open: `visit()` closes a past day after every op that needed it, whoever opened
+    it, and a walk is not "use" for the idle clock; the waiting trend card asks for its two days, not every file
+    every 5 s; page cache 512 KB per database (an open day cost ~0.25 MB + its cache, and wasm memory never
+    shrinks);
+  - the store gave up retrying after an hour (memory-only = nothing kept, no debug log): it now tries for as long
+    as the page lives;
+  - one throw in an app hook ended the share loop for good while the chip said live: hooks guarded, a supervisor
+    restarts a failed loop and closes its socket;
+  - the Show on TV muxer kept every fragment (~34 MB a day): the vendored mp4-muxer has a marked `live` option;
+  - a BMS out of range ended every round in the "Bluetooth was off" stuck sheet: the stuck rule uses the oldest
+    UNSETTLED connect on the monotonic clock;
+  - a phone clock set back stretched countdowns and stopped storing for that long: `sync.js` `deadline(ms)`;
+  - `persist()` without a deadline, refused rows capped per day only (now 5000 over all days), an upload whose
+    bytes were all sent reported as "cancelled", a viewer's history request opening every past day, a restarted
+    viewer loop's old socket queueing every message, `initHistory` running twice.
+- **Relay**: a reconnecting reader's replaced socket (4000) closing said "no reader" next to the new one; a
+  replaced socket still listed made the reader's own drop look live with no end and no push; a replaced
+  socket's late close recorded a second end (a second push). The room now marks the sockets it replaces
+  (attachment) and counts only unmarked ones (`room::live_now`).
+- `?test&connsec=N` (test only): one second of the connection loop = N ms, for the year simulation.
+
 ## 0.9.85 (2026-11-01): the app shell's round 3 - no callback lifecycles left
 
 - **Why** (owner, after 0.9.84: "go ahead with the cast thing and any other not following house rules in batray
