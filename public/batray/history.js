@@ -21,7 +21,7 @@
 // card says "not stored".
 
 import { opTimeoutMs, statsState, statsAdd, stuckDecision, statsLine, statsReset, bucketsFromRows, energyFromRows, daysInRange } from './history-logic.js';
-import { sleep, Flag, TIMEOUT } from './sync.js';
+import { sleep, select, Flag, TIMEOUT } from './sync.js';
 
 const WORKER_URL = 'history-worker.js';
 
@@ -110,7 +110,7 @@ class WorkerBackend {
 }
 
 // a worker silent this long while its calls time out is stuck (not just busy); memory-only retries the store
-export const STUCK_SILENT_MS = 20000, RETRY_MS = 120000, RETRY_TRIES = 30;
+export const STUCK_SILENT_MS = 20000, RETRY_MS = 120000, RETRY_TRIES = 30, PERSIST_MS = 10000;
 const POOL_LOCKED_RX = /Access Handles? cannot be created|pool not taken/i;
 const KIND = { ping: 'ping', pause: 'other', resume: 'other', insert: 'insert', days: 'days', info: 'days', rows: 'rows', last: 'rows', query: 'query', span: 'query', remove: 'remove', clear: 'clear', export: 'export', import: 'import', oldFiles: 'days', slow: 'other', spin: 'other', corrupt: 'other', note: 'log', logAppend: 'log', logList: 'log', logRead: 'log', logRemove: 'log', logClear: 'log', logAllGz: 'export', estimate: 'days', config: 'other', stores: 'days', dropStore: 'remove' };
 
@@ -194,10 +194,13 @@ export class HistoryStore {
    *  (a worker killed while busy keeps its files until a reload, a timer-hung one lets go - 2026-09-24 probes). */
   async retryLater() {
     if (this.retrying || typeof Worker !== 'function') return;
-    this.retrying = true;
+    this.retrying = true; this.retryAc = new AbortController();
     try {
-      for (let i = 0; i < this.retryTries && this.backend === 'memory'; i++) {
-        await sleep(this.retryMs);
+      // every RETRY_MS for the first RETRY_TRIES, then every 15 min for as long as the page lives: a 24/7 reader nobody
+      // reloads must store again whenever its pool frees (long-run review 2026-11-05: it gave up after an hour)
+      for (let i = 0; this.backend === 'memory' && !this.released; i++) {
+        try { await sleep(i < this.retryTries ? this.retryMs : this.retryMs * 7.5, this.retryAc.signal); } catch { return; }   // release() ends the wait
+        if (this.released) return;
         const wb = new WorkerBackend(this.log, this.makeWorker, this.store);
         try {
           const r = await wb.call('ping', {}, this.timeoutFor('ping'));
@@ -205,7 +208,7 @@ export class HistoryStore {
           this.log(`history: the store opened on a later try (${i + 1}): SQLite over ${r.vfs}, ${r.files} files - readings are kept again`);
           if (this.onBackend) { try { this.onBackend(this.backend); } catch { /* ui */ } }
           return;
-        } catch (e) { try { wb.stop(); } catch { /* gone */ } if (i === 0 || i === this.retryTries - 1) this.log(`history: the store is still locked (${e && e.message}) - ${i === this.retryTries - 1 ? 'giving up until a reload' : 'trying again'}`); }
+        } catch (e) { try { wb.stop(); } catch { /* gone */ } if (i === 0 || i === this.retryTries - 1 || (i >= this.retryTries && (i - this.retryTries) % 4 === 3)) this.log(`history: the store is still locked (${e && e.message}) - ${i < this.retryTries - 1 ? 'trying again' : 'trying again every 15 min'} (try ${i + 1})`); }
       }
     } finally { this.retrying = false; }
   }
@@ -214,7 +217,15 @@ export class HistoryStore {
   /** Ask the browser not to evict the files under storage pressure; Chrome grants it silently for an engaged site. */
   async persist() {
     if (this.persistent !== null) return this.persistent;
-    try { this.persistent = typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist ? !!(await navigator.storage.persist()) : false; } catch { this.persistent = false; }
+    // bounded: the first flush waits for this answer, and a browser that never gives one must not hold every flush
+    // after it (long-run review 2026-11-05)
+    try {
+      if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
+        const r = await select(null, { ok: () => navigator.storage.persist(), late: (s) => sleep(PERSIST_MS, s) });
+        this.persistent = r.key === 'ok' ? !!r.value : false;
+        if (r.key === 'late') this.log(`history: the browser gave no answer on persistent storage in ${PERSIST_MS / 1000} s - going on without it`);
+      } else this.persistent = false;
+    } catch { this.persistent = false; }
     return this.persistent;
   }
   // ---- day databases ----
@@ -233,10 +244,10 @@ export class HistoryStore {
   /** Hand the pool back (pagehide): the worker is stopped, which releases its access handles; the next call starts
    *  a new one. Not SQLite's pauseVfs(): pausing the VFS while the page went into the back/forward cache crashed
    *  the renderer in the sandbox (2026-09-24). */
-  release() { this.released = true; if (this.b instanceof WorkerBackend) { this.b.stop(); this.log('history: worker stopped for the page hide (a fresh one starts when the page is shown again)'); } }
+  release() { this.released = true; if (this.retryAc) this.retryAc.abort(); if (this.b instanceof WorkerBackend) { this.b.stop(); this.log('history: worker stopped for the page hide (a fresh one starts when the page is shown again)'); } }
   /** The page is back from the back/forward cache: a fresh worker through the same gate as a restart (its ping waits
    *  for the pool; calls wait for the ping), not a cold first call racing the pool's own retries. */
-  rejoin() { if (!this.released) return; this.released = false; if (this.b instanceof WorkerBackend) this.reopen(); }
+  rejoin() { if (!this.released) return; this.released = false; if (this.b instanceof WorkerBackend) this.reopen(); else if (this.backend === 'memory') void this.retryLater(); }
   estimate() { return this.call('estimate'); }
   slow(ms) { return this.call('slow', { ms }); }
   spin(ms) { return this.call('spin', { ms }); }

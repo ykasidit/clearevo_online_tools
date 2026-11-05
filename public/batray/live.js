@@ -26,7 +26,7 @@
 // (messages, a ping every SIG_PING_MS, dead after SIG_DEAD_MS of silence),
 // count down, again. The socket callbacks only set a flag or push a channel.
 import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, readerPresent, FRESH_MS, SIG_PING_MS } from './live-logic.js';
-import { Flag, Channel, sleep, select, isAbort, abortError } from './sync.js';
+import { Flag, Channel, sleep, select, isAbort, abortError, deadline } from './sync.js';
 
 const API = '/batray/api';
 const RETRY_S = 4;             // reopen countdown after the socket dies
@@ -107,6 +107,20 @@ function watchNet(self) {
 function unwatchNet(self) { if (self.netHandler) { window.removeEventListener('online', self.netHandler); window.removeEventListener('offline', self.netHandler); self.netHandler = null; } }
 const wsUrl = (room, role, token) => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${API}/room/${room}/ws?role=${role}${token ? `&token=${token}` : ''}`;
 
+/** The loop for good: a throw that is not the stop is logged and the loop starts again after the retry wait - a
+ *  share on a 24/7 reader must not end on one bad message or one failed hook (long-run review 2026-11-05). */
+async function supervise(self, what, signal) {
+  for (;;) {
+    try { await self.run(signal); return; }
+    catch (e) {
+      if (isAbort(e) || signal.aborted) return;
+      self.log(`live: ${what} loop failed (${e && e.message ? e.message : e}) - starting it again`);
+      self.state.sig = false; self.state.live = false; self.emit();
+      const ms = (self.retryS || RETRY_S) * 1000;
+      try { await sleep(ms, signal); } catch { return; }
+    }
+  }
+}
 export class Publisher {
   /** opts: { log(msg), onState(state), onRequest(msg), retryS } - state: { viewers, live, retryIn, error, sent, dropped, sig, net };
    *  onRequest gets a viewer's `hist-req` ({ from, have }) */
@@ -122,7 +136,8 @@ export class Publisher {
     this.resumed = new Channel();     // the tab came back: a countdown ends early, a serving socket is pinged now
     this.ac = null; this.task = null;
   }
-  emit() { this.onState({ ...this.state }); }
+  /** The app's paint hook: a throw in it is logged, never the end of the loop (long-run review 2026-11-05). */
+  emit() { try { this.onState({ ...this.state }); } catch (e) { this.log(`live: the state hook failed: ${e && e.message ? e.message : e}`); } }
 
   /** existing: { room, pub, key } from an earlier share - the same link keeps
    *  working for viewers who bookmarked it. Falls back to a new room only when
@@ -151,7 +166,7 @@ export class Publisher {
     this.log(`live share room ${room} ${this.reused ? 'reused' : 'created'}`);
     watchNet(this);
     this.ac = new AbortController();
-    this.task = this.run(this.ac.signal).catch((e) => { if (!isAbort(e)) this.log(`live: publisher loop died: ${e.message}`); });
+    this.task = supervise(this, 'publisher', this.ac.signal);
     return this.link;
   }
 
@@ -179,12 +194,12 @@ export class Publisher {
   }
   /** The countdown on the chip; the tab resuming (nudge) ends it early. */
   async retryWait(seconds, signal) {
-    const deadline = Date.now() + seconds * 1000;                           // wall clock: a throttled tab is not owed the missed seconds
+    const dl = deadline(seconds * 1000);                                    // a throttled tab is not owed the missed seconds, a clock set back adds none
     for (;;) {
-      const left = Math.ceil((deadline - Date.now()) / 1000);
+      const left = Math.ceil(dl.left() / 1000);
       if (left <= 0) break;
       this.state.retryIn = left; this.emit();
-      const step = Math.min(1000, deadline - Date.now());
+      const step = Math.min(1000, dl.left());
       const r = await select(signal, { tick: (s) => sleep(step, s), resume: (s) => this.resumed.ready({ signal: s }) });
       if (r.key === 'resume') { this.resumed.take(); this.log('live: tab resumed, reconnecting now'); break; }
     }
@@ -195,7 +210,7 @@ export class Publisher {
       const key = `${m.viewers}|${m.live}`;
       if (key !== this.lastStatusKey) { this.lastStatusKey = key; this.log(`status: viewers=${m.viewers} live=${m.live}`); }
       this.state.viewers = m.viewers; this.emit();
-    } else if (m.type === 'hist-req') this.onRequest(m);           // a viewer lists the day files it has; the app answers over publish(env, m.from)
+    } else if (m.type === 'hist-req') { try { this.onRequest(m); } catch (e) { this.log(`live: the history request hook failed: ${e && e.message ? e.message : e}`); } }           // a viewer lists the day files it has; the app answers over publish(env, m.from)
   }
 
   get credentials() { return { room: this.room, pub: this.pubToken, key: this.keyB64, at: Date.now() }; }
@@ -251,7 +266,8 @@ export class Viewer {
     this.resumed = new Channel();
     this.ac = null; this.task = null;
   }
-  emit() { this.onState({ ...this.state }); }
+  /** The app's paint hook: a throw in it is logged, never the end of the loop (long-run review 2026-11-05). */
+  emit() { try { this.onState({ ...this.state }); } catch (e) { this.log(`live: the state hook failed: ${e && e.message ? e.message : e}`); } }
 
   async start() {
     if (this.task !== null) return;
@@ -259,7 +275,7 @@ export class Viewer {
     if (this.stopped) return;                                            // stopped while the key was imported
     watchNet(this);
     this.ac = new AbortController();
-    this.task = this.run(this.ac.signal).catch((e) => { if (!isAbort(e)) this.log(`live: viewer loop died: ${e.message}`); });
+    this.task = supervise(this, 'viewer', this.ac.signal);
   }
 
   /** The one owner of the socket: open, serve until it dies, count down, again. The retained messages arrive first. */
@@ -286,12 +302,12 @@ export class Viewer {
   }
   /** The countdown on the chip; the tab resuming ends it early. */
   async retryWait(seconds, signal) {
-    const deadline = Date.now() + seconds * 1000;                           // wall clock: a throttled tab is not owed the missed seconds
+    const dl = deadline(seconds * 1000);                                    // a throttled tab is not owed the missed seconds, a clock set back adds none
     for (;;) {
-      const left = Math.ceil((deadline - Date.now()) / 1000);
+      const left = Math.ceil(dl.left() / 1000);
       if (left <= 0) break;
       this.state.retryIn = left; this.emit();
-      const step = Math.min(1000, deadline - Date.now());
+      const step = Math.min(1000, dl.left());
       const r = await select(signal, { tick: (s) => sleep(step, s), resume: (s) => this.resumed.ready({ signal: s }) });
       if (r.key === 'resume') { this.resumed.take(); this.log('live: tab resumed, reconnecting now'); break; }
     }

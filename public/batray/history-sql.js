@@ -142,6 +142,9 @@ export function dayInfo(db) {
   const packs = db.selectValues('SELECT DISTINCT p FROM readings ORDER BY p');
   return { rows: r.rows, maxId: r.maxId, minT: r.minT, maxT: r.maxT, packs, contig: contigId(db) };
 }
+/** What the day listing needs: the row count and the highest id - one light query (dayInfo's contiguity scan and
+ *  pack list are for one day at a time). */
+export function dayCount(db) { const r = db.selectObject('SELECT count(*) AS rows, coalesce(max(id), 0) AS maxId FROM readings'); return { rows: r.rows, maxId: r.maxId }; }
 /** The database's size on disk in bytes (pages x page size). */
 export function dbBytes(db) { return db.selectValue('SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()'); }
 

@@ -35,6 +35,7 @@ import { OWNER_32S_CELL, AIO_32S_DEV, ESPHOME_24S_SETTINGS } from '../batray_fra
 const PORT = Number(process.env.PORT || 8111), CDP = Number(process.env.CDP || 9361);
 const BASE = process.env.BASE || `http://127.0.0.1:${PORT}`;
 const DAYS = Number(process.env.DAYS || 365), DAY_MS = Number(process.env.DAY_MS || 4000);
+const SEED_ROWS = Number(process.env.SEED_ROWS ?? 5760);                    // rows added to each simulated day so the day files have a real size (a two-pack day is ~57600)
 const CONNSEC = 50;                                                          // one second of the connection loop = 50 ms
 const good = JSON.parse(readFileSync(new URL('../longrun/reader_good_day.json', import.meta.url), 'utf8'));
 const bad = JSON.parse(readFileSync(new URL('../longrun/reader_bad_night.json', import.meta.url), 'utf8'));
@@ -156,6 +157,15 @@ function dayPlan(d) {
 // ---- probes ----
 await send('HeapProfiler.enable');
 async function heap() { await send('HeapProfiler.collectGarbage'); await send('HeapProfiler.collectGarbage'); const u = await send('Runtime.getHeapUsage'); const c = await send('Memory.getDOMCounters'); return { heapMB: Math.round(u.usedSize / 1048576 * 100) / 100, nodes: c.nodes, listeners: c.jsEventListeners, documents: c.documents }; }
+// what the whole page uses, the SQLite worker included (its wasm heap is an ArrayBuffer the page's heap does not
+// count); the runner passes --enable-blink-features=ForceEagerMeasureMemory so the answer comes at once
+const measureJs = `(async () => { if (typeof performance.measureUserAgentSpecificMemory !== 'function') return null;
+  const m = await performance.measureUserAgentSpecificMemory(); let worker = 0;
+  for (const b of m.breakdown) if (b.attribution.some((a) => /Worker/.test(a.scope))) worker += b.bytes;
+  return { totalMB: Math.round(m.bytes / 1048576 * 10) / 10, workerMB: Math.round(worker / 1048576 * 10) / 10 }; })()`;
+async function measure() { try { return await Promise.race([evalJs(measureJs), sleep(60000).then(() => null)]); } catch { return null; } }
+// the stored day listing, timed: it runs at every start, every midnight and every viewer's history request
+const listJs = `(async () => { const t0 = performance.now(); const d = await window.__batrayTest.histList(); return { ms: Math.round(performance.now() - t0), days: d.length }; })()`;
 const probeJs = `(async () => {
   const t = ${T}; const c = t.connState(), h = t.histState(), l = t.logState(), s = t.shareState();
   const lines = t.logLines(); const bad = lines.filter((x) => /UNHANDLED|ERROR /.test(x));
@@ -194,6 +204,13 @@ for (let d = 1; d <= DAYS; d++) {
     await sleep(Math.max(50, Math.round(DAY_MS * 0.6 / Math.max(1, ev.length))));
     if (e === 'freeze') await evalJs('window.__sim.mute = false; 1');
   }
+  // the day's file gets its real size: SEED_ROWS more rows of the day's own reading, spread over the hours gone by
+  if (SEED_ROWS > 0) {
+    await evalJs(`(async () => { const t = window.__batrayTest, day = t.histState().day; const tpl = (await t.histRows(day, 0, 1))[0]; if (!tpl) return 0;
+      const from = Date.parse(day + 'T00:00:00Z'), span = Math.max(1, Date.now() - 60000 - from), rows = [];
+      for (let i = 0; i < ${SEED_ROWS}; i++) { const r = { ...tpl, t: from + Math.floor(i * span / ${SEED_ROWS}) }; delete r.id; rows.push(r); }
+      return t.histSeed(rows); })()`);
+  }
   // the rest of the day streams (a bad night's few hundred refusals take their time: they run out first); then the
   // clock moves to 06:00 UTC of the next day
   const left = DAY_MS - (Date.now() - t0); if (left > 0) await sleep(left);
@@ -208,6 +225,11 @@ for (let d = 1; d <= DAYS; d++) {
   if (p.backend !== 'opfs') fail(`day ${d}: the history store is still SQLite over OPFS`, p.backend);
   if (p.errorCount > lastErrors) { fail(`day ${d}: no ERROR / UNHANDLED line in the log`, p.errors); }
   lastErrors = p.errorCount;
+  if (d % 30 === 0 || d === DAYS) {
+    const l = await evalJs(listJs), m = await measure(); report.lists = report.lists || []; report.lists.push({ day: d, ...l, mem: m });
+    console.log(`day ${d}: listing ${l.days} day files took ${l.ms} ms; memory ${m ? `${m.totalMB} MB (worker ${m.workerMB} MB)` : 'not measured'}`);
+    if (l.ms > 3000) fail(`day ${d}: the day listing takes under 3 s (its deadline is 8 s; a phone is 3-4x slower than this machine)`, l);
+  }
   if (d % 10 === 0 || d === DAYS) {
     const h = await heap(); report.heaps.push({ day: d, ...h });
     console.log(`day ${d}: ${p.phase}/${p.share} rows today ${p.todayRows}, ${p.days} day files, ${p.logFiles} log files, ring ${p.ring}, ls ${p.ls}, frames ${p.frames}, connects ${p.connects} (${p.refused} refused), sockets ${p.sockets}, heap ${h.heapMB} MB, nodes ${h.nodes}, listeners ${h.listeners}`);
@@ -222,6 +244,18 @@ for (let d = 1; d <= DAYS; d++) {
     if (after.heapMB - before.heapMB > 3) fail('100k cell frames leave at most 3 MB more heap after a GC (a year is ~80M frames)', report.soak);
     if (after.listeners - before.listeners > 20) fail('100k cell frames add no event listeners', report.soak);
   }
+}
+
+// ---- a cold listing: a fresh worker (as after a reload) lists the whole year ----
+await evalJs(`(async () => { window.__batrayTest.histRestart(); return 1; })()`); await sleep(3000);
+const cold = await evalJs(listJs); report.coldList = cold;
+console.log(`cold listing after a worker restart: ${cold.days} day files in ${cold.ms} ms`);
+if (cold.ms > 4000) fail('a fresh worker lists a year of day files in under 4 s', cold);
+const mems = (report.lists || []).filter((x) => x.mem);
+if (mems.length >= 2) {
+  const a = mems[0], b = mems[mems.length - 1];
+  report.workerGrowth = { from: a.day, to: b.day, workerMB: [a.mem.workerMB, b.mem.workerMB] };
+  if (b.mem.workerMB - a.mem.workerMB > 48) fail(`the SQLite worker's memory does not grow with the stored days (day ${a.day}: ${a.mem.workerMB} MB, day ${b.day}: ${b.mem.workerMB} MB)`, report.workerGrowth);
 }
 
 // ---- the year's verdict: nothing grows with the days ----

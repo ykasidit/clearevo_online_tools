@@ -31,6 +31,13 @@ export const UPLOAD_MS = 15000, QUEUE_MAX = 20, STOP_DRAIN_MS = 15000;
 // times an hour; after that the stream stops and says so instead of sitting "live" on a frozen picture.
 export const REBUILD_MAX = 5, BUSY_MS = 10000, RELAY_MS = 15000;
 const END = Symbol('end');
+/** The muxer the stream uses (exported so a test builds exactly this one): fragmented MP4, one fragment per segment,
+ *  and `live` - the vendored muxer then keeps no list of finished fragments (they were kept for an index a live
+ *  stream never writes: ~34 MB a day of 1 s fragments, long-run review 2026-11-05).
+ *  @param {{ codec: string, width: number, height: number, segS: number }} o @param {any} target */
+export function muxerOptions(o, target) {
+  return { target, video: { codec: o.codec.startsWith('avc') ? 'avc' : 'vp9', width: o.width, height: o.height }, fastStart: 'fragmented', minFragmentDuration: Math.max(0.5, o.segS - 0.5), firstTimestampBehavior: 'strict', live: true };
+}
 
 async function j(path, init = {}) {
   const r = await fetch(`${API}/${path}`, init);
@@ -94,11 +101,7 @@ export class TvStream {
    *  init segment, sent before its segments (the queue keeps the order). */
   makeEncoder() {
     this.splitter = new BoxSplitter();
-    this.muxer = new Muxer({
-      target: new StreamTarget({ onData: (d, pos) => this.splitter.push(d, pos) }),
-      video: { codec: this.codec.startsWith('avc') ? 'avc' : 'vp9', width: this.width, height: this.height },
-      fastStart: 'fragmented', minFragmentDuration: Math.max(0.5, this.segS - 0.5), firstTimestampBehavior: 'strict',
-    });
+    this.muxer = new Muxer(muxerOptions(this, new StreamTarget({ onData: (d, pos) => this.splitter.push(d, pos) })));
     this.encoder = new VideoEncoder({
       output: (chunk, meta) => {
         try { this.muxer.addVideoChunk(chunk, meta); if (chunk.type === 'key') this.harvest(); } catch (e) { this.encErr = this.encErr || e; }

@@ -1,4 +1,6 @@
-// mp4-muxer 5.2.2 - vendored, unmodified build (MIT). https://github.com/Vanilagy/mp4-muxer
+// mp4-muxer 5.2.2 - vendored build (MIT). https://github.com/Vanilagy/mp4-muxer
+// One BatRay change, marked "BatRay patch": option `live: true` (fragmented mode) keeps no list of finished
+// fragments - they were kept for an mfra index a live stream never writes, ~34 MB a day of 1 s fragments (2026-11-05).
 // MIT License  Copyright (c) 2023 Vanilagy 
 // Used by BatRay by ClearEvo.com (GPL v2) for the Show on TV stream; this file keeps its own MIT licence.
 var __accessCheck = (obj, member, msg) => {
@@ -1854,8 +1856,10 @@ finalizeFragment_fn = function(flushStreamingWriter = true) {
   __privateGet(this, _writer).writeBox(newMoofBox);
   __privateGet(this, _writer).seek(endPos);
   for (let track of tracks) {
-    track.finalizedChunks.push(track.currentChunk);
-    __privateGet(this, _finalizedChunks).push(track.currentChunk);
+    if (!__privateGet(this, _options).live) {           // BatRay patch: a live stream never writes the mfra index, so it keeps no fragment list
+      track.finalizedChunks.push(track.currentChunk);
+      __privateGet(this, _finalizedChunks).push(track.currentChunk);
+    }
     track.currentChunk = null;
   }
   if (flushStreamingWriter) {

@@ -89,6 +89,15 @@ export async function select(signal, arms) {
   } finally { ac.abort(); if (signal) signal.removeEventListener('abort', onAbort); }
 }
 
+/** A deadline `ms` from now that neither clock can stretch: the time left is the lesser of the wall clock's (capped at
+ *  `ms`: a phone clock set back by NTP or by hand must not add an hour to a 10 s countdown) and the monotonic clock's
+ *  (performance.now, which a throttled hidden tab does not hold back). A phone in deep sleep may stall the monotonic
+ *  clock: the wall clock still moves, and the lesser wins (long-run review 2026-11-05).
+ *  @param {number} ms */
+export function deadline(ms) {
+  const wall = Date.now() + ms, mono = performance.now() + ms;
+  return { ms, left: () => Math.max(0, Math.min(Math.min(wall - Date.now(), ms), mono - performance.now())) };
+}
 /** A periodic job as a loop: the next run starts `ms` after the previous one ENDED, so a slow run (a flush that takes
  *  longer than its period on a busy phone) never overlaps the next one, as setInterval would let it. A job that
  *  throws goes to onError and the loop goes on; only the signal ends it. first: the delay before the first run.

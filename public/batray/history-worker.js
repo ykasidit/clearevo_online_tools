@@ -31,7 +31,7 @@
 // year-long cached copy that had no header.
 import sqlite3InitModule from './sqlite3.js';
 import { isCorruptError } from './history-logic.js';
-import { ensureSchema, insertRows, rowsAfter, lastRows, buckets, energyWh, span, dayInfo, dbBytes, mergeFrom, looksLikeDayDb } from './history-sql.js';
+import { ensureSchema, insertRows, rowsAfter, lastRows, buckets, energyWh, span, dayInfo, dayCount, dbBytes, mergeFrom, looksLikeDayDb } from './history-sql.js';
 import { storeDirs, storeOfDir, storeOfLogDir, validTabId } from './tab-logic.js';
 import { sleep } from './sync.js';
 
@@ -40,7 +40,8 @@ const DIR = 'batray-history';           // text files: one logs directory per st
 // directory come from that id (tab-logic storeDirs). Other tabs' stores are only listed, read (their logs) or removed.
 let STORE = null, DIRS = null;
 const OLD_RX = /^\d{4}-\d{2}-\d{2}\.ndjson(\.gz)?$/;   // a day file from before 0.9.40
-const IDLE_CLOSE_MS = 60000;            // a past day's database is closed after this without use (today's stays open)
+const IDLE_CLOSE_MS = 60000;
+const PAGE_CACHE_KIB = 512;           // SQLite's page cache per open day database (its default is 2 MB)            // a past day's database is closed after this without use (today's stays open)
 const enc = new TextEncoder(), dec = new TextDecoder();
 let dirP = null;
 function dir() { if (!dirP) dirP = openDir(); return dirP; }
@@ -95,13 +96,39 @@ async function open(day, create = true) {
   if (!create && !pool.getFileNames().includes(dbName(day))) return null;
   await room();
   const db = new pool.OpfsSAHPoolDb(dbName(day));
-  try { db.exec('PRAGMA synchronous = NORMAL'); ensureSchema(db); } catch (e) { try { db.close(); } catch { /* already */ } throw e; }
+  try { db.exec('PRAGMA synchronous = NORMAL'); db.exec(`PRAGMA cache_size = -${PAGE_CACHE_KIB}`); ensureSchema(db); } catch (e) { try { db.close(); } catch { /* already */ } throw e; }
   dbs.set(day, { db, usedAt: Date.now() });
   return db;
 }
 function close(day) { const o = dbs.get(day); if (!o) return; try { o.db.close(); } catch { /* closing */ } dbs.delete(day); }
 function closeIdle(keep) { const now = Date.now(); for (const [day, o] of dbs) if (day !== keep && day !== DEMO_DAY && now - o.usedAt > IDLE_CLOSE_MS) close(day); }
 function todayKey() { return new Date().toISOString().slice(0, 10); }
+/** Run fn over a stored day's database; a past day this call opened is closed again at once, so a walk over a year
+ *  of days holds one page cache at a time (long-run review 2026-11-05: every listing had left every day open, the
+ *  wasm heap never shrinks - ~6 MB of page cache per day file). */
+async function visit(day, fn) {
+  const was = dbs.has(day);
+  const db = await open(day, false); if (!db) return null;
+  try { return fn(db); } finally { if (!was && day !== todayKey() && day !== DEMO_DAY) close(day); }
+}
+// What the day listing needs of a PAST day (bytes, rows, highest id) does not change unless something writes that day:
+// kept here and in a small file next to the logs, so a listing - at start, every midnight, every viewer's history
+// request - costs one count per new day, not one scan of every file (the listing had a single 8 s deadline and a year
+// of two-pack days takes ~7 s on a desktop). Every write forgets its day.
+const infoCache = new Map();
+let infoLoaded = false, infoDirty = false;
+const infoName = () => `dayinfo-${STORE}.json`;
+async function loadInfo() {
+  if (infoLoaded) return; infoLoaded = true;
+  try { const b = await fileBytes(await dir(), infoName()); if (b) for (const [k, v] of Object.entries(JSON.parse(dec.decode(b)))) if (DAY_RX.test(k) && v && typeof v.rows === 'number') infoCache.set(k, v); }
+  catch { infoCache.clear(); }                                               // unreadable: counted again
+}
+async function saveInfo() {
+  if (!infoDirty) return; infoDirty = false;
+  try { const fh = await (await dir()).getFileHandle(infoName(), { create: true }); const w = await fh.createWritable(); await w.write(JSON.stringify(Object.fromEntries(infoCache))); await w.close(); }
+  catch (e) { wlog(`day facts not saved: ${(e && e.message) || e}`); }
+}
+function forget(day) { if (infoCache.delete(day)) infoDirty = true; }
 function daysOnDisk() { return pool ? pool.getFileNames().map(dayOfName).filter(Boolean).sort() : []; }
 
 async function fileBytes(d, name) {
@@ -160,19 +187,26 @@ const ops = {
     if (store === STORE) throw new Error("this tab's own store: use Clear");
     const dirs = storeDirs(store);
     const a = await rmTree(await rootDir(), dirs.db), b = await rmTree(await dir(), dirs.logs);
+    await remove(await dir(), `dayinfo-${store}.json`);                    // its day facts go with it
     return { removed: a || b };
   },
   async ping() { await init(); await dir(); return { ok: true, vfs: pool.vfsName, files: pool.getFileCount(), capacity: pool.getCapacity(), version: sqlite3.version.libVersion }; },
   /** Rows into the day's database (one transaction). */
-  async insert({ day, rows }) { const db = await open(day); const r = insertRows(db, rows || []); closeIdle(todayKey()); return r; },
+  async insert({ day, rows }) { const db = await open(day); const r = insertRows(db, rows || []); if (r.inserted) forget(day); closeIdle(todayKey()); return r; },
   /** Every stored day: {day, bytes, rows, maxId}. */
   async days() {
-    await init(); await resume(); const out = [];
-    for (const day of daysOnDisk()) {
-      const db = await open(day, false); if (!db) continue;
-      const i = dayInfo(db); out.push({ day, bytes: dbBytes(db), rows: i.rows, maxId: i.maxId });
+    await init(); await resume(); await loadInfo(); const out = [], today = todayKey();
+    const disk = daysOnDisk();
+    for (const day of disk) {
+      let i = day !== today ? infoCache.get(day) : null;
+      if (!i) {
+        i = await visit(day, (db) => ({ bytes: dbBytes(db), ...dayCount(db) })); if (!i) continue;
+        if (day !== today) { infoCache.set(day, i); infoDirty = true; }
+      }
+      out.push({ day, bytes: i.bytes, rows: i.rows, maxId: i.maxId });
     }
-    closeIdle(todayKey());
+    for (const day of [...infoCache.keys()]) if (!disk.includes(day)) forget(day);
+    closeIdle(today); await saveInfo();
     return { days: out };
   },
   async info({ day }) { const db = await open(day, false); if (!db) return { day, rows: 0, maxId: 0, minT: null, maxT: null, packs: [], contig: 0, bytes: 0 }; return { day, ...dayInfo(db), bytes: dbBytes(db) }; },
@@ -184,21 +218,22 @@ const ops = {
     await init();
     const parts = [], energy = { charged: 0, discharged: 0 }; let first = null, last = null;
     for (const day of (days || daysOnDisk())) {
-      const db = await open(day, false); if (!db) continue;
-      const b = buckets(db, { p, from, to, stepMs }); if (b.t.length) parts.push(b);
-      const e = energyWh(db, { p, from, to }); energy.charged += e.charged; energy.discharged += e.discharged;
-      const s = span(db, p, from); if (s.n) { if (first === null || s.first < first) first = s.first; if (last === null || s.last > last) last = s.last; }
+      await visit(day, (db) => {
+        const b = buckets(db, { p, from, to, stepMs }); if (b.t.length) parts.push(b);
+        const e = energyWh(db, { p, from, to }); energy.charged += e.charged; energy.discharged += e.discharged;
+        const s = span(db, p, from); if (s.n) { if (first === null || s.first < first) first = s.first; if (last === null || s.last > last) last = s.last; }
+      });
     }
     closeIdle(todayKey());
     return { parts, energy, first, last };
   },
   async span({ p, since = 0, days }) {
     await init(); let first = null, last = null, n = 0;
-    for (const day of (days || daysOnDisk())) { const db = await open(day, false); if (!db) continue; const s = span(db, p, since); if (s.n) { n += s.n; if (first === null || s.first < first) first = s.first; if (last === null || s.last > last) last = s.last; } }
+    for (const day of (days || daysOnDisk())) await visit(day, (db) => { const s = span(db, p, since); if (s.n) { n += s.n; if (first === null || s.first < first) first = s.first; if (last === null || s.last > last) last = s.last; } });
     return { first, last, n };
   },
-  async remove({ day }) { await init(); await resume(); close(day); const had = pool.getFileNames().includes(dbName(day)); if (had) pool.unlink(dbName(day)); return { removed: had }; },
-  async clear() { await init(); await resume(); for (const day of [...dbs.keys()]) close(day); let n = 0; for (const day of daysOnDisk()) { pool.unlink(dbName(day)); n++; } const d = await dir(); for await (const [name, h] of d.entries()) if (h.kind === 'file' && OLD_RX.test(name)) { await remove(d, name); n++; } return { removed: n }; },   // the demo's memory database goes too
+  async remove({ day }) { await init(); await resume(); close(day); forget(day); const had = pool.getFileNames().includes(dbName(day)); if (had) pool.unlink(dbName(day)); return { removed: had }; },
+  async clear() { await init(); await resume(); for (const day of [...dbs.keys()]) close(day); for (const day of [...infoCache.keys()]) forget(day); let n = 0; for (const day of daysOnDisk()) { pool.unlink(dbName(day)); n++; } const d = await dir(); for await (const [name, h] of d.entries()) if (h.kind === 'file' && OLD_RX.test(name)) { await remove(d, name); n++; } return { removed: n }; },   // the demo's memory database goes too
   /** The day's database as bytes (a real SQLite file: DB Browser for SQLite, Python, DuckDB open it). */
   async export({ day }) { await init(); await resume(); const o = dbs.get(day); if (o) { try { o.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* not wal */ } } const name = dbName(day); if (!pool.getFileNames().includes(name)) return { bytes: null }; return { bytes: pool.exportFile(name) }; },
   /** A day file from a backup or from the reader: checked (SQLite header, our table), then stored as the day when
@@ -206,6 +241,7 @@ const ops = {
   async import({ day, bytes }) {
     await init(); await resume();
     if (!DAY_RX.test(day)) throw new Error('bad day ' + day);
+    forget(day);
     if (!bytes || bytes.length < 100 || dec.decode(bytes.subarray(0, 15)) !== 'SQLite format 3') throw new Error('not a SQLite database');
     const tmp = '/import-tmp.sqlite';
     await room(4);
@@ -242,7 +278,7 @@ const ops = {
   async slow({ ms }) { await sleep(Math.min(ms || 0, 120000)); return { slept: ms }; },
   /** Test hook: damage a day's file in place (the header stays, every byte after it is 0xFF), as a bad flash
    *  block or a torn write would. The next read or write of that day raises SQLITE_CORRUPT. */
-  async corrupt({ day }) { await init(); await resume(); close(day); const name = dbName(day); const bytes = pool.exportFile(name); bytes.fill(0xff, 100); pool.importDb(name, bytes); return { bytes: bytes.length }; },
+  async corrupt({ day }) { await init(); await resume(); close(day); forget(day); const name = dbName(day); const bytes = pool.exportFile(name); bytes.fill(0xff, 100); pool.importDb(name, bytes); return { bytes: bytes.length }; },
   async spin({ ms }) { const end = Date.now() + Math.min(ms || 0, 120000); while (Date.now() < end) { /* busy */ } return { spun: ms }; },
   async note({ name, text }) {
     if (!/^[a-z]+\.ndjson$/.test(name)) throw new Error('bad note name');

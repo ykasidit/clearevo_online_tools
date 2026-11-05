@@ -695,10 +695,26 @@ function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 const histS = historyState();
 const hist = new HistoryStore({ log, store: TAB.id });
 hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') dropMemoryRows(); renderHistOff(); if (name === 'opfs') { histMem.ready = false; void initHistory(); void initLogStore(); } };   // memory-only after a locked pool: the Storage box says so; the store back on a later try: today's counters and the stored log again
-const histMem = { ready: false, inflight: null, failAt: 0, pending: new Map(), plot: null, plotParams: '', cursorIdx: null, series: null, drawAt: 0, drawing: false, redraw: false, spanAt: 0, demoId: 0 };
+const histMem = { ready: false, inflight: null, failAt: 0, dropped: 0, dropLogAt: 0, pending: new Map(), plot: null, plotParams: '', cursorIdx: null, series: null, drawAt: 0, drawing: false, redraw: false, spanAt: 0, demoId: 0 };
 const utf8 = new TextEncoder();
 function pendingRows() { let n = 0; for (const l of histMem.pending.values()) n += l.length; return n; }
-function queueRow(row, day = dayKey(row.t)) { const l = histMem.pending.get(day) || []; l.push(row); histMem.pending.set(day, l); }
+function queueRow(row, day = dayKey(row.t)) { const l = histMem.pending.get(day) || []; l.push(row); histMem.pending.set(day, l); capPending(); }
+/** The queue into the store holds at most PENDING_MAX rows over ALL days: a store that refuses inserts for weeks
+ *  (a dying flash, a disk full with no past day left) must not keep a day's worth of rows per day the page lives
+ *  (long-run review 2026-11-05: 5000 per day, every day, re-posted on every flush). The oldest days go first. */
+const PENDING_MAX = 5000;
+function capPending() {
+  let n = pendingRows(); if (n <= PENDING_MAX) return;
+  let dropped = 0;
+  for (const day of [...histMem.pending.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (n <= PENDING_MAX) break;
+    const l = histMem.pending.get(day), cut = Math.min(l.length, n - PENDING_MAX);
+    if (cut === l.length) histMem.pending.delete(day); else histMem.pending.set(day, l.slice(cut));
+    n -= cut; dropped += cut;
+  }
+  histMem.dropped += dropped;
+  if (Date.now() - histMem.dropLogAt > 600000) { histMem.dropLogAt = Date.now(); log(`history: the store is not taking rows - ${histMem.dropped} queued rows dropped so far (the newest ${PENDING_MAX} are kept)`); }
+}
 /** Which databases hold a pack's rows: the DEMO pack lives in the worker's in-memory database, never on disk. */
 // every day of the window, listed or not: after 00:00 UTC the new day's file exists before any listing knows it, and
 // the chart had stopped at midnight until a reload (history review 2026-11-01); the worker skips a day without a file
@@ -776,7 +792,7 @@ async function flushBatch() {
             log(`history: quota exceeded -> ${q.action} ${q.day || ''}`);
             if (q.action === 'delete') { await hist.remove(q.day).catch(() => {}); continue; }
           }
-          const l = histMem.pending.get(day) || []; histMem.pending.set(day, rows.concat(l).slice(-5000)); break;
+          const l = histMem.pending.get(day) || []; histMem.pending.set(day, rows.concat(l)); capPending(); break;
         }
       }
     }
@@ -881,13 +897,23 @@ async function initHistory() {
   if (histS.backend === 'memory') dropMemoryRows();
   const now = Date.now(), today = dayKey(now);
   histS.day = today;
+  // today's counters first, on their own, until they are read: numbering from 1 over a file that has rows makes every
+  // new row a duplicate the store ignores until midnight (long-run review 2026-11-05: a slow listing of a year of day
+  // files passed its deadline at start and took today's counters down with it)
+  await unspill();                                                          // the rows the last page left go in first: the counters below include them
+  let info = null;
+  for (let i = 1; !info; i++) {
+    try { info = await hist.info(today); }
+    catch (e) {
+      if (isCorrupt(e)) { await corruptDb(e, 'history read'); info = { rows: 0, maxId: 0, contig: 0 }; }
+      else { log(`history: today's counters not read (${e.message}), try ${i} - new readings wait in memory until they are`); await sleep(i < 3 ? 2000 : 60000); }
+    }
+  }
+  histS.todayRows = info.rows; histS.nextId = info.maxId + 1; histS.contig = info.contig;
   try {
     const old = await hist.oldFiles();                                        // before 0.9.40: NDJSON, not read, not migrated (owner: day 0)
     if (old.files) log(`history: ${old.files} day file${old.files === 1 ? '' : 's'} from before 0.9.40 (${Math.round(old.bytes / 1048576)} MB, NDJSON) are not read any more; Clear stored history removes them`);
-    await unspill();
     histS.days = await hist.days();
-    const info = await hist.info(today);
-    histS.todayRows = info.rows; histS.nextId = info.maxId + 1; histS.contig = info.contig;
     let early = 0;
     for (const [day, l] of histMem.pending) for (const r of l) if (r.id === null) { if (day === today) { r.id = nextRowId(histS); early++; } }
     for (const [day, l] of histMem.pending) if (day !== today && day !== 'demo') histMem.pending.set(day, l.filter((r) => r.id !== null));
@@ -2806,8 +2832,15 @@ async function uploadLog(btn, file = null) {
   // eslint-disable-next-line house/ui-after-await -- this upload's own progress dialog, opened once the body is read; the button is disabled until it ends
   const sheet = openSheet('uploading');
   const w = await select(null, { done: (sg) => end.flag.wait(true, { signal: sg }), closed: () => sheet });
-  if (w.key === 'closed' && !end.r) { log(`log upload: cancelled by the user (${uploadS.loaded} of ${uploadS.total} B sent)`); xhr.abort(); }
-  await end.flag.wait(true, { ms: 5000 });                                   // abort() fires onabort at once
+  // the sheet closed before the answer: with bytes still to send that is a cancel; with every byte already out the
+  // relay has (or is storing) the log, so the upload waits for its answer and reports the id instead of saying
+  // "nothing was kept" (the owner's 2026-11-01 log; a sheet the app itself opens over this one closes it too)
+  const allSent = uploadS.total > 0 && uploadS.loaded >= uploadS.total;
+  if (w.key === 'closed' && !end.r) {
+    if (allSent) log(`log upload: the sheet closed after every byte was sent (${uploadS.loaded} B) - waiting for the relay's answer`);
+    else { log(`log upload: cancelled by the user (${uploadS.loaded} of ${uploadS.total} B sent)`); xhr.abort(); }
+  }
+  await end.flag.wait(true, { ms: allSent ? UPLOAD_MS + 5000 : 5000 });      // abort() fires onabort at once; a sent one ends by its answer or the xhr timeout
   const r = end.r || { ok: false, cancelled: true };
   uploadS.xhr = null;
   if (uiS.sheet && uiS.sheet.kind === 'uploading') closeSheet('done', r.ok ? 'uploaded' : r.cancelled ? 'cancelled' : 'failed');

@@ -18,7 +18,7 @@
 // row restart the worker (pending calls fail at once, the next call works),
 // reads and writes issued at the same time all complete. The worker here is
 // a fake with the real message protocol; the memory backend is the real one.
-import test from 'node:test';
+import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { HistoryStore, MemoryBackend } from '../public/batray/history.js';
 import { OP_TIMEOUT_MS } from '../public/batray/history-logic.js';
@@ -43,7 +43,11 @@ function fakeWorkerFactory(state) {
   };
 }
 const fakeNav = () => { globalThis.Worker = function () {}; Object.defineProperty(globalThis, 'navigator', { value: { storage: { getDirectory() {}, persist: async () => true } }, configurable: true, writable: true }); };
-const store = (state, timeouts = {}, more = {}) => { fakeNav(); return new HistoryStore({ log: (m) => state.logs.push(m), makeWorker: fakeWorkerFactory(state), timeouts, stuckSilentMs: 30, retryTries: 0, ...more }); };
+// every store a test makes is released after it: a store that went memory-only tries the pool again for as long as
+// the page lives (0.9.86), and its wait would keep node running
+const made = [];
+afterEach(() => { for (const h of made.splice(0)) h.release(); });
+const store = (state, timeouts = {}, more = {}) => { fakeNav(); const h = new HistoryStore({ log: (m) => state.logs.push(m), makeWorker: fakeWorkerFactory(state), timeouts, stuckSilentMs: 30, retryTries: 0, ...more }); made.push(h); return h; };
 
 test('insert then read through the worker protocol; ids handed out; the open line is logged', async () => {
   const st = { logs: [], workers: [] }; const h = store(st);

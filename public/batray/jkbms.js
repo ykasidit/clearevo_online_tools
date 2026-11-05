@@ -572,13 +572,18 @@ export class JkBms extends EventTarget {
   /** The browser queues every gatt.connect() behind the oldest unsettled one; that group is `pending` until all of
    *  them settle (a slow stack settles them together). */
   _track(p) {
-    if (!this.pending) this.pending = { since: Date.now(), n: 0, done: new Flag(false) };
-    const g = this.pending; g.n++;
-    void this._settle(p, g);
+    if (!this.pending) this.pending = { since: Date.now(), n: 0, done: new Flag(false), open: [], age() { return this.open.length ? performance.now() - this.open[0].mono : 0; } };
+    const g = this.pending, c = { mono: performance.now(), wall: Date.now() }; g.n++; g.open.push(c);
+    void this._settle(p, g, c);
     return p;
   }
-  async _settle(p, g) {
+  /** One connect of the group settled. The group's age is its OLDEST UNSETTLED connect's, on the monotonic clock:
+   *  a BMS out of range has each connect rejected after ~30 s while the next is already queued, so the group lives
+   *  on but no single connect is stuck (long-run review 2026-11-05: every round against an absent BMS ended in the
+   *  "Bluetooth was off" sheet); a day jump of the wall clock cannot make one look stuck either. */
+  async _settle(p, g, c) {
     try { await p; } catch { /* the attempt reports its own failure */ }
+    g.open = g.open.filter((x) => x !== c); if (g.open.length) g.since = g.open[0].wall;
     if (--g.n === 0) { g.done.set(true); if (this.pending === g) this.pending = null; }
   }
 

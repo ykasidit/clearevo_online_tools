@@ -112,7 +112,8 @@ export function daysInRange(from, to) {
 }
 
 /** Is it time to store another row of this pack? (one per MIN_ROW_MS; the meters still paint every frame) */
-export function rowDue(lastRowAt, t, minMs = MIN_ROW_MS) { return !lastRowAt || t - lastRowAt >= minMs; }
+/** One stored row per pack per minMs; a clock set back (NTP, by hand) is a new start, not minutes of silence. */
+export function rowDue(lastRowAt, t, minMs = MIN_ROW_MS) { return !lastRowAt || t - lastRowAt >= minMs || t < lastRowAt; }
 
 const nz = (x) => (x === undefined || x === null || Number.isNaN(x) ? null : x);
 /** One reading -> one row. Short keys, cells as millivolts. The id is given by the reader when it queues the row. */

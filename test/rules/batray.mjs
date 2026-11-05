@@ -123,7 +123,7 @@ export default {
           const name = c.split(/\s/)[0];
           assert.equal(h.count(c, /async run\(signal\)/g), 1, `${name}: one run()`);
           assert.ok(/if \(this\.task !== null\) return/.test(c), `${name}: start() must refuse a second loop (one owner)`);
-          assert.ok(/this\.task = this\.run\(this\.ac\.signal\)/.test(c), `${name}: start() launches run() under an AbortController`);
+          assert.ok(/this\.task = (this\.run\(this\.ac\.signal\)|supervise\(this, '\w+', this\.ac\.signal\))/.test(c), `${name}: start() launches run() under an AbortController (directly or through supervise(), which restarts it after a throw)`);
           assert.ok(/this\.ac\.abort\(\)/.test(c), `${name}: stop() aborts the loop`);
           assert.ok(/isAbort\(e\)\) throw e/.test(c), `${name}: the loop lets the stop signal through its catch`);
         }

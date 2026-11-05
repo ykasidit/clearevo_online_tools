@@ -31,7 +31,7 @@
 // command means and what follows the end of a link are pure tables in conn-logic.js; what to do on a connected link
 // each tick is jkbms.js linkStep(). The app (h) paints and logs; it never writes the state.
 
-import { Channel, select, sleep, isAbort } from './sync.js';
+import { Channel, select, sleep, isAbort, deadline } from './sync.js';
 import { connState, cmdIn, retryDecision, afterEnd, CONNECT_S, CONNECT_GAP_MS, SERVE_TICK_MS, DOWN_WAIT_MS, RECONNECT_S } from './conn-logic.js';
 import { buildCommand, CMD_CELL_INFO, STUCK_MS, HANDSHAKE_WAIT_MS, linkStep } from './jkbms.js';
 
@@ -89,10 +89,11 @@ export class BleConn {
    *  command never vanishes in a select another arm won (a Disconnect tap queued as the link fell). */
   cmdArm(s) { return this.cmd.ready({ signal: s }); }
   take() { return this.cmd.take(); }
-  /** Wall-clock seconds left to a deadline (a throttled hidden tab wakes late: the count must not fall behind). */
-  secsLeft(deadline) { return Math.max(0, Math.ceil((deadline - Date.now()) / this.o.secMs)); }
+  /** Seconds left to a deadline() (sync.js): a throttled hidden tab wakes late and the count must not fall behind; a
+   *  clock set back must not stretch it either (long-run review 2026-11-05). */
+  secsLeft(dl) { return Math.max(0, Math.ceil(dl.left() / this.o.secMs)); }
   /** The oldest browser connect still unsettled has run past STUCK_MS: it ran with Bluetooth off (0.9.81). */
-  stuckNow() { const g = this.bms.pending; return !!g && Date.now() - g.since >= this.o.stuckMs; }
+  stuckNow() { const g = this.bms.pending; return !!g && g.age() >= this.o.stuckMs; }
 
   async run(signal) {
     let go = await this.idle(signal, '');
@@ -169,7 +170,7 @@ export class BleConn {
       else this.h.log(`connect: ${f.key === 'late' ? `getDevices() did not answer in ${this.o.freshMs} ms` : 'getDevices() failed'} - the handle we have`);
     }
     signal.throwIfAborted();
-    const deadline = Date.now() + this.o.connectS * this.o.secMs;
+    const dl = deadline(this.o.connectS * this.o.secMs);
     this.h.attempt(n);
     const ac = new AbortController();
     const quit = () => ac.abort();
@@ -178,7 +179,7 @@ export class BleConn {
     const fail = (msg) => { ac.abort(); this.bms.close(); this.h.log(`connect: attempt ${n} failed after ${Date.now() - t0} ms: ${msg}`); return { msg }; };
     try {
       for (;;) {
-        const r = await select(signal, { open: () => opening, tick: (s) => sleep(Math.min(this.o.secMs, Math.max(1, deadline - Date.now())), s), cmd: (s) => this.cmdArm(s) });
+        const r = await select(signal, { open: () => opening, tick: (s) => sleep(Math.min(this.o.secMs, Math.max(1, dl.left())), s), cmd: (s) => this.cmdArm(s) });
         if (r.key === 'open') {
           if (r.value.ok) { this.h.log(`connect: ok on attempt ${n} in ${Date.now() - t0} ms`); return { ok: true }; }
           return fail(r.value.e.message);
@@ -189,7 +190,7 @@ export class BleConn {
           this.h.log(`conn: ${cmd} ignored (an attempt is in progress)`);
           continue;
         }
-        this.cs.left = this.secsLeft(deadline);
+        this.cs.left = this.secsLeft(dl);
         if (this.stuckNow()) { ac.abort(); return { end: 'stuck' }; }
         if (this.cs.left === 0) return fail(`no answer in ${this.o.connectS} s`);
         this.h.changed();
@@ -275,16 +276,16 @@ export class BleConn {
   }
 
   async countdown(seconds, signal, why) {
-    let deadline = Date.now() + seconds * this.o.secMs;
+    let dl = deadline(seconds * this.o.secMs);
     this.cs.count = seconds;
     this.enter('countdown', `${why}, ${seconds} s`);
     while (this.cs.count > 0) {
-      const r = await select(signal, { tick: (s) => sleep(Math.min(this.o.secMs, Math.max(1, deadline - Date.now())), s), cmd: (s) => this.cmdArm(s) });
-      if (r.key === 'tick') { this.cs.count = this.secsLeft(deadline); if (this.stuckNow()) return 'stuck'; this.h.changed(); continue; }
+      const r = await select(signal, { tick: (s) => sleep(Math.min(this.o.secMs, Math.max(1, dl.left())), s), cmd: (s) => this.cmdArm(s) });
+      if (r.key === 'tick') { this.cs.count = this.secsLeft(dl); if (this.stuckNow()) return 'stuck'; this.h.changed(); continue; }
       const cmd = this.take(), c = cmdIn('countdown', cmd, this.cs);
       if (c === 'go') { this.cs.origin = cmd === 'known' ? 'known' : 'manual'; this.h.log(`reconnect: now (${cmd})`); return 'go'; }
       if (c === 'choose' || c === 'stop') return c;
-      if (c === 'short') { deadline = Math.min(deadline, Date.now() + RECONNECT_S.adapter * this.o.secMs); this.cs.count = this.secsLeft(deadline); this.h.log(`reconnect: Bluetooth is back, in ${this.cs.count} s`); this.h.changed(); }
+      if (c === 'short') { const sooner = deadline(RECONNECT_S.adapter * this.o.secMs); if (sooner.left() < dl.left()) dl = sooner; this.cs.count = this.secsLeft(dl); this.h.log(`reconnect: Bluetooth is back, in ${this.cs.count} s`); this.h.changed(); }
     }
     this.cs.origin = 'auto';
     return 'go';
