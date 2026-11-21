@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, REACH_HOLD_MS, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision } from '../public/batray/share-logic.js';
+import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, REACH_HOLD_MS, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision, remotePackState, viewPackPick } from '../public/batray/share-logic.js';
 import { suggestChannelName } from '../public/batray/live-logic.js';
 
 test('the Share button: opens the setup, is sunk and stops on the next press, greyed while starting', () => {
@@ -128,4 +128,27 @@ test('Fable review 2026-11-01: a viewer pack is live only with the reader there,
   assert.equal(d({ live: false }), false, 'no socket');
   assert.equal(d({ readerConnected: false }), false, 'the reader lost that BMS');
   assert.equal(d({ readerConnected: undefined }), true, 'not listed yet: the socket decides');
+});
+
+// 2026-11-21 viewer log (0.9.86): the stream was live (lastRx 7 s) and s-01 streamed, but the reader's Bluetooth link to
+// m-00 had been down 12 h; the page opened on m-00 and said "Reconnecting to the live stream" + "viewing m-00 live".
+test('a remote pack: the stream, the reader and the pack are told apart (2026-11-21 replay)', () => {
+  const st = (o) => remotePackState({ streamLive: true, readerGone: false, packLive: false, readerConnected: false, ...o });
+  assert.equal(st({}), 'packOff');                                         // m-00 in the log: reader up, no BT link
+  assert.equal(st({ readerConnected: true }), 'packStale');                // linked but no fresh reading
+  assert.equal(st({ readerConnected: undefined }), 'packStale');           // the pack list not seen yet
+  assert.equal(st({ packLive: true }), 'live');                            // s-01
+  assert.equal(st({ streamLive: false }), 'stream');                       // our own socket down: reconnecting
+  assert.equal(st({ streamLive: false, readerGone: true }), 'readerOff');  // the server says no reader
+  assert.equal(st({ readerGone: true }), 'readerOff');
+  assert.equal(st({ packLive: true, readerGone: true }), 'live');          // a fresh reading proves the reader (FRESH_MS rule)
+});
+test('a viewer opens on a live pack, and a chip tap is never overruled', () => {
+  const packs = [{ id: 'm-00', live: false }, { id: 's-01', live: true }];
+  assert.equal(viewPackPick(packs, 'm-00', false), 's-01');                 // the log: m-00 first, s-01 live
+  assert.equal(viewPackPick(packs, 'm-00', true), 'm-00');                  // the person tapped m-00
+  assert.equal(viewPackPick(packs, 's-01', false), 's-01');                 // already live: stays
+  assert.equal(viewPackPick([{ id: 'm-00', live: false }, { id: 's-01', live: false }], 'm-00', false), 'm-00');   // nothing live: no flapping
+  assert.equal(viewPackPick([], null, false), null);
+  assert.equal(viewPackPick([{ id: 'a', live: true }], 'gone', false), 'a'); // the active id no longer listed
 });

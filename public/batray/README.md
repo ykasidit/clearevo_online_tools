@@ -134,6 +134,20 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.87 (2026-11-21): a viewer pack the reader lost Bluetooth to
+
+A viewer log (Android Chrome, two packs) showed the stream up, the reader
+online and streaming s-01, and its Bluetooth link to m-00 down for 12 h. The
+viewer opened on m-00 (its retained reading was 12 h old) and said "viewing
+m-00 live" on the status line and "Reconnecting to the live stream…" on the
+card: both judged the stream, not the pack. Now `remotePackState()`
+(share-logic.js) keeps three things apart - the stream, the reader, the
+reader's link to this pack (the `connected` flag of the reader's pack list) -
+and the status line and the card say which one is down, with the time of the
+last reading. `viewPackPick()` opens the viewer on a live pack; a chip the
+person taps stays chosen. Replay of the log in batray_share.test.js, browser
+check in batray_status.mjs (section 6b).
+
 ## 0.9.86 (2026-11-05): a reader that runs for a year
 
 - **Why** (owner: "the reader is supposed to run 24/7 - any accumulation, out of memory, anything for running a

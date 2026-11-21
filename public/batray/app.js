@@ -23,7 +23,7 @@ import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggl
 import { pushDecision, pushState, b64uBytes } from './push-logic.js';
 import { connState, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES } from './conn-logic.js';
 import { BleConn } from './conn.js';
-import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision } from './share-logic.js';
+import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision, remotePackState, viewPackPick } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, tvPreviewToggle, previewState, previewEvent, previewSource } from './tv-logic.js';
 import { startDemo } from './demo.js';
@@ -43,7 +43,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.86';
+export const APP_VERSION = '0.9.87';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -398,7 +398,7 @@ function setActive(pack) {
   if (pack.data) render(pack.data, true); else clearReadouts();
   $('oneApp').hidden = !(pack.bms && pack.connected); $('btNote').hidden = !(pack.bms && pack.connected);
   if (pack.demo) setStatus(() => T.demoStatus, 'demo');
-  else if (pack.remote) setStatus(() => (pack.remoteLive ? T.viewingPack(pack.label) : (readerGone() ? T.viewOfflineShort : T.viewReconnecting)), pack.remoteLive ? 'good' : 'bad');
+  else if (pack.remote) setRemoteStatus(pack);
   else if (pack.connected) setStatus(() => T.connectedTo(pack.label), 'good');
   else setStatus(() => T.disconnectedFrom(pack.label), 'bad');
   refreshCard(); tickAge(); renderPackBar();
@@ -426,7 +426,7 @@ function refreshCard() {
   if (!p) return;
   const body = document.body.classList;
   renderConnButton();
-  if (p.remote) { body.toggle('offline', !p.remoteLive); body.remove('loading'); $('reState').hidden = true; $('reIdle').hidden = true; $('offlineTxt').textContent = readerGone() ? T.viewOffline : T.viewReconnectingLong; return; }
+  if (p.remote) { body.toggle('offline', !p.remoteLive); body.remove('loading'); $('reState').hidden = true; $('reIdle').hidden = true; $('offlineTxt').textContent = remoteLongText(p); return; }
   if (p.demo) { body.remove('offline', 'loading'); return; }
   const c = connCard(p.cs, { gattConnected: p.connected, hasData: !!p.data });
   body.toggle('offline', c.offline); body.toggle('loading', c.loading);
@@ -451,7 +451,7 @@ function renderPackBar() {
   });
   const add = viewMode ? '' : `<button class="pchip add" id="addPack" title="${T.addPackTitle}">${T.addPack}</button>`;
   bar.innerHTML = chips.join('') + add;
-  bar.querySelectorAll('.pchip[data-pack]').forEach((b) => b.addEventListener('click', () => { const p = packs.get(b.dataset.pack); if (p) { log(`ui: pack chip ${p.label}`); setActive(p); } }));
+  bar.querySelectorAll('.pchip[data-pack]').forEach((b) => b.addEventListener('click', () => { const p = packs.get(b.dataset.pack); if (p) { log(`ui: pack chip ${p.label}`); userPickedPack = true; setActive(p); } }));
   const a = $('addPack'); if (a) a.addEventListener('click', () => { void startConnect(null); });
 }
 
@@ -2050,6 +2050,34 @@ function renderViewChip() {
 }
 // only the server's word counts as "reader offline"; our own socket being down is "reconnecting"
 function readerGone() { return !!(viewer && viewer.state.sig && viewer.state.reader === false); }
+// one remote pack, three separate things: the stream, the reader, the reader's Bluetooth link to this pack (share-logic.js)
+function remoteState(p) { return remotePackState({ streamLive: !!(viewer && viewer.state.live), readerGone: readerGone(), packLive: !!p.remoteLive, readerConnected: p.readerConnected }); }
+function lastReadingText(p) {
+  if (!p.lastFrameAt) return '';
+  const d = new Date(p.lastFrameAt), today = new Date().toDateString() === d.toDateString();
+  return d.toLocaleString(langCode === 'th' ? 'th-TH' : 'en-GB', today ? { hour: '2-digit', minute: '2-digit' } : { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+function setRemoteStatus(p) {
+  const st = remoteState(p), t = lastReadingText(p);
+  if (st === 'live') setStatus(() => T.viewingPack(p.label), 'good');
+  else if (st === 'readerOff') setStatus(() => T.viewOfflineShort, 'bad');
+  else if (st === 'stream') setStatus(() => T.viewReconnecting, 'bad');
+  else setStatus(() => (st === 'packOff' ? T.viewPackOff(p.label, t) : T.viewPackStale(p.label, t)), 'bad');
+}
+function remoteLongText(p) {
+  const st = remoteState(p), t = lastReadingText(p);
+  return st === 'readerOff' ? T.viewOffline : st === 'stream' ? T.viewReconnectingLong : st === 'packOff' ? T.viewPackOffLong(p.label, t) : st === 'packStale' ? T.viewPackStaleLong(p.label, t) : '';
+}
+// a viewer opens on a live pack: the person's own chip tap stands (userPickedPack)
+let userPickedPack = false;
+function pickLivePack() {
+  if (!viewMode || !active) return;
+  const id = viewPackPick([...packs.values()].map((p) => ({ id: p.id, live: !!p.remoteLive })), active.id, userPickedPack);
+  if (id === active.id) return;
+  const to = packs.get(id), from = active;
+  log(`live: showing ${to.label} (live) instead of ${from.label} (no fresh reading)`);
+  setActive(to);
+}
 // Internet / server reachability of THIS device, same on both sides: share-logic.js
 // holds a change for REACH_HOLD_MS before it is announced (a socket reopen is not an outage).
 // One loop holds it: watchReach() only queues share-logic's decision; a newer decision restarts the hold.
@@ -2202,7 +2230,8 @@ async function startView() {
       if (histReqDecision(histS, { live: s.live, now: Date.now() }).action === 'request') void requestHistory();
       const ve = viewerEvent(viewS, s);           // the reader's presence: share-logic.js decides what is worth an alert
       if (ve && alerts) alerts.notify('reader', ve.readerAlert === 'on' ? T.evReaderOn : T.evReaderOff, ve.readerAlert === 'on' ? T.evReaderOnBody : T.evReaderOffBody);
-      if (active) { if (!s.live) setStatus(() => (s.reader === false ? T.viewOfflineShort : T.viewReconnecting), 'bad'); else setStatus(() => T.viewingPack(active.label), 'good'); }
+      pickLivePack();
+      if (active) setRemoteStatus(active);
       refreshCard(); renderPackBar(); syncWake(); renderReaderOff();
     },
     onEnvelope: (env) => {
@@ -2216,6 +2245,7 @@ async function startView() {
         const ids = new Set(env.v.map((x) => x.id));
         for (const p of [...packs.values()]) if (!ids.has(p.id)) { log(`live: pack "${p.label}" removed (the reader no longer lists it)`); removePack(p); }
         for (const x of env.v) { const p = packs.get(x.id) || addRemotePack(x.id, x.name, 'listed'); p.name = x.name; if (x.demo && !p.demo) p.demo = { stop() {} }; p.readerConnected = !!x.connected; p.remoteLive = packLiveNow(p, viewer.state.live); }
+        pickLivePack(); if (active && active.remote) { setRemoteStatus(active); refreshCard(); }
         renderPackBar(); return;
       }
       if (env.k === 'hist-file') { rxHistFile(env); return; }
@@ -2231,7 +2261,7 @@ async function startView() {
       // FRESH_MS is kept for the history but never painted, and does not count as the reader being there
       const seen = viewerDataSeen(viewS, !!env.stale, Math.round((Date.now() - env.t) / 1000));
       if (seen.droppedStale) log(`live: ${seen.droppedStale} queued readings up to ${seen.maxAgeS} s old were stored but not shown`);
-      if (!env.stale) p.remoteLive = true;
+      if (!env.stale && !p.remoteLive) { p.remoteLive = true; pickLivePack(); if (p.isActive) setRemoteStatus(p); }
       if (env.retained && env.stale && env.k !== 'data') return;         // an old hello / pack list / info says nothing about now
       if (env.k === 'info') { p.info = env.v; if (p.isActive && !env.stale) renderDevice(env.v); }
       else if (env.k === 'settings') { p.settings = env.v; if (p.isActive && !env.stale) renderSettings(env.v); }

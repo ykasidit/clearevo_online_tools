@@ -174,6 +174,36 @@ lines = await logs('/live: an old retained .* of pack "n11" \\(bt-OLDid00000.*ig
 check('...the log says once that an old retained slot was ignored', lines.length === 1, await logs('/live: (pack|an old)/'));
 check('...and that n11 came from the reader\'s list', (await logs('/live: pack "n11" added \\(bt-NEWid00000.*from the reader.s pack list/')).length === 1, await logs('/live: (pack|an old)/'));
 
+// ---- 6b. two packs, the reader online, its Bluetooth link to one of them down (owner's viewer log 2026-11-21: the viewer
+// opened on m-00, whose last reading was 12 h old, and said "Reconnecting to the live stream" and "viewing m-00 live"
+// while the stream was up and s-01 streamed). The viewer must open on the live pack and name the real cause on the other.
+await send('Page.navigate', { url: `${BASE}/batray/?view=AbCdEfGhIjKlMnOpQrStUv&test&n=8#k=${KEY}` }); await sleep(2500);
+await evalJs(`(async () => {
+  const L = await import('/batray/live-logic.js');
+  const key = await L.importKey('${KEY}');
+  const sock = window.__wsAll[window.__wsAll.length - 1];
+  const now = Date.now();
+  const send = async (env, slot, ago) => { const b = await L.encrypt(key, env); let s = ''; for (const x of b) s += String.fromCharCode(x); sock.push({ type: 'd', b: btoa(s), slot, ago }); };
+  const d = (soc) => ({ soc, packV: 52.2, current: -15.8, power: -825, cells: [{ v: 3.26 }, { v: 3.27 }], cellSum: 6.53, plausible: true, variant: 'JK02_32S' });
+  sock.push({ type: 'status', viewers: 1, live: true });
+  await send({ k: 'hello', p: { id: '*', name: '*' }, t: now - 1000, v: { channel: 'backyard', version: '0.9.86' } }, 'hello', 1000);
+  await send({ k: 'packs', p: { id: '*', name: '*' }, t: now - 1000, v: [{ id: 'bt-M00', name: 'm-00', demo: false, connected: false }, { id: 'bt-S01', name: 's-01', demo: false, connected: true }] }, 'packs', 1000);
+  await send({ k: 'data', p: { id: 'bt-M00', name: 'm-00' }, t: now - 12 * 3600_000, v: d(43) }, 'data0', 12 * 3600_000);
+  await send({ k: 'data', p: { id: 'bt-S01', name: 's-01' }, t: now - 1000, v: d(51) }, 'data1', 1000);
+  return 1;
+})()`);
+await sleep(1500);
+const vw = () => evalJs(`({ on: (document.querySelector('.pchip.on') || {}).dataset?.pack, stat: document.getElementById('stat').textContent, off: document.getElementById('offlineTxt').textContent })`);
+let pv = await vw();
+check('the viewer opens on the live pack (s-01), not the one with a 12 h old reading', pv.on === 'bt-S01' && /s-01/.test(pv.stat) && !/m-00/.test(pv.stat), pv);
+check('...and logs why it switched', (await logs('/live: showing s-01 \\(live\\) instead of m-00/')).length === 1, await logs('/live: showing/'));
+await evalJs(`document.querySelector('.pchip[data-pack="bt-M00"]').click(); 1`); await sleep(500);
+pv = await vw();
+check('tapping m-00: the status names its Bluetooth link, never "live" or "reconnecting to the live stream"', pv.on === 'bt-M00' && /m-00: the reader has no Bluetooth link since /.test(pv.stat) && !/live|Reconnecting/i.test(pv.stat), pv);
+check('...the card says the reader is online without a link to m-00, with the last reading time', /reader phone is online, but it has no Bluetooth link to m-00 right now \(last reading /.test(pv.off) && !/Reconnecting/.test(pv.off), pv);
+await sleep(2500);
+check('...the person\'s tap stands: no switch back to s-01 on the next tick', (await vw()).on === 'bt-M00');
+
 // ---- 7. the reader PHONE's battery (0.9.80, owner: the seahut reader phone died, its charger was not connected) ----
 // viewer side: the reader's statuses, as the room delivers them, say charging, then not, then low, then charging again
 const sendStatus = (bat) => evalJs(`(async () => {

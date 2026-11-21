@@ -106,6 +106,24 @@ export function remoteLiveDecision({ live, readerConnected, lastFrameAt, now, fr
   if (!live || readerConnected === false) return false;
   return lastFrameAt === null || lastFrameAt === undefined || now - lastFrameAt <= freshMs;
 }
+/** What a viewer says about one remote pack. 2026-11-21 viewer log: the reader's Bluetooth link to m-00 had been down
+ * for 12 h while the stream and the other pack were live, and the page said "Reconnecting to the live stream" and
+ * "viewing m-00 live" at once. The stream, the reader and each pack are three different things. */
+export function remotePackState({ streamLive, readerGone, packLive, readerConnected }) {
+  if (packLive) return 'live';
+  if (readerGone) return 'readerOff';
+  if (!streamLive) return 'stream';
+  return readerConnected === false ? 'packOff' : 'packStale';
+}
+/** The pack a viewer shows: the person's own pick stands; otherwise move off a pack that is not live to the first
+ * that is (the same log: the page opened on the 12 h old pack while the other one was streaming). */
+export function viewPackPick(packs, activeId, userPicked) {
+  if (userPicked) return activeId;
+  const cur = packs.find((p) => p.id === activeId);
+  if (cur && cur.live) return activeId;
+  const live = packs.find((p) => p.live);
+  return live ? live.id : activeId;
+}
 export function remotePackDecision(vs, { id, known, retained }) {
   if (known) return { action: 'use' };
   if (retained && vs.packIds && !vs.packIds.includes(id)) {
