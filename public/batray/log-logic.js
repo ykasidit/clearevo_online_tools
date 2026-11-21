@@ -112,6 +112,27 @@ export function autoUploadPlan(au, { seq, ring, header, sid, limit = LOG_UPLOAD_
 export function autoUploadDone(au, plan, id) {
   if (id) { au.sent = plan.to; au.n = plan.n; au.fails = 0; au.lastId = id; } else au.fails++;
 }
+/** The reader's log beside a viewer's (0.9.89, owner 2026-11-21: "if reader already debug on, a viewer can try get it
+ *  within timeout ... so comes together"). The viewer sends a nonce; the reader uploads now (its auto upload, so only
+ *  the lines since the last one) and answers with the id, only when its own debug log is on - a viewer can never switch
+ *  it on. A second ask within LOG_REQ_MIN_MS gets the same id instead of another upload. */
+export const LOG_REQ_MIN_MS = 2 * 60000;
+export const READER_LOG_WAIT_MS = 20000;
+export const logNonceOk = (n) => typeof n === 'string' && /^[A-Za-z0-9]{1,32}$/.test(n);
+export function logReqState() { return { lastAt: 0, lastId: null, asks: 0 }; }
+export function logReqDecision(rs, { on, now, minMs = LOG_REQ_MIN_MS }) {
+  rs.asks++;
+  if (!on) return { act: 'off' };
+  if (rs.lastId && now - rs.lastAt < minMs) return { act: 'reuse', id: rs.lastId };
+  return { act: 'upload' };
+}
+export function logReqDone(rs, id, now) { if (id) { rs.lastId = id; rs.lastAt = now; } }
+/** The viewer's line about the reader's log: goes into the viewer's own upload. */
+export function readerLogLine(reply, waitS) {
+  if (!reply) return `log upload: no answer from the reader in ${waitS} s - its log is not part of this upload`;
+  if (reply.id) return `log upload: the reader's debug log is id ${reply.id}${reply.sid ? ` (its session ${reply.sid})` : ''}`;
+  return reply.why === 'off' ? "log upload: the reader's debug log is off (the bug button on the reader phone), nothing from it" : `log upload: the reader could not upload its log (${reply.why || 'no reason given'})`;
+}
 /** Copy / Upload while the stored log is off: greyed with a title that says where to turn it on. */
 /** The debug controls (0.9.79): the toolbar's bug button shows the choice (pressed = the log is kept), Upload log
  *  shows next to it only while kept, and the Debug card's Copy / Upload are disabled while not. */

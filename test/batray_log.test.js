@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, logTake, logUntake, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LASTRUN_KEY, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX, logKeepOn, autoUploadState, autoUploadPlan, autoUploadDone, AUTO_UPLOAD_MS } from '../public/batray/log-logic.js';
+import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, logTake, logUntake, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LASTRUN_KEY, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX, logKeepOn, autoUploadState, autoUploadPlan, autoUploadDone, AUTO_UPLOAD_MS, logReqState, logReqDecision, logReqDone, logNonceOk, readerLogLine, LOG_REQ_MIN_MS, READER_LOG_WAIT_MS } from '../public/batray/log-logic.js';
 
 test('one file per session, rolled at 10 MB with the same session id; names sort by time and parse back', () => {
   const ls = logState(true, 'abc123');
@@ -141,4 +141,28 @@ test('auto upload: a body over the limit keeps the newest lines and counts the r
   assert.equal(autoUploadPlan(au, { seq: 100, ring, header, sid: 's' }), null);
   const tiny = autoUploadPlan(autoUploadState(), { seq: 3, ring: ['a', 'b', 'c'], header, sid: 's', limit: 10 });
   assert.ok(tiny && tiny.lost === 3 && tiny.body.startsWith('BatRay v'), 'a limit smaller than the header still sends the header and the count, never throws');
+});
+
+test('reader log on a viewer\'s ask (0.9.89): only when the reader\'s debug log is on; a second ask soon after reuses the id', () => {
+  assert.equal(LOG_REQ_MIN_MS, 120000); assert.equal(READER_LOG_WAIT_MS, 20000);
+  const rs = logReqState(), t0 = 1_800_000_000_000;
+  assert.deepEqual(logReqDecision(rs, { on: false, now: t0 }), { act: 'off' }, 'a viewer can never switch the reader\'s log on');
+  assert.deepEqual(logReqDecision(rs, { on: true, now: t0 }), { act: 'upload' });
+  logReqDone(rs, null, t0);                                       // the upload failed: nothing to reuse
+  assert.deepEqual(logReqDecision(rs, { on: true, now: t0 + 1000 }), { act: 'upload' });
+  logReqDone(rs, 'Rid1', t0 + 2000);
+  assert.deepEqual(logReqDecision(rs, { on: true, now: t0 + 60000 }), { act: 'reuse', id: 'Rid1' }, 'a burst of asks costs one upload');
+  assert.deepEqual(logReqDecision(rs, { on: false, now: t0 + 60000 }), { act: 'off' }, 'switched off since: off wins over reuse');
+  assert.deepEqual(logReqDecision(rs, { on: true, now: t0 + 2000 + LOG_REQ_MIN_MS }), { act: 'upload' }, 'after two minutes a fresh upload');
+  assert.equal(rs.asks, 6);
+});
+
+test('log request nonce and the viewer\'s line about the reader\'s log', () => {
+  assert.ok(logNonceOk('abc123XYZ') && logNonceOk('a'.repeat(32)));
+  for (const bad of ['', 'a'.repeat(33), 'a b', 'x<y', null, undefined, 5, {}]) assert.equal(logNonceOk(bad), false, JSON.stringify(bad) ?? 'undefined');
+  assert.equal(readerLogLine({ id: 'Rid1', sid: 'r1d2', why: '' }, 20), "log upload: the reader's debug log is id Rid1 (its session r1d2)");
+  assert.match(readerLogLine({ id: null, why: 'off' }, 20), /reader's debug log is off/);
+  assert.match(readerLogLine({ id: null, why: 'upload failed' }, 20), /could not upload its log \(upload failed\)/);
+  assert.match(readerLogLine({ id: null }, 20), /no reason given/);
+  assert.match(readerLogLine(null, 20), /no answer from the reader in 20 s/);
 });

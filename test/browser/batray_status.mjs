@@ -41,6 +41,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   const rf = window.fetch.bind(window);
   window.fetch = async (u, i = {}) => {
     const url = String(u);
+    if (url.endsWith('/batray/api/log')) { window.__logUps = (window.__logUps || 0) + 1; return new Response(JSON.stringify({ id: 'ReaderLog' + window.__logUps }), { status: 200, headers: { 'Content-Type': 'application/json' } }); }   // the reader's auto upload (0.9.88/89)
     if (url.endsWith('/batray/api/room') && (i.method || 'GET').toUpperCase() === 'POST') return new Response(JSON.stringify({ room: 'testroom0000000000000A', pub: 'testpub00000000000000A' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     return rf(u, i);
   };
@@ -251,6 +252,79 @@ const rd = await evalJs(`({ toast: document.getElementById('toast').textContent,
 check('reader: unplugged - a toast on this phone ("not charging (37 %)"), the status carries it, the checklist names charging', /This phone is not charging \(37 %\)/.test(rd.toast) && rd.bat && rd.bat.pct === 37 && rd.bat.chg === false && rd.items && rd.items.includes('charging'), rd);
 check('...and its log says so', (await logs('/battery: charging=false/')).length === 1);
 await evalJs(`sessionStorage.removeItem('fakeBattery'); 1`);
+
+// ---- 8. 0.9.89 (owner 2026-11-21): a viewer's Upload log asks the reader for its own log, so the two come together ----
+// reader side: the room forwards {type:'log-req', from, nonce}; the reader uploads only with its own debug log on and
+// answers that one viewer (encrypted, addressed, never retained)
+await evalJs(`localStorage.setItem('batray_debuglog', '1'); 1`);
+await send('Page.navigate', { url: `${BASE}/batray/?test&logreq=1` }); await sleep(2500);
+await evalJs(`localStorage.removeItem(window.__batrayTest.tabKey('share_last')); document.getElementById('share').click(); 1`); await sleep(300);
+await evalJs(`document.getElementById('shareGo').click(); 1`); await sleep(1500);
+const ask = (nonce) => evalJs(`(() => { const s = [...window.__wsAll].reverse().find((x) => /role=pub/.test(x.url)); s.push({ type: 'log-req', from: 'v1', nonce: ${JSON.stringify(nonce)} }); return 1; })()`);
+const answers = () => evalJs(`(async () => {
+  const L = await import('/batray/live-logic.js');
+  const key = await L.importKey(new URL(window.__batrayTest.pubLink()).hash.replace('#k=', ''));
+  const out = [];
+  for (const m of window.__wsSent.filter((x) => x.type === 'd' && x.to === 'v1')) { const e = await L.decrypt(key, Uint8Array.from(atob(m.b), (c) => c.charCodeAt(0))); out.push({ k: e.k, v: e.v, slot: m.slot || null }); }
+  return out;
+})()`);
+await evalJs(`window.__logUps = 0; 1`);
+await ask('askOne'); await sleep(1500);
+let an = await answers();
+check('reader, debug on: a viewer\'s ask uploads now and answers that viewer only with the id, never retained', an.length === 1 && an[0].k === 'log-id' && an[0].v.nonce === 'askOne' && an[0].v.id === 'ReaderLog1' && /^[a-z0-9]{6}$/.test(an[0].v.sid) && an[0].slot === null && (await evalJs('window.__logUps')) === 1, an);
+check('...the reader logs the ask', (await logs('/log request from a viewer: uploading now/')).length === 1);
+await ask('askTwo'); await sleep(800);
+an = await answers();
+check('a second ask within 2 min: the same id again, no second upload', an.length === 2 && an[1].v.nonce === 'askTwo' && an[1].v.id === 'ReaderLog1' && (await evalJs('window.__logUps')) === 1, an);
+await ask('a b<'); await sleep(500);
+check('a malformed nonce: no answer, a log line', (await answers()).length === 2 && (await logs('/log request from a viewer: malformed/')).length === 1);
+await evalJs(`document.getElementById('debugBtn').click(); 1`); await sleep(300);
+await ask('askThree'); await sleep(800);
+an = await answers();
+check('reader, debug off: answers "off" with no id and uploads nothing - a viewer can never switch it on', an.length === 3 && an[2].v.nonce === 'askThree' && an[2].v.id === null && an[2].v.why === 'off' && (await evalJs('window.__logUps')) === 1 && !(await evalJs('window.__batrayTest.logState().on')), an);
+await evalJs(`document.getElementById('liveStop') && document.getElementById('liveStop').click(); 1`); await sleep(300);
+
+// viewer side: its Upload log asks, waits (3 s here, 20 s live), and its own upload carries the reader's id
+await evalJs(`localStorage.setItem('batray_debuglog', '1'); 1`);
+await send('Page.navigate', { url: `${BASE}/batray/?view=AbCdEfGhIjKlMnOpQrStUv&test&n=9&readerlogms=3000#k=${KEY}` }); await sleep(2500);
+await evalJs(`(async () => {
+  window.__xhrBodies = [];
+  window.XMLHttpRequest = function () {
+    const x = { upload: {}, status: 0, responseText: '' };
+    x.open = () => {}; x.setRequestHeader = () => {}; x.abort = () => { if (x.onabort) x.onabort(); };
+    x.send = (body) => { const text = new TextDecoder().decode(body); window.__xhrBodies.push(text); setTimeout(() => { if (x.upload.onprogress) x.upload.onprogress({ loaded: body.byteLength, total: body.byteLength, lengthComputable: true }); x.status = 200; x.responseText = JSON.stringify({ id: 'ViewerLog' + window.__xhrBodies.length }); if (x.onload) x.onload(); }, 100); };
+    return x;
+  };
+  const L = await import('/batray/live-logic.js');
+  window.__vkey = await L.importKey('${KEY}');
+  window.__vsend = async (env) => { const b = await L.encrypt(window.__vkey, env); let s = ''; for (const c of b) s += String.fromCharCode(c); window.__wsAll[window.__wsAll.length - 1].push({ type: 'd', b: btoa(s) }); };
+  window.__wsAll[window.__wsAll.length - 1].push({ type: 'status', viewers: 1, live: true });
+  await window.__vsend({ k: 'data', p: { id: 'bt-S01', name: 's-01' }, t: Date.now(), v: { soc: 51, packV: 52.2, current: -1, power: -52, cells: [{ v: 3.26 }], cellSum: 3.26, plausible: true, variant: 'JK02_32S' } });
+  return 1;
+})()`);
+await sleep(800);
+const upload = async () => { await evalJs(`document.getElementById('upload').click(); 1`); await sleep(400); await evalJs(`document.querySelector('#sheetActs [data-act=ok]').click(); 1`); await sleep(400); };
+const lastAsk = () => evalJs(`(window.__wsSent.filter((m) => m.type === 'log-req').pop() || {}).nonce || null`);
+const answer = (v) => evalJs(`window.__vsend({ k: 'log-id', p: { id: '*', name: '*' }, t: Date.now(), v: ${JSON.stringify(v)} }).then(() => 1)`);
+await upload();
+let nonce = await lastAsk();
+const askToast = await evalJs(`document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent`);
+check('viewer Upload log: after the warning it asks the reader (a nonce on its socket) and says so', /^[a-z0-9]{8,}$/.test(nonce || '') && /Asking the reader phone for its debug log/.test(askToast), { nonce, askToast });
+await answer({ nonce: 'someoneElse', id: 'NotMine', sid: 'zzzzzz' }); await sleep(300);
+await answer({ nonce, id: 'ReaderLog7', sid: 'r1d2', why: '' }); await sleep(1200);
+let bodies = await evalJs('window.__xhrBodies');
+const toastBoth = await evalJs(`document.getElementById('toast').textContent`);
+check('...the answer lands at once: the viewer\'s upload carries the reader\'s id, another viewer\'s answer is ignored', bodies.length === 1 && /log upload: the reader's debug log is id ReaderLog7 \(its session r1d2\)/.test(bodies[0]) && !/NotMine/.test(bodies[0]), (bodies[0] || '').split('\n').filter((l) => /reader/.test(l)));
+check('...and the done toast names both ids', /ViewerLog1.*reader: ReaderLog7/.test(toastBoth), toastBoth);
+const t0 = Date.now();
+await upload(); nonce = await lastAsk();
+await sleep(3800);
+bodies = await evalJs('window.__xhrBodies');
+check('no answer: the viewer waits its timeout (3 s here), says so in its log, and uploads its own', bodies.length === 2 && /no answer from the reader in 3 s/.test(bodies[1]) && Date.now() - t0 >= 3000, (bodies[1] || '').split('\n').filter((l) => /reader/.test(l)));
+await upload(); nonce = await lastAsk();
+await answer({ nonce, id: null, sid: 'r1d2', why: 'off' }); await sleep(1200);
+bodies = await evalJs('window.__xhrBodies');
+check('the reader\'s debug log is off: said in the viewer\'s log, the plain done toast', bodies.length === 3 && /reader's debug log is off/.test(bodies[2]) && !/reader:/.test(await evalJs(`document.getElementById('toast').textContent`)), (bodies[2] || '').split('\n').filter((l) => /reader/.test(l)));
 
 const thrown = events.filter((e) => e.method === 'Runtime.exceptionThrown').map((e) => e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text).filter((t) => !/app\.js/.test(t));
 check('no page exceptions', thrown.length === 0, thrown);

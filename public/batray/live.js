@@ -126,7 +126,7 @@ export class Publisher {
   /** opts: { log(msg), onState(state), onRequest(msg), retryS } - state: { viewers, live, retryIn, error, sent, dropped, sig, net };
    *  onRequest gets a viewer's `hist-req` ({ from, have }) */
   constructor(opts) {
-    this.log = opts.log || (() => {}); this.onState = opts.onState || (() => {}); this.onRequest = opts.onRequest || (() => {});
+    this.log = opts.log || (() => {}); this.onState = opts.onState || (() => {}); this.onRequest = opts.onRequest || (() => {}); this.onLogRequest = opts.onLogRequest || (() => {});
     this.room = null; this.pubToken = null; this.keyB64 = null; this.key = null; this.link = null;
     this.sock = null; this.slots = new Map();   // pack id -> a short slot index: the relay retains per slot and never learns a pack id
     // live: our socket is up (the room fans out from it); sig: the same thing, kept for the chip; net: this device has internet
@@ -211,7 +211,8 @@ export class Publisher {
       const key = `${m.viewers}|${m.live}`;
       if (key !== this.lastStatusKey) { this.lastStatusKey = key; this.log(`status: viewers=${m.viewers} live=${m.live}`); }
       this.state.viewers = m.viewers; this.emit();
-    } else if (m.type === 'hist-req') { try { this.onRequest(m); } catch (e) { this.log(`live: the history request hook failed: ${e && e.message ? e.message : e}`); } }           // a viewer lists the day files it has; the app answers over publish(env, m.from)
+    } else if (m.type === 'log-req') { try { this.onLogRequest(m); } catch (e) { this.log(`live: the log request hook failed: ${e && e.message ? e.message : e}`); } }   // a viewer uploading its log asks for ours (0.9.89)
+    else if (m.type === 'hist-req') { try { this.onRequest(m); } catch (e) { this.log(`live: the history request hook failed: ${e && e.message ? e.message : e}`); } }           // a viewer lists the day files it has; the app answers over publish(env, m.from)
   }
 
   get credentials() { return { room: this.room, pub: this.pubToken, key: this.keyB64, at: Date.now() }; }
@@ -219,7 +220,7 @@ export class Publisher {
   backlog() { return this.sock ? this.sock.backlog : 0; }
   /** The retain slot of an envelope: the relay keeps the newest per slot for late viewers. History chunks have none. */
   slotOf(env) {
-    if (env.k === 'hist-file') return null;
+    if (env.k === 'hist-file' || env.k === 'log-id') return null;           // answers to one viewer are never retained
     if (!env.p || env.p.id === '*') return env.k;
     if (!this.slots.has(env.p.id)) this.slots.set(env.p.id, this.slots.size);
     return `${env.k}${this.slots.get(env.p.id)}`;
@@ -352,6 +353,8 @@ export class Viewer {
   }
   /** Ask the reader for the history this device lacks (0.9.30); `have` = this device's day listing. */
   request(have) { if (!this.sock) return false; this.sock.send({ type: 'hist-req', have }); return true; }
+  /** Ask the reader to upload its debug log now (0.9.89); its answer is a `log-id` envelope with this nonce. */
+  askLog(nonce) { if (!this.sock) return false; this.sock.send({ type: 'log-req', nonce }); return true; }
   /** The tab just came back: end a countdown now, ping a serving socket now. */
   nudge() { if (!this.stopped) this.resumed.push(1); }
   stop() {

@@ -89,6 +89,12 @@ test('viewer loop: socket, reader presence by the room\'s word and by fresh data
   const queued = envelope('data', { id: 'p1', name: 'JK' }, { soc: 48 }); queued.t = t - FRESH_MS - 1;
   ws.push({ type: 'd', b: await cipher(key, queued) }); await settle();
   assert.equal(got[3].stale, true); assert.equal(v.state.stale, 2);
+  // 0.9.89: ask the reader for its log - one small message; its answer comes back as a log-id envelope like any other
+  assert.equal(v.askLog('n0nce1'), true);
+  assert.deepEqual(ws.sent.filter((m) => m.type === 'log-req'), [{ type: 'log-req', nonce: 'n0nce1' }]);
+  const li = envelope('log-id', { id: '*', name: '*' }, { nonce: 'n0nce1', id: 'Rid1', sid: 'r1d2' }); li.t = t;
+  ws.push({ type: 'd', b: await cipher(key, li) }); await settle();
+  assert.equal(got[4].k, 'log-id'); assert.equal(got[4].v.id, 'Rid1');
   // the socket dies: sig and live drop, the chip counts down, a new socket is opened
   const n = sockets.length;
   ws.close(1006, ''); await settle();
@@ -105,6 +111,7 @@ test('viewer loop: socket, reader presence by the room\'s word and by fresh data
   assert.equal(sockets.length, n + 2); assert.ok(logs.some((l) => /tab resumed, reconnecting now/.test(l)));
   v.stop(); await settle();
   assert.equal(v.state.live, false); assert.equal(v.state.sig, false); assert.equal(last().readyState, 3, 'stop closed the socket');
+  assert.equal(v.askLog('n0nce2'), false, 'no socket after stop: the ask says so instead of throwing');
   await settle(1100);
   assert.equal(sockets.length, n + 2, 'nothing reopens after stop');
 });
@@ -119,8 +126,8 @@ test('a message that cannot be decrypted sets the error once and is never delive
 });
 
 test('publisher loop: room, socket, publish with a retain slot or to one viewer, backlog drop, history request in, socket death and reopen, stop', async () => {
-  const logs = [], reqs = [];
-  const p = new Publisher({ log: (m) => logs.push(m), onState: () => {}, onRequest: (m) => reqs.push(m), retryS: 1 });
+  const logs = [], reqs = [], logReqs = [];
+  const p = new Publisher({ log: (m) => logs.push(m), onState: () => {}, onRequest: (m) => reqs.push(m), onLogRequest: (m) => logReqs.push(m), retryS: 1 });
   fetches.length = 0;
   await p.start(); await settle();
   assert.equal(p.room, 'r9'); assert.equal(p.pubToken, 'tok'); assert.match(p.link, /#k=/);
@@ -145,6 +152,13 @@ test('publisher loop: room, socket, publish with a retain slot or to one viewer,
   assert.equal(p.state.viewers, 2);
   ws.push({ type: 'hist-req', from: 'viewer7', have: [{ day: '2026-09-20' }] }); await settle();
   assert.equal(reqs.length, 1); assert.equal(reqs[0].from, 'viewer7');
+  // 0.9.89: a viewer's ask for the reader's log reaches its own hook, never the history one; the answer goes to that
+  // viewer only and is never retained (a late viewer must not get someone else's log id)
+  ws.push({ type: 'log-req', from: 'viewer7', nonce: 'n0nce1' }); await settle();
+  assert.deepEqual(logReqs, [{ type: 'log-req', from: 'viewer7', nonce: 'n0nce1' }]); assert.equal(reqs.length, 1);
+  await p.publish(envelope('log-id', { id: '*', name: '*' }, { nonce: 'n0nce1', id: 'Rid1' }), 'viewer7');
+  const li = ws.sent.filter((m) => m.type === 'd').pop();
+  assert.deepEqual([li.slot, li.to], [undefined, 'viewer7']);
   const n = sockets.length;
   ws.close(4000, 'replaced'); await settle();
   assert.equal(p.state.live, false); assert.equal(p.state.retryIn, 1);

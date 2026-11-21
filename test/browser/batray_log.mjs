@@ -214,7 +214,7 @@ const st0 = await evalJs(`({ on: window.__batrayTest.logState().on, toast: docum
 check('debug on at start: a toast says the log is kept and uploaded every 15 min, and how to turn it off', st0.on && /Debug log is on: kept on this device and uploaded to clearevo\.com every 15 min\. Press the bug button/.test(st0.toast), st0);
 await sleep(2300);
 let ap = await autoPosts();
-check('the first auto upload: the header first (the relay takes only that), then the lines of this page load', ap.length >= 1 && ap[0].startsWith('BatRay v0.9.88') && /---\n\(auto upload 1 of session [a-z0-9]{6}: lines 1-\d+\)\n[0-9:.]+ {2}BatRay v0\.9\.88/.test(ap[0]), ap.map((x) => x.slice(0, 300)));
+check('the first auto upload: the header first (the relay takes only that), then the lines of this page load', ap.length >= 1 && ap[0].startsWith('BatRay v') && /---\n\(auto upload 1 of session [a-z0-9]{6}: lines 1-\d+\)\n[0-9:.]+ {2}BatRay v\d+\.\d+\.\d+/.test(ap[0]), ap.map((x) => x.slice(0, 300)));
 check('...and the log names its id', (await pageLog(/log auto-upload 1: id TestLogId/)).length === 1, await pageLog(/auto-upload/));
 await evalJs(`window.__logFail = true; 1`); await sleep(1700);
 const failed = await pageLog(/log auto-upload failed \(1 in a row\): test: relay down - the next one carries these lines/);

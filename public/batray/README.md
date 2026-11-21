@@ -134,6 +134,17 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.89 (2026-11-21): a viewer's log upload brings the reader's log along
+
+Owner ask: "if reader already debug on, a viewer can try get it within timeout if connected on upload debug log of
+viewer so comes together". After the upload warning, a viewer whose reader is live sends `{type:'log-req', nonce}`
+(relay room.rs forwards only the nonce and the asker's id, viewers only); the reader decides with `logReqDecision`
+(log-logic.js): its debug log off -> answers `why:'off'` (a viewer can never switch it on), a recent upload (2 min) ->
+the same id again, else its auto upload now (single flight with the 15 min loop). The answer is a `log-id` envelope
+to that viewer only, never retained (`slotOf` null). The viewer waits `READER_LOG_WAIT_MS` 20 s, writes
+`readerLogLine()` into its own log (so its upload names the reader's id, "off" or "no answer"), and the done toast names
+both ids. Tests: log/presence unit tests, relay unit + live, browser batray_status.mjs section 8 (both sides).
+
 ## 0.9.88 (2026-11-21): debug on = said at every start, and uploaded every 15 min
 
 Owner ask: "if debug is enabled, toast that and auto upload every 15 minutes". While the bug button is pressed, every

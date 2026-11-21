@@ -38,12 +38,12 @@ import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowD
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
-import { logState, logQueue, flushPlan, logTake, logUntake, flushDone, logRetention, logSummary, uploadBody, debugButtons, autoUploadState, autoUploadPlan, autoUploadDone, AUTO_UPLOAD_MS, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, logKeepOn } from './log-logic.js';
+import { logState, logQueue, flushPlan, logTake, logUntake, flushDone, logRetention, logSummary, uploadBody, debugButtons, autoUploadState, autoUploadPlan, autoUploadDone, AUTO_UPLOAD_MS, logReqState, logReqDecision, logReqDone, logNonceOk, readerLogLine, READER_LOG_WAIT_MS, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, logKeepOn } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.88';
+export const APP_VERSION = '0.9.89';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -1933,7 +1933,7 @@ async function beginShare() {
     wasLive = s.live;
     const v = viewersChange(shareS, s.viewers);
     if (v && alerts) alerts.notify('viewers', v.joined ? T.evViewerJoined : T.evViewerLeft, T.evWatching(v.viewers));
-  }, onRequest: (m) => histRequest(m) });
+  }, onRequest: (m) => histRequest(m), onLogRequest: (m) => { void readerLogRequest(m); } });
   const pub = publisher;
   try {
     await pub.start(b.reuse);
@@ -2238,6 +2238,7 @@ async function startView() {
       refreshCard(); renderPackBar(); syncWake(); renderReaderOff();
     },
     onEnvelope: (env) => {
+      if (env.k === 'log-id') { readerLogReply(env.v); return; }
       if (env.k === 'hello') {
         const h = viewHello(viewS, env);
         if (h) { if (h.name && h.name !== tabChannel) { tabChannel = h.name; writeTabMeta(); } $('viewName').textContent = h.name; $('viewName').hidden = !h.name; document.title = h.name ? `${h.name} · BatRay live` : document.title; log(`live: channel "${h.name}"${h.version ? ` (reader v${h.version})` : ''}`); }
@@ -2843,6 +2844,7 @@ const UPLOAD_MS = 120000;
 async function uploadLog(btn, file = null) {
   if ((await openSheet('upload')) !== 'ok') { log('log upload: declined at the warning'); return; }
   if (uploadS.xhr) { log('log upload: one is already running'); return; }
+  const readerId = file ? null : await askReaderLog();                     // a viewer's own upload carries the reader's id (0.9.89)
   await flushLog();
   let stored = '';
   const cut = file ? file.indexOf('/') : -1, fileStore = cut > 0 ? file.slice(0, cut) : null;     // Browse names a file as <store>/<name> (0.9.77)
@@ -2888,7 +2890,7 @@ async function uploadLog(btn, file = null) {
   if (r.ok) {
     log(`log uploaded: id ${r.j.id} (${bytes.length} B)`);
     $('uploadId').textContent = T.uploadedId(r.j.id); $('uploadId').hidden = false;
-    toast(T.uploadDone(r.j.id), 14000);
+    toast(readerId ? T.uploadDoneBoth(r.j.id, readerId) : T.uploadDone(r.j.id), 14000);
   } else if (r.cancelled) toast(T.uploadCancelled, 6000);
   else { log(`log upload failed: ${r.error}`); toast(T.uploadFailed(r.error), 10000); }
   if (lbl) lbl.textContent = was; if (btn) btn.disabled = false;
@@ -2911,7 +2913,47 @@ async function autoUpload() {
   else log(`log auto-upload failed (${autoUp.fails} in a row): ${why} - the next one carries these lines`);
   return id;
 }
-{ const q = new URLSearchParams(location.search), ms = Number(q.get('autoup')); void every(q.has('test') && ms > 0 ? ms : AUTO_UPLOAD_MS, autoUpload, { onError: jobError('log auto-upload') }); }   // ?test&autoup=<ms>: the browser test's period
+// one upload at a time: the 15 min loop and a viewer's ask (0.9.89) share the run in flight instead of sending the same lines twice
+let autoUpTask = null;
+async function autoUploadOnce() { try { return await autoUpload(); } finally { autoUpTask = null; } }
+function autoUploadNow() { if (autoUpTask === null) autoUpTask = autoUploadOnce(); return autoUpTask; }
+{ const q = new URLSearchParams(location.search), ms = Number(q.get('autoup')); void every(q.has('test') && ms > 0 ? ms : AUTO_UPLOAD_MS, autoUploadNow, { onError: jobError('log auto-upload') }); }   // ?test&autoup=<ms>: the browser test's period
+// The reader's log beside a viewer's (0.9.89): a viewer uploading its log asks; the reader uploads only when its own
+// debug log is on (a viewer cannot switch it on) and answers that one viewer with the id. Decisions in log-logic.js.
+const logReqS = logReqState();
+async function readerLogRequest(m) {
+  if (!logNonceOk(m.nonce) || typeof m.from !== 'string') { log('log request from a viewer: malformed, ignored'); return; }
+  const d = logReqDecision(logReqS, { on: logS.on, now: Date.now() });
+  log(`log request from a viewer: ${d.act === 'off' ? 'the debug log is off here, nothing sent' : d.act === 'reuse' ? `answered with the upload of ${Math.round((Date.now() - logReqS.lastAt) / 1000)} s ago` : 'uploading now'}`);
+  let id = d.act === 'reuse' ? d.id : null;
+  if (d.act === 'upload') { id = await autoUploadNow(); logReqDone(logReqS, id, Date.now()); }
+  const pub = publisher;
+  if (!pub) return;
+  await pub.publish({ k: 'log-id', p: { id: '*', name: '*' }, t: Date.now(), v: { nonce: m.nonce, id, why: d.act === 'off' ? 'off' : id ? '' : 'upload failed', sid: logS.sid } }, m.from);
+}
+// the viewer side: one ask at a time, its answer fills the latch
+let readerLogWait = null;
+function readerLogReply(v) {
+  if (!readerLogWait || !v || v.nonce !== readerLogWait.nonce) return;                 // late or someone else's answer
+  readerLogWait.reply = { id: typeof v.id === 'string' ? v.id.slice(0, 64) : null, why: typeof v.why === 'string' ? v.why.slice(0, 80) : '', sid: typeof v.sid === 'string' ? v.sid.slice(0, 16) : '' };
+  readerLogWait.got.set(true);
+}
+const READER_LOG_WAIT = (() => { const q = new URLSearchParams(location.search), ms = Number(q.get('readerlogms')); return q.has('test') && ms > 0 ? ms : READER_LOG_WAIT_MS; })();
+/** Before a viewer uploads its own log: ask the reader for its log, wait up to READER_LOG_WAIT, log the outcome
+ *  (the line goes into this upload). Returns the reader's id or null. */
+async function askReaderLog() {
+  if (!viewMode || !viewer || !viewer.state.live) return null;
+  const nonce = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+  const w = { nonce, got: new Flag(false), reply: null };
+  readerLogWait = w;
+  if (!viewer.askLog(nonce)) { readerLogWait = null; return null; }
+  log(`log upload: asked the reader for its debug log (waiting up to ${Math.round(READER_LOG_WAIT / 1000)} s)`);
+  toast(T.askingReaderLog, READER_LOG_WAIT);
+  await w.got.wait(true, { ms: READER_LOG_WAIT });
+  if (readerLogWait === w) readerLogWait = null;
+  log(readerLogLine(w.reply, Math.round(READER_LOG_WAIT / 1000)));
+  return w.reply && w.reply.id ? w.reply.id : null;
+}   // ?test&autoup=<ms>: the browser test's period
 $('upload').addEventListener('click', () => uploadLog($('upload')));
 $('upload2').addEventListener('click', () => uploadLog($('upload2')));
 $('copy2').addEventListener('click', () => copyLog($('copy2')));
