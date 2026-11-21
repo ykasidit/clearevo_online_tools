@@ -91,6 +91,27 @@ export function uploadBody({ header, ring, stored, limit = LOG_UPLOAD_MAX }) {
   }
   return { body: head + ring, source: 'ring' };
 }
+/** Auto upload (0.9.88, owner 2026-11-21: "if debug is enabled, toast that and auto upload every 15 minutes"): while
+ *  the debug log is on, the lines logged since the last auto upload go to the relay every AUTO_UPLOAD_MS, under the
+ *  device header. `au.sent` = the line number (count of lines logged this page load) the last upload reached; a failed
+ *  upload leaves it, so the next one carries the backlog. Lines that left the ring before they were sent are counted. */
+export const AUTO_UPLOAD_MS = 15 * 60000;
+export function autoUploadState(from = 0) { return { sent: from, n: 0, fails: 0, lastId: null }; }
+/** seq = lines logged so far; ring = the newest lines in memory (ring[last] is line seq). Null when nothing is new. */
+export function autoUploadPlan(au, { seq, ring, header, sid, limit = LOG_UPLOAD_MAX }) {
+  if (seq <= au.sent) return null;
+  const first = seq - ring.length;                       // lines before this one left the ring
+  const from = Math.max(au.sent, first), lost = from - au.sent, n = au.n + 1;
+  const head = header.join('\n') + '\n---\n';
+  const mark = (cut) => `(auto upload ${n} of session ${sid}: lines ${from + cut + 1}-${seq}${lost + cut ? `, ${lost + cut} earlier lines not in memory any more (the stored file has them)` : ''})\n`;
+  const lines = ring.slice(from - first);
+  let cut = 0, size = lines.reduce((a, l) => a + l.length + 1, 0);
+  while (cut < lines.length && head.length + mark(cut).length + size > limit) { size -= lines[cut].length + 1; cut++; }   // too big: keep the newest
+  return { body: head + mark(cut) + lines.slice(cut).join('\n'), from, to: seq, lost: lost + cut, n };
+}
+export function autoUploadDone(au, plan, id) {
+  if (id) { au.sent = plan.to; au.n = plan.n; au.fails = 0; au.lastId = id; } else au.fails++;
+}
 /** Copy / Upload while the stored log is off: greyed with a title that says where to turn it on. */
 /** The debug controls (0.9.79): the toolbar's bug button shows the choice (pressed = the log is kept), Upload log
  *  shows next to it only while kept, and the Debug card's Copy / Upload are disabled while not. */

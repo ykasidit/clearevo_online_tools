@@ -34,6 +34,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   const rf = window.fetch.bind(window);
   window.fetch = async (u, i = {}) => {
     const url = String(u); const ok = (b, st = 200) => new Response(JSON.stringify(b), { status: st, headers: { 'Content-Type': 'application/json' } });
+    if (url.endsWith('/batray/api/log') && window.__logFail) return ok({ error: 'test: relay down' }, 503);
     if (url.endsWith('/batray/api/log')) { window.__logPosts.push({ method: i.method, headers: i.headers, body: String(i.body) }); return ok({ id: 'TestLogId0000000000000', key: 'logs/x' }); }
     if (url.endsWith('/batray/api/room')) return ok({ room: 'testroom0000000000000A', pub: 'testpub00000000000000A' });
     if (url.includes('/batray/api/room/')) return ok({ viewers: 0, live: false });
@@ -204,6 +205,33 @@ await evalJs(`document.getElementById('shareGo').click(); 1`); await sleep(2500)
 sp = await evalJs(`({ logged: window.__batrayTest.logLines().filter((l) => /reusing room|reused/.test(l)), saved: JSON.parse(localStorage.getItem(window.__batrayTest.tabKey('share_last')) || 'null') })`);
 check('...and Start reuses the earlier room and key', sp.logged.length >= 2 && sp.saved.room === 'testroom0000000000000A', sp);
 await evalJs(`document.getElementById('liveStop').click(); 1`); await sleep(500);
+
+// ---- 0.9.88 (owner 2026-11-21): debug on = a toast at every start, and the log goes up every 15 min by itself ----
+const pageLog = async (re) => (await evalJs(`window.__batrayTest.logLines()`)).filter((l) => re.test(l));
+const autoPosts = async () => (await evalJs(`window.__logPosts.map((p) => p.body)`)).filter((b) => /\n\(auto upload \d+ of session /.test(b));
+await send('Page.navigate', { url: `${BASE}/batray/?test&autoup=1500` }); await sleep(700);
+const st0 = await evalJs(`({ on: window.__batrayTest.logState().on, toast: document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent })`);
+check('debug on at start: a toast says the log is kept and uploaded every 15 min, and how to turn it off', st0.on && /Debug log is on: kept on this device and uploaded to clearevo\.com every 15 min\. Press the bug button/.test(st0.toast), st0);
+await sleep(2300);
+let ap = await autoPosts();
+check('the first auto upload: the header first (the relay takes only that), then the lines of this page load', ap.length >= 1 && ap[0].startsWith('BatRay v0.9.88') && /---\n\(auto upload 1 of session [a-z0-9]{6}: lines 1-\d+\)\n[0-9:.]+ {2}BatRay v0\.9\.88/.test(ap[0]), ap.map((x) => x.slice(0, 300)));
+check('...and the log names its id', (await pageLog(/log auto-upload 1: id TestLogId/)).length === 1, await pageLog(/auto-upload/));
+await evalJs(`window.__logFail = true; 1`); await sleep(1700);
+const failed = await pageLog(/log auto-upload failed \(1 in a row\): test: relay down - the next one carries these lines/);
+const nFail = (await autoPosts()).length;
+await evalJs(`window.__logFail = false; 1`); await sleep(1700);
+ap = await autoPosts();
+const last = ap[nFail] || '', prevTo = +((ap[nFail - 1] || '').match(/lines \d+-(\d+)/) || [])[1];
+check('a refused upload is logged and the next one carries its lines (no gap in the line numbers)', failed.length === 1 && new RegExp(`lines ${prevTo + 1}-`).test(last) && /log auto-upload failed \(1 in a row\)/.test(last), { failed, prevTo, last: last.slice(0, 400) });
+const tq = await evalJs(`document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent`);
+check('no toast for an auto upload (it is quiet), only the log', !/upload/i.test(tq) || /every 15 min/.test(tq), tq);
+await evalJs(`document.getElementById('debugBtn').click(); 1`); await sleep(200);
+const nOff = (await autoPosts()).length; await sleep(3300);
+check('debug off: no more uploads', (await autoPosts()).length === nOff, { before: nOff, after: (await autoPosts()).length });
+await evalJs(`document.getElementById('debugBtn').click(); 1`); await sleep(2000);
+ap = await autoPosts();
+const back = ap[ap.length - 1] || '';
+check('on again: the next upload starts at the tap, not with the lines logged while it was off', ap.length === nOff + 1 && /\)\n[0-9:.]+ {2}debug log: kept on this device and uploaded every 15 min from now on/.test(back) && !/no longer kept/.test(back), back.slice(0, 500));
 
 const errors = events.filter((e) => e.method === 'Runtime.exceptionThrown').map((e) => e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text).filter((t) => !/boom/.test(t));
 check('no page exceptions besides the deliberate ones', errors.length === 0, errors);

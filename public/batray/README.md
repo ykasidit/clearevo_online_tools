@@ -134,6 +134,17 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.88 (2026-11-21): debug on = said at every start, and uploaded every 15 min
+
+Owner ask: "if debug is enabled, toast that and auto upload every 15 minutes". While the bug button is pressed, every
+start shows a toast (kept on this device, uploaded to clearevo.com every 15 min, the bug button turns it off), and
+`autoUpload()` sends the lines logged since the last auto upload under the device header (`autoUploadPlan` /
+`autoUploadDone` in log-logic.js: a cursor in lines of this page load, a refused upload leaves it so the next carries
+the backlog, lines that left the 4000-line ring are counted, the stored file keeps them). The cursor starts at the tap,
+so lines logged while the switch was off never go out. Quiet: a log line per upload, no toast. Relay log caps went to
+12 per address per hour and 2000 a day (a reader and a viewer behind one router upload 8 an hour). Tests: unit replay in
+batray_log.test.js, browser batray_log.mjs (`?test&autoup=<ms>`), the year sim counts the uploads.
+
 ## 0.9.87 (2026-11-21): a viewer pack the reader lost Bluetooth to
 
 A viewer log (Android Chrome, two packs) showed the stream up, the reader

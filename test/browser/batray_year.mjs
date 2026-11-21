@@ -124,6 +124,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     if (url.endsWith('/batray/api/room') && m === 'POST') return J({ room: 'yearroom00000000000000', pub: 'yearpub000000000000000' });
     if (/\\/batray\\/api\\/room\\/[^/?]+(\\?|$)/.test(url)) return J({ viewers: 1, live: true });
     if (/\\/batray\\/api\\/push\\/key/.test(url)) return J({ error: 'no push in the test' }, 404);
+    if (url.endsWith('/batray/api/log') && m === 'POST') { window.__sim.logUps = (window.__sim.logUps || 0) + 1; return J({ id: 'yearlog' + window.__sim.logUps }); }   // the 15 min auto upload (0.9.88): a count only
     if (/\\/batray\\/api\\//.test(url)) return J({ ok: true });
     return rf(u, i);
   };
@@ -149,7 +150,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
 // ---- start: debug log on, connect, share ----
 await send('Page.navigate', { url: `${BASE}/batray/?test&connsec=${CONNSEC}` }); await sleep(2500);
 await evalJs(`localStorage.setItem('batray_debuglog', '1'); localStorage.setItem('batray_auto_reconnect', '1'); 1`);
-await send('Page.navigate', { url: `${BASE}/batray/?test&connsec=${CONNSEC}&logon=1` }); await sleep(3000);
+await send('Page.navigate', { url: `${BASE}/batray/?test&connsec=${CONNSEC}&logon=1&autoup=5000` }); await sleep(3000);
 await evalJs(`document.getElementById('connectBig').click(); 1`);
 const T = 'window.__batrayTest';
 const connected = `(() => { const c = ${T}.connState(); return !!c && c.phase === 'connected' && window.__sim.frames > 0; })()`;
@@ -189,7 +190,7 @@ const probeJs = `(async () => {
   const lines = t.logLines(); const bad = lines.filter((x) => /UNHANDLED|ERROR /.test(x));
   return { phase: c && c.phase, share: s.phase, socks: window.__socks.size, todayRows: h.todayRows, day: h.day, backend: h.backend, pending: h.pending,
     days: (await t.histList()).length, logFiles: (l.files || []).length, logPending: l.pending, ring: lines.length, ls: localStorage.length,
-    packs: t.packIds().length, frames: window.__sim.frames, connects: window.__sim.connects, refused: window.__sim.refused, sockets: window.__sim.sockets,
+    packs: t.packIds().length, frames: window.__sim.frames, connects: window.__sim.connects, refused: window.__sim.refused, sockets: window.__sim.sockets, logUps: window.__sim.logUps || 0, autoUp: t.autoUpState ? t.autoUpState() : null,
     wake: window.__wakeHeld(), errors: bad.slice(-3), errorCount: bad.length };
 })()`;
 
@@ -250,7 +251,7 @@ for (let d = 1; d <= DAYS; d++) {
   }
   if (d % 10 === 0 || d === DAYS) {
     const h = await heap(); report.heaps.push({ day: d, ...h });
-    console.log(`day ${d}: ${p.phase}/${p.share} rows today ${p.todayRows}, ${p.days} day files, ${p.logFiles} log files, ring ${p.ring}, ls ${p.ls}, frames ${p.frames}, connects ${p.connects} (${p.refused} refused), sockets ${p.sockets}, heap ${h.heapMB} MB, nodes ${h.nodes}, listeners ${h.listeners}`);
+    console.log(`day ${d}: ${p.phase}/${p.share} rows today ${p.todayRows}, ${p.days} day files, ${p.logFiles} log files, ring ${p.ring}, ls ${p.ls}, frames ${p.frames}, connects ${p.connects} (${p.refused} refused), sockets ${p.sockets}, log uploads ${p.logUps}${p.autoUp ? ` (cursor ${p.autoUp.sent}, ${p.autoUp.fails} failing)` : ""}, heap ${h.heapMB} MB, nodes ${h.nodes}, listeners ${h.listeners}`);
   }
   if (d === 5) {                                                             // the frame soak: what one more frame costs
     const before = await heap();

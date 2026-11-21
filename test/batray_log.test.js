@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, logTake, logUntake, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LASTRUN_KEY, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX, logKeepOn } from '../public/batray/log-logic.js';
+import { logState, newSessionId, logFileName, parseLogName, logQueue, flushPlan, logTake, logUntake, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, LASTRUN_KEY, LOG_FILE_MAX, LOG_FILES_MAX, LOG_UPLOAD_MAX, logKeepOn, autoUploadState, autoUploadPlan, autoUploadDone, AUTO_UPLOAD_MS } from '../public/batray/log-logic.js';
 
 test('one file per session, rolled at 10 MB with the same session id; names sort by time and parse back', () => {
   const ls = logState(true, 'abc123');
@@ -97,4 +97,48 @@ test('2026-11-01 review: lines of a failed write go back in front of the ones qu
   const big = new Array(10).fill('x'.repeat(99));                       // 100 B a line with its newline
   assert.equal(logUntake(ls, big, 550), 5, 'over the cap: the oldest go');
   assert.equal(ls.pending.length, 8); assert.deepEqual(ls.pending.slice(-3), ['a', 'b', 'c']); assert.ok(ls.pendBytes <= 550);
+});
+
+test('auto upload (0.9.88): every 15 min the lines since the last one, under the header; a failure keeps the backlog', () => {
+  assert.equal(AUTO_UPLOAD_MS, 15 * 60000);
+  const header = ['BatRay v0.9.88 · 2026-11-21T03:00:00.000Z · reader', 'ua: x'];
+  const ring = [], au = autoUploadState();
+  let seq = 0;
+  const logN = (n) => { for (let i = 0; i < n; i++) { ring.push(`line ${++seq}`); if (ring.length > 10) ring.shift(); } };
+  assert.equal(autoUploadPlan(au, { seq, ring, header, sid: 'abc123' }), null, 'nothing logged: nothing sent');
+  logN(4);
+  let p = autoUploadPlan(au, { seq, ring, header, sid: 'abc123' });
+  assert.ok(p.body.startsWith('BatRay v0.9.88'), 'the relay takes only text that opens with the header line');
+  assert.match(p.body, /---\n\(auto upload 1 of session abc123: lines 1-4\)\nline 1\nline 2\nline 3\nline 4$/);
+  autoUploadDone(au, p, 'id1');
+  assert.deepEqual({ sent: au.sent, n: au.n, lastId: au.lastId }, { sent: 4, n: 1, lastId: 'id1' });
+  assert.equal(autoUploadPlan(au, { seq, ring, header, sid: 'abc123' }), null, 'nothing new since: nothing sent');
+  logN(3);
+  p = autoUploadPlan(au, { seq, ring, header, sid: 'abc123' });
+  assert.match(p.body, /\(auto upload 2 of session abc123: lines 5-7\)\nline 5\nline 6\nline 7$/);
+  autoUploadDone(au, p, null);                                  // the relay refused or the network was down
+  assert.deepEqual({ sent: au.sent, n: au.n, fails: au.fails }, { sent: 4, n: 1, fails: 1 }, 'a failure moves nothing');
+  logN(2);
+  p = autoUploadPlan(au, { seq, ring, header, sid: 'abc123' });
+  assert.match(p.body, /\(auto upload 2 of session abc123: lines 5-9\)\nline 5\n[^]*line 9$/, 'the next run carries the backlog');
+  autoUploadDone(au, p, 'id2');
+  assert.equal(au.fails, 0);
+  logN(14);                                                     // the ring (10 lines here) rolled past unsent lines
+  p = autoUploadPlan(au, { seq, ring, header, sid: 'abc123' });
+  assert.equal(p.lost, 4);
+  assert.match(p.body, /lines 14-23, 4 earlier lines not in memory any more \(the stored file has them\)\)\nline 14\n/);
+  assert.ok(!/line 13\n/.test(p.body));
+});
+
+test('auto upload: a body over the limit keeps the newest lines and counts the rest; the tap starts the cursor', () => {
+  const header = ['BatRay v0.9.88 · x'];
+  const ring = Array.from({ length: 100 }, (_, i) => `${'x'.repeat(50)} ${i + 1}`);
+  const p = autoUploadPlan(autoUploadState(), { seq: 100, ring, header, sid: 's', limit: 1000 });
+  assert.ok(p.body.length <= 1000, p.body.length);
+  assert.ok(p.body.endsWith(' 100') && p.lost > 0 && p.to === 100);
+  // debug turned on after 100 lines: only what follows the tap goes out
+  const au = autoUploadState(100);
+  assert.equal(autoUploadPlan(au, { seq: 100, ring, header, sid: 's' }), null);
+  const tiny = autoUploadPlan(autoUploadState(), { seq: 3, ring: ['a', 'b', 'c'], header, sid: 's', limit: 10 });
+  assert.ok(tiny && tiny.lost === 3 && tiny.body.startsWith('BatRay v'), 'a limit smaller than the header still sends the header and the count, never throws');
 });

@@ -38,12 +38,12 @@ import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowD
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
-import { logState, logQueue, flushPlan, logTake, logUntake, flushDone, logRetention, logSummary, uploadBody, debugButtons, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, logKeepOn } from './log-logic.js';
+import { logState, logQueue, flushPlan, logTake, logUntake, flushDone, logRetention, logSummary, uploadBody, debugButtons, autoUploadState, autoUploadPlan, autoUploadDone, AUTO_UPLOAD_MS, lastRunRecord, lastRunReport, bootReport, LOG_FLUSH_MS, LOG_UPLOAD_MAX, LOG_KEY, logKeepOn } from './log-logic.js';
 import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.87';
+export const APP_VERSION = '0.9.88';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -186,6 +186,7 @@ $('sbVer').textContent = `v${APP_VERSION}`;
 // state change, every error, and a heartbeat line each minute.
 const MAX_LOG_LINES = 4000;
 const logLines = [];
+let logSeq = 0;                                       // lines logged this page load: the auto upload's cursor
 let T = I18N.en;
 let statusThunk = () => T.ready, statusKind = '';
 let logRaf = 0;
@@ -199,6 +200,7 @@ function renderLog() {
 // "keep debug logs" in the History card (off until then, 0.9.75). Decisions in the log logic module over `logS`; the history worker writes.
 let logKeepPref = false; try { logKeepPref = logKeepOn(localStorage.getItem(LOG_KEY)); } catch {}
 const logS = logState(logKeepPref);
+const autoUp = autoUploadState();                     // the auto upload's cursor and counters (0.9.88)
 /** A periodic job's failure: logged once per run, the loop goes on (setInterval used to throw it as UNHANDLED). */
 const RELAY_CALL_MS = 10000;                                                 // a relay call that never answers is given up after this
 function jobError(what) { return (e) => log(`ERROR ${what}: ${e && e.message ? e.message : e}`); }
@@ -214,7 +216,7 @@ function onTap(el, what, fn, ev = 'click') {
 }
 function log(msg) {
   const line = `${new Date().toISOString().slice(11, 23)}  ${msg}`;
-  logLines.push(line);
+  logLines.push(line); logSeq++;
   if (logLines.length > MAX_LOG_LINES) logLines.shift();
   logQueue(logS, line);
   if (!logRaf) logRaf = requestAnimationFrame(() => { logRaf = 0; renderLog(); });
@@ -1030,8 +1032,9 @@ logCookie(logS.on);                                          // a cookie from an
 function setLogKeep(on, tapped = false) {
   logS.on = !!on; try { localStorage.setItem(LOG_KEY, on ? '1' : '0'); } catch {}
   logCookie(on);
+  if (on) autoUp.sent = logSeq;                               // the auto upload starts at the moment of the tap, not before it
   if (!on) { logS.pending = []; logS.pendBytes = 0; }
-  log(`debug log: ${on ? 'kept on this device from now on' : 'no longer kept on this device'}`);
+  log(`debug log: ${on ? `kept on this device and uploaded every ${AUTO_UPLOAD_MS / 60000} min from now on` : 'no longer kept on this device, no more uploads'}`);
   if (on) { logS.file = null; logS.fileBytes = 0; }          // a fresh file for the rest of this session
   renderLogNote(); renderDebugButtons();
   if (tapped) toast(on ? T.debugOnToast : T.debugOffToast, 9000);
@@ -2699,7 +2702,7 @@ async function stopTv(why = 'card') {
   window.addEventListener('pagehide', () => { if (tv) { const t = tv; tv = null; tvStopped(tvS); t.stop(); } });
 })();
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
-  openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines,
+  openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines, autoUpload, autoUpState: () => ({ ...autoUp }), logSeq: () => logSeq,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
   shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStuckSilent: (ms) => { hist.stuckSilentMs = ms; }, histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, packIds: () => [...packs.keys()], tab: () => ({ id: TAB.id, how: TAB.how, why: TAB.why, role: TAB.role }), tabKey: (name) => tk(name), hasStores: async () => hist.stores(), connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake, rxHistFile, compatState: () => compatS, browserInfo: () => browserInfo, histLockOut: () => hist.lockOut(1000, new Error('test')), histOffState: () => ({ off: histOff(), text: $('histOff').textContent, grey: $('trendCard').classList.contains('histoff'), cardShown: !$('trendCard').hidden }), statusState: () => ({ ...statusS }), statusTick, pubLink: () => (publisher ? publisher.link : null), readerState: () => ({ ...readerS, gone: viewer ? viewer.state.gone : null, reader: viewer ? viewer.state.reader : null }), packData: () => (active ? active.data : null),
@@ -2890,6 +2893,25 @@ async function uploadLog(btn, file = null) {
   else { log(`log upload failed: ${r.error}`); toast(T.uploadFailed(r.error), 10000); }
   if (lbl) lbl.textContent = was; if (btn) btn.disabled = false;
 }
+// Auto upload (0.9.88): while the debug log is on, the lines since the last one go to the relay every 15 min, quietly
+// (a log line, no toast); a failure keeps the lines for the next run. One loop for the page; it checks the switch each run.
+const AUTO_UPLOAD_CALL_MS = 60000;
+async function autoUpload() {
+  if (!logS.on) return null;
+  const plan = autoUploadPlan(autoUp, { seq: logSeq, ring: logLines, header: logHeaderLines(), sid: logS.sid, limit: LOG_UPLOAD_MAX / 2 });
+  if (!plan) return null;
+  let id = null, why = '';
+  try {
+    const r = await fetch('/batray/api/log', { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: plan.body, signal: AbortSignal.timeout(AUTO_UPLOAD_CALL_MS) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.id) id = j.id; else why = j.error || `HTTP ${r.status}`;
+  } catch (e) { why = e && e.message ? e.message : String(e); }
+  autoUploadDone(autoUp, plan, id);
+  if (id) log(`log auto-upload ${plan.n}: id ${id}, lines ${plan.from + 1}-${plan.to}, ${plan.body.length} B${plan.lost ? `, ${plan.lost} earlier lines were no longer in memory` : ''}`);
+  else log(`log auto-upload failed (${autoUp.fails} in a row): ${why} - the next one carries these lines`);
+  return id;
+}
+{ const q = new URLSearchParams(location.search), ms = Number(q.get('autoup')); void every(q.has('test') && ms > 0 ? ms : AUTO_UPLOAD_MS, autoUpload, { onError: jobError('log auto-upload') }); }   // ?test&autoup=<ms>: the browser test's period
 $('upload').addEventListener('click', () => uploadLog($('upload')));
 $('upload2').addEventListener('click', () => uploadLog($('upload2')));
 $('copy2').addEventListener('click', () => copyLog($('copy2')));
@@ -2913,6 +2935,7 @@ $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('ab
 for (const line of logHeaderLines()) log(line);     // typeof-guarded inside: a missing BluetoothDevice global must not abort startup
 log(`tab: store ${TAB.id} (${TAB.role}${TAB.room ? ` of room ${TAB.room.slice(0, 6)}…` : ''}) - ${TAB.why}; ${TAB.others.length} other tab record${TAB.others.length === 1 ? '' : 's'} on this device`);
 logLastRun();
+if (logS.on) toast(T.debugOnStart, 10000);              // the person sees at every start that the log is kept and uploaded
 // a second reader page tells this one (it waits until this page closes): say so, it explains a page the person sees
 if (!viewMode && typeof BroadcastChannel === 'function') {
   try { new BroadcastChannel('batray').onmessage = (e) => { if (e.data && e.data.kind === 'reader-busy') { log('tab: BatRay was opened as the reader in another tab too; that tab waits until this one closes'); toast(T.readerSecond, 10000); } }; } catch { /* no channel */ }
