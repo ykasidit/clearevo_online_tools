@@ -33,8 +33,8 @@ import { parseShare, envelope, suggestChannelName, parseSavedShare, FRESH_MS } f
 import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
 import { Flag, Channel, select, sleep, every, isAbort, TIMEOUT } from './sync.js';
-import { TAB_SS, TAB_PREFIX, LEGACY, validTabId, LEGACY_DROP, tabLock, tabKey, metaKey, tabMeta, tabRecords, chooseTab, orphanDrops, legacyMoves, storeRows } from './tab-logic.js';
-import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysInRange, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs, queueMerge, askDelayMs, receivedContig, idMark, parseRuns, pruneRuns, haveContig } from './history-logic.js';
+import { TAB_SS, TAB_PREFIX, LEGACY, validTabId, LEGACY_DROP, tabLock, tabKey, metaKey, tabMeta, tabRecords, chooseTab, sameTabFits, orphanDrops, legacyMoves, storeRows } from './tab-logic.js';
+import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysInRange, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs, queueMerge, askDelayMs, receivedContig, idMark, idReserve, parseRuns, pruneRuns, haveContig } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
@@ -132,6 +132,7 @@ async function pickTab() {
   const role = viewMode ? 'viewer' : 'reader', room = viewMode ? viewMode.room : null;
   let sessionId = null; try { sessionId = sessionStorage.getItem(TAB_SS); } catch { /* no session storage */ }
   const records = tabRecords(tabEntries());
+  if (sessionId && !sameTabFits(records, sessionId, role, room)) sessionId = null;   // a reader tab that opened a share link (or back): another store (round 8)
   // A reload: the page it replaces may still hold this tab's lock for a moment while it unloads. Wait for it (a copied
   // tab's original never lets go): before 0.9.82 a reload took that for "a copy of an open tab" and every reload of the
   // reader alternated between two stores - two histories, two share links, two resume plans.
@@ -761,7 +762,7 @@ function recordRow(p, d, t, remoteRow = null) {
   // row per pack every MIN_ROW_MS
   if (!rowDue(p.lastRowAt, t)) return null;
   p.lastRowAt = t;
-  const row = rowFromReading(p.label, d, t); row.id = nextRowId(histS);
+  const row = rowFromReading(p.label, d, t); row.id = nextRowId(histS); reserveIds();
   queueRow(row);
   return row;
 }
@@ -774,7 +775,11 @@ const diskFull = (e) => !!e && (e.name === 'QuotaExceededError' || /SQLITE_FULL|
 /** The day changed: what was queued for yesterday goes into yesterday's file, then the store is tidied. */
 async function rollover() { await flushHistory(); await maintainHistory(); }
 // round 7: the reader's id mark and a viewer's closed runs, beside the store in this tab's state
-function saveIdMark() { if (viewer || !histS.day) return; try { localStorage.setItem(tk('ids'), JSON.stringify({ day: histS.day, next: histS.nextId })); } catch { /* no storage: the file's own highest id still counts */ } }
+const idRes = { day: null, next: 0 };                                       // the mark as stored: ids below it may be in use
+function writeIdMark(next) { idRes.day = histS.day; idRes.next = next; try { localStorage.setItem(tk('ids'), JSON.stringify({ day: histS.day, next })); } catch { /* no storage: the file's own highest id still counts */ } }
+function saveIdMark() { if (viewer || !histS.day) return; const held = idRes.day === histS.day ? idRes.next : 0; if (histS.nextId > held) writeIdMark(histS.nextId); }
+/** After ids were handed out: the stored mark covers them before they leave (F8-1), a block at a time. */
+function reserveIds() { if (viewer || !histS.day) return; const m = idReserve(histS.nextId, idRes.day === histS.day ? idRes.next : 0); if (m !== null) writeIdMark(m); }
 function loadDone() { try { return parseRuns(localStorage.getItem(tk('done'))); } catch { return {}; } }
 function saveDone(m) { try { localStorage.setItem(tk('done'), JSON.stringify(m)); } catch { /* no storage: the next ask may send a day once more */ } }
 async function flushHistory() {
@@ -943,6 +948,7 @@ async function initHistoryOnce() {
     for (const [day, l] of histMem.pending) for (const r of l) if (r.id === null) { if (day === today) { r.id = nextRowId(histS); early++; } }
     for (const [day, l] of histMem.pending) if (day !== today && day !== 'demo') histMem.pending.set(day, l.filter((r) => r.id !== null));
     if (early) log(`history: ${early} rows read while the store opened are numbered from id ${histS.nextId - early}`);
+    reserveIds();
     const sum = historySummary(histS.days, histS.todayRows, { usage: histS.usage, quota: histS.quota, today });
     log(`history: ${histS.backend}, ${sum.days} days, ${Math.round(sum.bytes / 1024)} KB, oldest ${sum.oldest || '-'}, today ${info.rows} rows (highest id ${info.maxId}, complete to ${info.contig})`);
   } catch (e) { if (isCorrupt(e)) await corruptDb(e, 'history read'); else log(`history: load failed: ${e.message}`); }

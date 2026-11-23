@@ -163,6 +163,11 @@ export function idMark(raw, today) {
   let m; try { m = JSON.parse(raw || 'null'); } catch { return 0; }
   return m && m.day === today && Number.isInteger(m.next) && m.next > 0 ? m.next : 0;
 }
+/** Ids reserved ahead (round 8, F8-1): the stored mark must cover every id already handed out (a row goes to viewers
+ *  the moment it is read, its flush comes up to 10 s later, and a killed page writes neither). When the next id passes
+ *  the mark, reserve a block: one small write per ID_BLOCK rows; a restart skips at most ID_BLOCK unused ids. */
+export const ID_BLOCK = 64;
+export function idReserve(nextId, mark, block = ID_BLOCK) { return Number.isInteger(nextId) && nextId > (mark || 0) ? nextId + block : null; }
 /** A viewer's closed runs per day (round 7): {day: id}, from received files (receivedContig). Parsed defensively. */
 export function parseRuns(raw) {
   let m; try { m = JSON.parse(raw || 'null'); } catch { return {}; }

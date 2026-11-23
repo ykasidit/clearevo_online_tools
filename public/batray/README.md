@@ -167,6 +167,14 @@ its day file still reaches it, marks of deleted days go at each ask, and a wipe 
 ends the one full resend of a renumbered today after a viewer reload. Tests: test/review/fable_r7_delete_today_ids.mjs,
 opus_r7_past_day_resend.test.js (models the new ask), unit cases in batray_review_r1.test.js.
 
+Round 8: (O8-1, older than 0.9.94) a reader tab that opened a share link in the same tab kept "this tab, as before"
+and became a viewer on the reader's own day files - the other room's rows mixed into the reader's store (and sent on
+to its own viewers), the viewer's run claiming rows it never had. `sameTabFits()` (tab-logic): this tab's store only
+for the same role and, for a viewer, the same room; else the normal adopt / new path (back as the reader it adopts
+its own store again). (F8-1) the id mark was written only at the flush, so a killed page restarted below ids viewers
+already held; `idReserve()` reserves `ID_BLOCK` = 64 ids ahead when the next id passes the mark (one small write per
+64 rows; a restart skips at most 64 unused ids). Tests: test/review/opus_r8_tab_role.mjs, fable_r8_id_mark_lag.mjs.
+
 ## 0.9.93 (2026-11-23): review round 3 - a store whose files vanish starts over
 
 Both reviewers, independently, proved the year sim's "store broken for good" (every log write and new-day insert

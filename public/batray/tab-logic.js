@@ -73,7 +73,14 @@ export function tabRecords(entries) {
 /** Which store this page uses. sessionId: the id this tab kept (or null); live: ids whose tab lock is held by
  *  another page; role 'reader' | 'viewer'; room: the viewed room; records: tabRecords(); legacy: the pre-0.9.77
  *  store exists. Returns { id, how: 'same' | 'adopt' | 'legacy' | 'new', from, why }. */
+/** This tab's own store fits the page it now shows (review round 8: a reader tab that opened a share link became a
+ *  viewer on the reader's own day files - two rooms' rows in one store). No record yet = fits. */
+export function sameTabFits(records, id, role, room) {
+  const r = (records || []).find((x) => x.id === id);
+  return !r || (r.role === role && (role === 'reader' || r.room === room));
+}
 export function chooseTab({ sessionId = null, live = new Set(), role, room = null, records = [], legacy = false, rand = Math.random }) {
+  if (sessionId && !sameTabFits(records, sessionId, role, room)) sessionId = null;   // another role or room: not this store
   if (sessionId && validTabId(sessionId) && !live.has(sessionId)) return { id: sessionId, how: 'same', from: null, why: 'this tab, as before' };
   const copy = !!(sessionId && live.has(sessionId));
   const cands = records.filter((r) => r.role === role && (role === 'reader' || r.room === room) && !live.has(r.id)).sort((a, b) => b.at - a.at);

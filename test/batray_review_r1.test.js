@@ -150,3 +150,26 @@ test('parseRuns / pruneRuns / haveContig: a mark counts only while its day file 
   assert.equal(haveContig(0, 40, 150), 0);                   // the file no longer reaches the mark: it counts for nothing
   assert.equal(haveContig(200, 200, 150), 200);
 });
+
+// review round 8: ids reserved ahead of the ones handed out (F8-1), and a tab's own store only for the same role / room (O8-1)
+import { idReserve, ID_BLOCK } from '../public/batray/history-logic.js';
+import { sameTabFits, chooseTab } from '../public/batray/tab-logic.js';
+test('idReserve: a block ahead once the next id passes the mark, nothing while the mark covers it', () => {
+  assert.equal(idReserve(1, 0), 1 + ID_BLOCK);
+  assert.equal(idReserve(30, 65), null);
+  assert.equal(idReserve(66, 65), 66 + ID_BLOCK);
+  assert.equal(idReserve(Number.NaN, 0), null);
+});
+test('sameTabFits / chooseTab: a reader tab that opens a share link gets another store, and back again its own', () => {
+  const records = [{ id: 'aaaaaaaa', role: 'reader', room: null, at: 10 }, { id: 'bbbbbbbb', role: 'viewer', room: 'r1', at: 5 }];
+  assert.equal(sameTabFits(records, 'aaaaaaaa', 'reader', null), true);
+  assert.equal(sameTabFits(records, 'aaaaaaaa', 'viewer', 'r1'), false);
+  assert.equal(sameTabFits(records, 'bbbbbbbb', 'viewer', 'r2'), false);
+  assert.equal(sameTabFits(records, 'cccccccc', 'viewer', 'r2'), true);       // no record yet
+  const v = chooseTab({ sessionId: 'aaaaaaaa', live: new Set(), role: 'viewer', room: 'r1', records });
+  assert.equal(v.id, 'bbbbbbbb');                                              // the closed viewer store of that room
+  const v2 = chooseTab({ sessionId: 'aaaaaaaa', live: new Set(), role: 'viewer', room: 'r9', records, rand: () => 0.5 });
+  assert.notEqual(v2.id, 'aaaaaaaa'); assert.equal(v2.how, 'new');
+  const back = chooseTab({ sessionId: 'bbbbbbbb', live: new Set(), role: 'reader', room: null, records });
+  assert.equal(back.id, 'aaaaaaaa');                                           // back as the reader: its own store again
+});
