@@ -31,16 +31,25 @@ set -e
 cd "$(dirname "$0")"
 [ -f data/ct1.dcm ] || python3 gen_dicom.py
 CHROME=$(command -v google-chrome || command -v chromium-browser || command -v chromium)
-PROFILE=$(mktemp -d)
-"$CHROME" --headless=new --disable-gpu --remote-debugging-port=9333 --window-size=1200,800 --autoplay-policy=no-user-gesture-required \
-  --user-data-dir="$PROFILE" about:blank >/dev/null 2>&1 &
-CHROME_PID=$!
+PROFILE=""; CHROME_PID=""
+# a fresh Chrome profile: the tab-store tests (resume, tabs, log) read every tab record and store on the origin, and
+# earlier suites leave theirs behind - each of those gets a clean browser of its own
+fresh_chrome() {
+  [ -n "$CHROME_PID" ] && { kill $CHROME_PID 2>/dev/null; wait $CHROME_PID 2>/dev/null; }
+  [ -n "$PROFILE" ] && rm -rf "$PROFILE"
+  PROFILE=$(mktemp -d)
+  "$CHROME" --headless=new --disable-gpu --remote-debugging-port=9333 --window-size=1200,800 --autoplay-policy=no-user-gesture-required \
+    --user-data-dir="$PROFILE" about:blank >/dev/null 2>&1 &
+  CHROME_PID=$!
+  sleep 3
+}
+fresh_chrome
 SRV_PID=""
 if [ -z "$BASE" ]; then
   python3 serve.py 8077 "../../${SERVE_DIR:-public}" >/dev/null 2>&1 &   # the live site's COOP/COEP headers (serve.py)
   SRV_PID=$!
 fi
-cleanup() { kill $CHROME_PID $SRV_PID 2>/dev/null; wait $CHROME_PID 2>/dev/null; rm -rf "$PROFILE"; }
+cleanup() { kill $CHROME_PID $SRV_PID 2>/dev/null; wait $CHROME_PID 2>/dev/null; [ -n "$PROFILE" ] && rm -rf "$PROFILE"; }
 trap cleanup EXIT
 sleep 3
 rc=0
@@ -52,11 +61,11 @@ node batray_tv.mjs || rc=1
 node batray_ui.mjs || rc=1
 node batray_compat.mjs || rc=1
 node batray_status.mjs || rc=1
-node batray_resume.mjs || rc=1
+fresh_chrome; node batray_resume.mjs || rc=1
 node batray_push.mjs || rc=1
 node batray_histoff.mjs || rc=1
-node batray_tabs.mjs || rc=1
-node batray_log.mjs || rc=1      # last: it throws deliberate errors that Chrome replays to the next Runtime.enable
+fresh_chrome; node batray_tabs.mjs || rc=1
+fresh_chrome; node batray_log.mjs || rc=1      # last: it throws deliberate errors that Chrome replays to the next Runtime.enable
 node probe.mjs
 node repro.mjs
 [ $rc -eq 0 ] && echo 'browser tests ok' || echo 'BROWSER TESTS FAILED'
