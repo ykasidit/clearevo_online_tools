@@ -134,6 +134,14 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.94 (2026-11-23): review round 4 - another tab's vanished logs are not "the storage went away"
+
+Browse lists every tab's log files; a closed viewer store freed meanwhile (midnight clean-up, a Delete in Browse)
+made Delete / Upload on its stale row look up a missing directory, and that NotFoundError restarted this tab's
+healthy store with a false "storage went away" line. The worker's `otherLogDir()` answers null for a missing
+other-store log directory (`logRead` -> empty, `logRemove` -> false), as `fileBytes` / `remove` already did for
+files. Test: test/review/fable_r4_notfound_other_store.mjs.
+
 ## 0.9.93 (2026-11-23): review round 3 - a store whose files vanish starts over
 
 Both reviewers, independently, proved the year sim's "store broken for good" (every log write and new-day insert

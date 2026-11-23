@@ -156,6 +156,8 @@ async function dirBytes(d) {
   return n;
 }
 async function logDirOf(store, create) { return (await dir()).getDirectoryHandle(storeDirs(store).logs, { create }); }
+/* Another store's logs may be freed while Browse lists them: a missing dir is null, never "the storage went away". */
+async function otherLogDir(store) { try { return await logDirOf(store, false); } catch (e) { if (e && e.name === 'NotFoundError') return null; throw e; } }
 /** The origin's private root (typed loosely: the DOM typings lack the async iterator on a directory handle).
  *  @returns {Promise<any>} */
 async function rootDir() { return navigator.storage.getDirectory(); }
@@ -325,10 +327,14 @@ const ops = {
     else for await (const [name, h] of (await dir()).entries()) { const id = h.kind === 'directory' ? storeOfLogDir(name) : null; if (id) await scanLogs(out, h, id); }
     return { files: out.sort((a, b) => (a.name < b.name ? -1 : 1)) };
   },
-  async logRead({ name, store = null }) { const d = store && store !== STORE ? await logDirOf(store, false) : await ops.logDir(); const b = await fileBytes(d, name); return { text: b ? dec.decode(b) : '' }; },
+  async logRead({ name, store = null }) {
+    const d = store && store !== STORE ? await otherLogDir(store) : await ops.logDir(); if (d === null) return { text: '' };
+    const b = await fileBytes(d, name); return { text: b ? dec.decode(b) : '' };
+  },
   async logRemove({ name, store = null }) {
     if (!/^log-[0-9TZ-]+-[a-z0-9]{6}\.txt$/.test(name)) throw new Error('bad log name');
-    const d = store && store !== STORE ? await logDirOf(store, false) : await ops.logDir(); return { removed: await remove(d, name) };
+    const d = store && store !== STORE ? await otherLogDir(store) : await ops.logDir(); if (d === null) return { removed: false };
+    return { removed: await remove(d, name) };
   },
   async logClear() { const d = await ops.logDir(); let n = 0; for await (const [name] of d.entries()) { await d.removeEntry(name); n++; } return { removed: n }; },
   /** Every log file gzipped, for a .tar download. */
