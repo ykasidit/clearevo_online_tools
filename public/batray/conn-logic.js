@@ -74,8 +74,8 @@ export function backoffS(base, fails) { return Math.min(RECONNECT_MAX_S, base * 
 export function afterEnd(end, { autoRe, hasDevice, origin = null, msg = '', fails = 1 }) {
   if (!autoRe || !hasDevice) return { next: 'idle' };
   if (end === 'failed') return cancelledError(msg) ? { next: 'idle' } : { next: 'countdown', seconds: backoffS(origin === 'chooser' ? RECONNECT_S.chooser : RECONNECT_S.auto, fails) };
-  if (end === 'stalled') return { next: 'countdown', seconds: RECONNECT_S.stalled };
-  return { next: 'countdown', seconds: RECONNECT_S.auto };
+  if (end === 'stalled') return { next: 'countdown', seconds: backoffS(RECONNECT_S.stalled, fails) };   // fails = rounds in a row without a reading
+  return { next: 'countdown', seconds: backoffS(RECONNECT_S.auto, fails) };
 }
 
 /** What the offline / loading / reconnect card shows for a BLE pack. */

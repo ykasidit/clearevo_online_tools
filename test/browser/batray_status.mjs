@@ -75,8 +75,8 @@ const decryptAll = `(async () => {
 let sent = await evalJs(decryptAll);
 check('sharing: one status envelope in the retained slot "status" once the socket is up, encrypted, why=online and sharing on', sent.length === 1 && sent[0].k === 'status' && sent[0].v.why === 'online' && sent[0].v.sharing === true && sent[0].p.id === '*', sent.map((e) => e.v && e.v.why));
 // 0.9.91 (review round 1): a freeze closes the share socket at once with 4004 'frozen' - the relay records the end and
-// viewers read "Chrome froze its page" from it (an encrypted last-words status cannot leave a page that is being
-// frozen); the resume reopens the socket and the room gets a fresh status
+// viewers read "Chrome froze its page" from it; 0.9.92: the last-words status, encrypted ahead at each status tick, is
+// sent just before the close; the resume reopens the socket and the room gets a fresh status
 const pubSock = `[...window.__wsAll].reverse().find((x) => /role=pub/.test(x.url))`;
 const before = await evalJs(`window.__wsAll.length`);
 await evalJs(`document.dispatchEvent(new Event('freeze')); 1`); await sleep(400);
@@ -84,11 +84,11 @@ const fz = await evalJs(`({ closed: ${pubSock}.readyState === 3 })`);
 check('a freeze closes the share socket at once, and says so in the log', fz.closed && (await logs('/freeze: closing the share socket \\(4004 frozen\\)/')).length === 1, fz);
 await evalJs(`document.dispatchEvent(new Event('resume')); 1`); await sleep(1500);
 sent = await evalJs(decryptAll);
-check('the resume reopens it at once (no 4 s wait) and the room gets a fresh status', (await evalJs(`window.__wsAll.length`)) > before && (await evalJs(`${pubSock}.readyState`)) === 1 && sent.length === 2 && sent[1].v.why === 'online', sent.map((e) => e.v.why));
+check('the freeze still sends its last words (made ahead at the last status tick, review round 2); the resume reopens at once and the room gets a fresh status', (await evalJs(`window.__wsAll.length`)) > before && (await evalJs(`${pubSock}.readyState`)) === 1 && sent.map((e) => e.v.why).join(',') === 'online,freeze,online', sent.map((e) => e.v.why));
 lines = await logs('/status: why=(freeze|resume)/');
 check('...the freeze and the resume are in the log', lines.length === 2, lines);
 await evalJs(`window.__batrayTest.statusTick('tick'); 1`); await sleep(300);
-check('a minute tick with nothing changed sends nothing more', (await evalJs(decryptAll)).length === 2, null);
+check('a minute tick with nothing changed sends nothing more', (await evalJs(decryptAll)).length === 3, null);
 const rec = await evalJs(`(() => { window.__batrayTest.memTick(); return JSON.parse(localStorage.getItem(window.__batrayTest.tabKey('lastrun'))); })()`);
 check('the last-run record carries the last status', rec && rec.status && rec.status.why === 'tick' && rec.status.sharing === true, rec && rec.status);
 

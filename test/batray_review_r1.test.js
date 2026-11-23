@@ -20,7 +20,7 @@ import { dataPublishDue, IDLE_PUBLISH_MS } from '../public/batray/share-logic.js
 import { endReason } from '../public/batray/status-logic.js';
 import { afterEnd, backoffS, RECONNECT_MAX_S, RECONNECT_S } from '../public/batray/conn-logic.js';
 import { queueMerge, askDelayMs, HIST_ASK_GAP_MS, GAP_REQ_MS } from '../public/batray/history-logic.js';
-import { wakePowerOk, WAKE_LOW_PCT } from '../public/batray/wake-logic.js';
+import { wakePowerOk, WAKE_LOW_PCT, wakePowerStep, WAKE_UNPLUG_MS, WAKE_BAND_PCT } from '../public/batray/wake-logic.js';
 
 test('backdrop: a tap outside within 500 ms of opening is a ghost; the resume sheet ignores the backdrop for good', () => {
   assert.equal(SHEET_GHOST_MS, 500);
@@ -56,7 +56,12 @@ test('reconnect back-off: doubles per failed round to a 60 s cap; the first roun
   assert.equal(backoffS(10, 0), 10, 'no count: the base'); assert.equal(backoffS(10, undefined), 10);
   assert.deepEqual(afterEnd('failed', { autoRe: true, hasDevice: true, fails: 4 }), { next: 'countdown', seconds: 60 });
   assert.deepEqual(afterEnd('failed', { autoRe: true, hasDevice: true }), { next: 'countdown', seconds: 10 }, 'an old caller: as before');
-  assert.deepEqual(afterEnd('down', { autoRe: true, hasDevice: true, fails: 9 }), { next: 'countdown', seconds: 10 }, 'a link that fell is not backed off');
+  assert.deepEqual(afterEnd('down', { autoRe: true, hasDevice: true, fails: 0 }), { next: 'countdown', seconds: 10 }, 'a link that gave readings and fell: the plain countdown');
+  // review round 2 (F2-2): a link that came up but gave no reading counts as a failed round too
+  assert.deepEqual(afterEnd('stalled', { autoRe: true, hasDevice: true, fails: 1 }), { next: 'countdown', seconds: 3 });
+  assert.deepEqual(afterEnd('stalled', { autoRe: true, hasDevice: true, fails: 5 }), { next: 'countdown', seconds: 48 });
+  assert.deepEqual(afterEnd('stalled', { autoRe: true, hasDevice: true, fails: 9 }), { next: 'countdown', seconds: 60 });
+  assert.deepEqual(afterEnd('down', { autoRe: true, hasDevice: true, fails: 9 }), { next: 'countdown', seconds: 60 }, 'nine rounds in a row without a reading');
   assert.deepEqual(afterEnd('failed', { autoRe: true, hasDevice: true, fails: 9, msg: 'User cancelled the requestDevice() chooser.' }), { next: 'idle' });
 });
 
@@ -91,4 +96,26 @@ test('history asks: one per socket per 4 s, a viewer\'s own rhythm never waits, 
   assert.equal(askDelayMs(1000, 5000), 0);
   assert.equal(askDelayMs(9000, 1000), 0, 'clock set back: never a long wait');
   assert.equal(askDelayMs(NaN, 1000), 0);
+});
+
+test('review round 2: the power rule is steady - 5 min off the charger before the screen goes, back above 25 % or on charge', () => {
+  assert.equal(WAKE_UNPLUG_MS, 300000); assert.equal(WAKE_BAND_PCT, 5);
+  const ps = { offSince: null, ok: true }; const t0 = 1_000_000;
+  assert.equal(wakePowerStep(ps, { pct: 18, chg: true }, t0), true);
+  assert.equal(wakePowerStep(ps, { pct: 18, chg: false }, t0 + 1000), true, 'the charger blinked');
+  assert.equal(wakePowerStep(ps, { pct: 18, chg: true }, t0 + 4000), true, '3 s later it charges again: the screen never went');
+  assert.equal(ps.offSince, null);
+  assert.equal(wakePowerStep(ps, { pct: 18, chg: false }, t0 + 10_000), true);
+  assert.equal(wakePowerStep(ps, { pct: 18, chg: false }, t0 + 10_000 + WAKE_UNPLUG_MS - 1), true, 'not yet 5 min');
+  assert.equal(wakePowerStep(ps, { pct: 18, chg: false }, t0 + 10_000 + WAKE_UNPLUG_MS), false, '5 min off the charger at 18 %: let the screen go');
+  assert.equal(wakePowerStep(ps, { pct: 22, chg: false }, t0 + 999_000), false, 'within the band: stays let go (no flapping at 20/21 %)');
+  assert.equal(wakePowerStep(ps, { pct: 26, chg: false }, t0 + 999_500), true, 'above 25 %: kept on again');
+  assert.equal(wakePowerStep(ps, { pct: 50, chg: false }, t0 + 2_000_000), true, 'off the charger but well charged');
+  const q = { offSince: null, ok: true };
+  wakePowerStep(q, { pct: 10, chg: false }, 5_000_000); assert.equal(wakePowerStep(q, { pct: 10, chg: false }, 5_000_000 + WAKE_UNPLUG_MS), false);
+  assert.equal(wakePowerStep(q, { pct: 10, chg: true }, 5_000_000 + WAKE_UNPLUG_MS + 1), true, 'charging again');
+  const r = { offSince: null, ok: true };
+  wakePowerStep(r, { pct: 10, chg: false }, 9_000_000); assert.equal(wakePowerStep(r, { pct: 10, chg: false }, 1_000), true, 'a clock set back restarts the wait');
+  assert.equal(wakePowerStep({ offSince: null, ok: true }, null, 1), true, 'no Battery API: on');
+  assert.equal(wakePowerStep({ offSince: null, ok: true }, { pct: undefined, chg: false }, 1), true, 'no level: on');
 });

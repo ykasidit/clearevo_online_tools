@@ -233,13 +233,15 @@ for (let d = 1; d <= DAYS; d++) {
   // the rest of the day streams (a bad night's few hundred refusals take their time: they run out first); then the
   // clock moves to 06:00 UTC of the next day
   const left = DAY_MS - (Date.now() - t0); if (left > 0) await sleep(left);
-  if (!(await until('window.__sim.refuse === 0', 180000, 250))) fail(`day ${d}: the run of refused connects is worked through (the loop keeps trying)`, await evalJs('window.__sim'));
+  // 0.9.91: failed rounds back off to one a minute (about 1 refusal a real second here), so a bad night's run takes longer
+  if (!(await until('window.__sim.refuse === 0', 600000, 250))) fail(`day ${d}: the run of refused connects is worked through (the loop keeps trying)`, await evalJs('window.__sim'));
   await evalJs(`(() => { const now = Date.now(), next = Math.floor(now / 86400000) * 86400000 + 86400000 + 6 * 3600000; window.__moveClock(next - now); return 1; })()`);
   // the reader must be back on its own: connected, sharing, storing (the day jump looks like a frozen tab to it)
   const ok = await until(`(${connected}) && (${sharing})`, 15000, 200);
   await sleep(600);
   const p = await evalJs(probeJs);
   report.days.push({ d, plan, ...p });
+  if (process.env.YEAR_TRACE) { const tl = await evalJs(`window.__batrayTest.logLines().filter((l) => /freed|dropStore|history worker|could not be found|tab:|store |retention|deleted|unlink/.test(l)).slice(-12)`); if (tl.length) console.log(`trace day ${d}:\n  ` + tl.join('\n  ')); }   // YEAR_TRACE=1: the store's own log lines each day
   if (!ok) fail(`day ${d}: the reader is connected and sharing again within 15 s of the day change`, { phase: p.phase, share: p.share, socks: p.socks });
   if (p.backend !== 'opfs') fail(`day ${d}: the history store is still SQLite over OPFS`, p.backend);
   if (p.errorCount > lastErrors) { fail(`day ${d}: no ERROR / UNHANDLED line in the log`, p.errors); }

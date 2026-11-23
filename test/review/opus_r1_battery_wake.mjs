@@ -31,6 +31,9 @@ check('connected and sharing: the screen wake lock is held', await held() === tr
 await c.evalJs(`window.__bat.charging = false; window.__bat.dispatchEvent(new Event('chargingchange')); 1`); await sleep(1500);
 check('unplugged at 90 %: the lock stays (the outage is worth recording while the battery lasts)', await held() === true);
 // the battery runs down: 15 %, still unplugged (Chrome reports levelchange); give the page a minute's heartbeat worth
+// 0.9.92 (review round 2, O2-1): the screen goes only after 5 min off the charger without a break - the page's clock is
+// moved 6 min on, as a real run-down from 90 % to 15 % takes hours
+await c.evalJs(`(() => { const real = Date.now.bind(Date); Date.now = () => real() + 6 * 60000; return 1; })()`);
 await c.evalJs(`window.__bat.level = 0.15; window.__bat.dispatchEvent(new Event('levelchange')); 1`);
 await sleep(3000);
 const w = await c.evalJs('window.__batrayTest.wakeState()');

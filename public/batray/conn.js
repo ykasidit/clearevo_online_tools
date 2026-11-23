@@ -110,7 +110,9 @@ export class BleConn {
       if (r.end === 'choose') return 'choose';
       if (r.end === 'stuck') { r = await this.stuck(signal); continue; }
       if (r.end === 'stop') return this.idle(signal, 'stopped');
-      this.cs.failRounds = r.end === 'failed' ? this.cs.failRounds + 1 : 0;   // any other end means a link was up
+      // a round fails for the back-off unless its link gave a reading (review round 2: a BMS that connects but never
+      // streams - m-00 for days in 0.9.33-0.9.42 - was reconnected every 23 s for ever, each round a connect and asks)
+      this.cs.failRounds = r.end === 'failed' || r.data === false ? this.cs.failRounds + 1 : 0;
       const d = afterEnd(r.end, { autoRe: this.h.autoRe(), hasDevice: this.cs.hasDevice, origin: this.cs.origin, msg: r.msg, fails: this.cs.failRounds });
       if (d.next === 'idle') return this.idle(signal, r.end);
       const c = await this.countdown(d.seconds, signal, r.end);
@@ -121,7 +123,7 @@ export class BleConn {
   }
 
   async idle(signal, why) {
-    this.cs.attempt = 0; this.cs.count = 0;
+    this.cs.attempt = 0; this.cs.count = 0; this.cs.failRounds = 0;   // a stop, a Cancel or a person's fresh Connect starts the back-off over (review round 2)
     if (this.bms.connected) { this.h.log('conn: idle with a link still up (a connect that answered after its attempt gave up) - closing it'); this.bms.close(); }
     this.enter('idle', why);
     for (;;) {
@@ -220,7 +222,7 @@ export class BleConn {
     this.h.connected(b.device);                                          // the app takes the device first, so the repaint below shows it
     this.enter('connected');
     const l = { askedAt: null, asks: 0, cellLogged: false };
-    const end = (e, ageS = 0) => { this.h.down(e === 'stalled', ageS); return { end: e, ageS }; };
+    const end = (e, ageS = 0) => { this.h.down(e === 'stalled', ageS); return { end: e, ageS, data: b.firstCellAt !== null }; };   // data: this link gave a reading
     for (;;) {
       const arms = { down: (s) => b.down.wait(true, { signal: s }), voided: (s) => b.voided.wait(true, { signal: s }), cmd: (s) => this.cmdArm(s), tick: (s) => sleep(this.o.tickMs, s) };
       if (l.askedAt === null) arms.info = (s) => b.infoSeen.wait(true, { signal: s });

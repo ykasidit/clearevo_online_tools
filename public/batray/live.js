@@ -59,8 +59,9 @@ class Sock {
   close(code = 1000, reason = 'bye') { try { this.ws.close(code, reason); } catch { /* already closing */ } }
 }
 /** Open a socket or throw: resolves once it is open, gives up on close or after OPEN_MS, aborts with the signal. */
-async function openSock(url, signal) {
+async function openSock(url, signal, onSock = null) {
   const sock = new Sock(url);
+  if (onSock) onSock(sock);                                                 // the caller can close it while it opens (a freeze)
   let r;
   try { r = await select(signal, { open: (s) => sock.opened.wait(true, { signal: s }), closed: (s) => sock.closed.wait(true, { signal: s }), timeout: (s) => sleep(OPEN_MS, s) }); }
   catch (e) { sock.close(4002, 'aborted'); throw e; }
@@ -136,7 +137,7 @@ export class Publisher {
   constructor(opts) {
     this.log = opts.log || (() => {}); this.onState = opts.onState || (() => {}); this.onRequest = opts.onRequest || (() => {}); this.onLogRequest = opts.onLogRequest || (() => {});
     this.room = null; this.pubToken = null; this.keyB64 = null; this.key = null; this.link = null;
-    this.sock = null; this.slots = new Map();   // pack id -> a short slot index: the relay retains per slot and never learns a pack id
+    this.sock = null; this.opening = null; this.lastWords = null; this.slots = new Map();   // pack id -> a short slot index: the relay retains per slot and never learns a pack id
     // live: our socket is up (the room fans out from it); sig: the same thing, kept for the chip; net: this device has internet
     this.state = { viewers: 0, live: false, retryIn: null, error: null, sent: 0, dropped: 0, sig: null, net: true };   // sig null = not tried yet
     this.stopped = false; this.reused = false; this.lastStatusKey = null;
@@ -185,14 +186,15 @@ export class Publisher {
       this.state.retryIn = null; this.state.error = null; this.emit();
       const t0 = Date.now();
       let sock;
-      try { sock = await openSock(wsUrl(this.room, 'pub', this.pubToken), signal); } catch (e) {
+      try { sock = await openSock(wsUrl(this.room, 'pub', this.pubToken), signal, (s) => { this.opening = s; }); } catch (e) {
+        this.opening = null;
         if (isAbort(e)) throw e;
         this.state.sig = false; this.state.error = e.message; this.emit();
         this.log(`live: ${e.message}`);
         await this.retryWait(this.retryS, signal);
         continue;
       }
-      this.sock = sock; this.state.sig = true; this.state.live = true; this.emit();
+      this.opening = null; this.sock = sock; this.state.sig = true; this.state.live = true; this.emit();
       this.log(`signal: socket open (pub) in ${Date.now() - t0} ms - publishing`);
       const why = await serve(sock, signal, { onMsg: (m) => this.onMsg(m), log: this.log, now: this.now, resumed: this.resumed });
       this.sock = null; sock.close();
@@ -249,7 +251,20 @@ export class Publisher {
   /** The page is about to be frozen (Chrome Android, about a minute after it is hidden): close the socket with a code
    *  the relay keeps (4004 'frozen'), so viewers and the "reader stopped" push learn it now instead of never - a
    *  frozen page's socket stayed in the room, answered by the relay itself (review round 1). The loop reopens it on resume. */
-  suspend() { if (this.sock) this.sock.close(4004, 'frozen'); }
+  suspend() {
+    const sock = this.sock;
+    if (sock && this.lastWords) { sock.send({ type: 'd', b: this.lastWords.b, slot: this.lastWords.slot }); this.state.sent++; }   // sent before the close, synchronously
+    this.sock = null;                                                       // a publish still encrypting is dropped (and counted so), not sent into a closing socket
+    if (sock) sock.close(4004, 'frozen');
+    if (this.opening) this.opening.close(4004, 'frozen');                  // one still opening too: it would join the room for the frozen page (review round 2)
+  }
+  /** Last words made ahead (review round 2): encryption is async and nothing async runs once a page is being frozen, so
+   *  the status the freeze should send is encrypted at every status tick and sent as it stands by suspend(). */
+  async prepareLastWords(env) {
+    if (!this.key) return;
+    const bytes = await encrypt(this.key, env);
+    this.lastWords = { b: b64(bytes), slot: this.slotOf(env) };
+  }
 
   async stop() {
     this.stopped = true;
@@ -268,7 +283,7 @@ export class Viewer {
   constructor(opts) {
     this.room = opts.room; this.keyB64 = opts.keyB64;
     this.log = opts.log || (() => {}); this.onState = opts.onState || (() => {}); this.onEnvelope = opts.onEnvelope || (() => {});
-    this.key = null; this.sock = null;
+    this.key = null; this.sock = null; this.opening = null;
     // sig: our socket is up; reader: the reader is there (its socket is in the room, or its readings still arrive);
     // live: both; net: this device has internet
     // gone: how the reader's socket ended, while it is away ({ at (this clock), code, reason }, from the relay, 0.9.71)
@@ -298,14 +313,15 @@ export class Viewer {
       this.state.retryIn = null; this.state.error = null; this.emit();
       const t0 = Date.now();
       let sock;
-      try { sock = await openSock(wsUrl(this.room, 'view', null), signal); } catch (e) {
+      try { sock = await openSock(wsUrl(this.room, 'view', null), signal, (s) => { this.opening = s; }); } catch (e) {
+        this.opening = null;
         if (isAbort(e)) throw e;
         this.state.sig = false; this.state.error = e.message; this.emit();
         this.log(`live: ${e.message}`);
         await this.retryWait(this.retryS, signal);
         continue;
       }
-      this.sock = sock; this.state.sig = true; this.openAt = this.now(); this.emit();
+      this.opening = null; this.sock = sock; this.state.sig = true; this.openAt = this.now(); this.emit();
       this.log(`signal: socket open (view) in ${Date.now() - t0} ms`);
       // the page's own sleep is not the reader's silence: the watch starts again at the wake (viewer log 2026-11-21: a
       // 44 s background sleep fired "Reader offline" then "Reader online" 4 s later)
@@ -371,6 +387,10 @@ export class Viewer {
   askLog(nonce) { if (!this.sock) return false; this.sock.send({ type: 'log-req', nonce }); return true; }
   /** The tab just came back: end a countdown now, ping a serving socket now. */
   nudge() { if (!this.stopped) this.resumed.push(1); }
+  /** The page is about to be frozen: leave the room now (review round 2: a frozen viewer tab still counted as a viewer,
+   *  so the reader kept publishing every frame for it, and the relay queued them to a socket nobody read). The loop
+   *  reopens it on resume. */
+  suspend() { if (this.sock) this.sock.close(4004, 'frozen'); if (this.opening) this.opening.close(4004, 'frozen'); }   // one still opening too: it would join the room for the frozen page (review round 2)
   stop() {
     this.stopped = true;
     if (this.ac) this.ac.abort();

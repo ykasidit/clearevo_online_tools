@@ -134,6 +134,25 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.92 (2026-11-23): review round 2
+
+Every finding again came with a test that failed on 0.9.91 (test/review/*_r2_*); all pass now.
+- **A frozen viewer leaves the room** (F2-1): `Viewer.suspend()` on freeze, nudged on resume - one forgotten viewer tab
+  had kept the reader publishing every frame.
+- **A socket still opening at a freeze is closed too** (O2-2): `openSock(url, signal, onSock)` hands it over as
+  `opening`; it had joined the room for the frozen page (round 1's F1 again).
+- **Last words leave before the freeze** (O2-4): each status tick also encrypts a "freeze" copy
+  (`prepareLastWords`), which `suspend()` sends synchronously before the close; a publish still encrypting is counted
+  dropped, not sent.
+- **The power rule is steady** (O2-1): `wakePowerStep` lets the screen go only after 5 min off the charger without a
+  break at or under 20 %, and takes it back on charge or above 25 % (a 3 s charger blink had let it go).
+- **Back-off**: a round whose link gave no reading counts as failed (F2-2: a BMS that connects but never streams was
+  reconnected every 23 s for ever); a stop / Cancel / fresh Connect starts the count over (O2-5).
+- **Push sign-up** (F2-3): one at a time (`pushTask`), each browser step under 30 s (`stepWithin`), a hang is logged
+  as a failure.
+- Waiting on the owner (test parked in test/review/pending/): once the screen has slept at low battery, power coming
+  back does not light it again (O2-3) - someone has to unlock the phone.
+
 ## 0.9.91 (2026-11-23): review round 1 - the reader tab that is lost or does not come back
 
 Two independent reviewers (Opus, Fable) read the 57 uploaded logs and the code; every finding came with a test that

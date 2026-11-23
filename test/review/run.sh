@@ -14,7 +14,7 @@ trap 'kill $CP $SP 2>/dev/null; wait $CP 2>/dev/null; rm -rf "$PROFILE"' EXIT
 sleep 3
 rc=0
 for f in test/review/*.test.js; do node --test "$f" >/dev/null 2>&1 && echo "ok    $f" || { echo "FAIL  $f"; rc=1; }; done
-for f in test/review/*_r[0-9]*_*.mjs; do
+for f in test/review/*_r[0-9]*_*.mjs; do case "$f" in *_lib.mjs) continue ;; esac
   out=$(CDP=$CDP PORT=$PORT timeout 300 node "$f" 2>&1); r=$?
   if [ $r -eq 0 ]; then echo "ok    $f"; else echo "FAIL  $f"; echo "$out" | grep -E '^FAIL' | cut -c1-240 | sed 's/^/      /'; rc=1; fi
 done

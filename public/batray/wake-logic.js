@@ -29,6 +29,19 @@ export function wakeState(hasApi, viewer = false) { return { hasApi: !!hasApi, v
  *  it is unlocked). Not charging and at or under WAKE_LOW_PCT: let the screen sleep. bat = {pct, chg} or null (unknown). */
 export const WAKE_LOW_PCT = 20;
 export function wakePowerOk(bat) { return !(bat && bat.chg === false && typeof bat.pct === 'number' && bat.pct <= WAKE_LOW_PCT); }
+/** The same, held steady (review round 2: a 3 s blink of the charger at 18 % let the screen go - a screen timeout can
+ *  run out meanwhile, and then the page freezes for power that never went): the screen is let go only after the phone
+ *  has been off the charger WAKE_UNPLUG_MS without a break at or under WAKE_LOW_PCT, and taken back when it charges or
+ *  is above WAKE_LOW_PCT + WAKE_BAND_PCT. ps = { offSince, ok } (the wake loop's own), bat = {pct, chg} or null. */
+export const WAKE_UNPLUG_MS = 5 * 60000;
+export const WAKE_BAND_PCT = 5;
+export function wakePowerStep(ps, bat, now) {
+  if (!bat || bat.chg !== false || typeof bat.pct !== 'number') { ps.offSince = null; ps.ok = true; return ps.ok; }
+  if (ps.offSince === null || ps.offSince === undefined || now < ps.offSince) ps.offSince = now;   // a clock set back starts the wait again
+  if (ps.ok === false) { if (bat.pct > WAKE_LOW_PCT + WAKE_BAND_PCT) ps.ok = true; return ps.ok; }
+  ps.ok = !(bat.pct <= WAKE_LOW_PCT && now - ps.offSince >= WAKE_UNPLUG_MS);
+  return ps.ok;
+}
 export function wakeMode(v) { return ['auto', 'always', 'never'].includes(v) ? v : 'never'; }
 
 /** Ownership rule (link-logic): one request in flight at a time - two overlapping requests held two locks and only

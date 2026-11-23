@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
 import { castState, onCastStateEvent, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castSettle, castProgress, castButtons, castStateUi, castTapAllowed, castTvUpdate, CAST_FLOW_TIMEOUT_MS, CAST_TV_WAIT_MS } from './cast-logic.js';
-import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart, wakePowerOk } from './wake-logic.js';
+import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart, wakePowerStep, WAKE_UNPLUG_MS } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO } from './jkbms.js';
 import { fmtWhen, stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fmtVersion } from './compat-logic.js';
@@ -43,7 +43,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.91';
+export const APP_VERSION = '0.9.92';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -511,12 +511,13 @@ function syncWake() {
   wakeKick.push({ kind: 'sync' });
   if (wakeTask === null) wakeTask = wakeRun();
 }
+const wakePower = { offSince: null, ok: true };                    // the steady power rule's own state (wakePowerStep)
 async function wakeRun() {
   let lockRetryAt = 0, videoRetryAt = 0;
   for (;;) {
     try {
-      const powerOk = wakePowerOk(battNow ? { pct: Math.round(battNow.level * 100), chg: !!battNow.charging } : null);
-      if (powerOk !== wakeS.powerOk) { wakeS.powerOk = powerOk; log(powerOk ? 'wake: the phone charges (or is above the low mark) again - the screen is kept on again' : `wake: phone at ${Math.round(battNow.level * 100)} % and not charging - letting the screen sleep so the phone lasts; it is kept on again once the phone charges`); }
+      const powerOk = wakePowerStep(wakePower, battNow ? { pct: Math.round(battNow.level * 100), chg: !!battNow.charging } : null, Date.now());
+      if (powerOk !== wakeS.powerOk) { wakeS.powerOk = powerOk; log(powerOk ? 'wake: the phone charges (or is above the low mark) again - the screen is kept on again while this page is in front' : `wake: phone at ${Math.round(battNow.level * 100)} % and off the charger for ${Math.round(WAKE_UNPLUG_MS / 60000)} min - letting the screen sleep so the phone lasts; once the power is back, someone has to unlock the phone to bring the reader back`); }
       wakeS.wanted = powerOk && ([...packs.values()].some((p) => wakeWantedByConn(p.cs, p.connected)) || shareS.phase === 'on' || shareS.phase === 'starting' || !!(viewer && viewer.state.live) || tvS.phase === 'on');
       if (wakeShouldRequest(wakeS, document.visibilityState === 'visible')) {
         wakeRequestStart(wakeS);
@@ -1625,6 +1626,7 @@ function statusTick(why = 'tick') {
   const s = statusNow(why); statusS.last = s;
   if (why !== 'tick' || statusChanged(statusS.logged, s) || s.t - statusS.loggedAt >= 600000) { statusS.logged = s; statusS.loggedAt = s.t; log(`status: ${statusLine(s)}`); }
   if (!publisher) return;
+  if (why !== 'freeze') void publisher.prepareLastWords(envelope('status', { id: '*', name: '*' }, { ...s, why: 'freeze' }));   // what suspend() sends at a freeze
   if (!statusDue({ lastSentAt: statusS.sentAt, now: s.t, changed: statusChanged(statusS.sent, s), why })) return;
   statusS.sent = s; statusS.sentAt = s.t;
   void publisher.publish(envelope('status', { id: '*', name: '*' }, s));
@@ -1639,10 +1641,11 @@ document.addEventListener('visibilitychange', () => statusTick(document.visibili
 // Synchronous: nothing awaited here runs before the freeze.
 function freezeLinks() {
   if (publisher) { log('freeze: closing the share socket (4004 frozen); it reopens on resume'); publisher.suspend(); }
+  if (viewer) { log('freeze: leaving the room (4004 frozen); it comes back on resume'); viewer.suspend(); }
   for (const p of packs.values()) if (p.conn && p.bms && p.cs.phase === 'connected') p.bms.drop('the page is being frozen; it reconnects after the resume');
 }
 document.addEventListener('freeze', () => { statusTick('freeze'); freezeLinks(); });
-document.addEventListener('resume', () => { statusTick('resume'); if (publisher) publisher.nudge(); });
+document.addEventListener('resume', () => { statusTick('resume'); if (publisher) publisher.nudge(); if (viewer) viewer.nudge(); });
 window.addEventListener('pagehide', () => statusTick('pagehide'));
 
 // ---- resume after a reopen (0.9.72, resume-logic.js): the intent is what the person last asked for; a reopened reader
@@ -1776,20 +1779,35 @@ $('setupOpen').addEventListener('click', openChecklist);
 // endpoint goes to the room; if the page stays offline 3 min the relay sends one push with no data and the service
 // worker shows the words left here in the cache. A tap opens the reader page, which resumes after its countdown.
 const pushS = { room: null, failedAt: 0, lastWhy: '', host: '' };
-async function syncPush(why) {
+// One sign-up at a time, each browser step under a deadline (review round 2: a subscribe() that never answers was
+// started again at every socket reopen - after every freeze since 0.9.91 - and never logged; the push is what brings
+// a frozen reader back).
+const PUSH_STEP_MS = 30000;
+let pushTask = null;
+async function stepWithin(p, what, ms = PUSH_STEP_MS) {
+  const r = await select(null, { done: () => p, late: (s) => sleep(ms, s) });
+  if (r.key === 'late') { p.catch(() => { /* answered after we gave up */ }); throw new Error(`${what}: no answer in ${ms / 1000} s`); }
+  return r.value;
+}
+function syncPush(why) {
+  if (pushTask === null) pushTask = pushRun(why);
+  return pushTask;
+}
+async function pushRun(why) { try { await pushSetup(why); } finally { pushTask = null; } }
+async function pushSetup(why) {
   if (viewMode) return;
   const d = pushDecision({ supported: 'serviceWorker' in navigator && typeof PushManager !== 'undefined', permission: typeof Notification === 'undefined' ? 'none' : Notification.permission, sharing: !!(publisher && publisher.room), room: publisher ? publisher.room : null, subscribedRoom: pushS.room, failedAt: pushS.failedAt, now: Date.now() });
   if (d.action !== 'subscribe') { if (d.why !== pushS.lastWhy && d.why !== 'set up') { pushS.lastWhy = d.why; log(`push: not set up (${d.why})`); } return; }
   const pub = publisher;
   try {
-    const reg = await navigator.serviceWorker.register('/batray/sw.js'); await navigator.serviceWorker.ready;
+    const reg = await stepWithin(navigator.serviceWorker.register('/batray/sw.js'), 'service worker'); await stepWithin(navigator.serviceWorker.ready, 'service worker ready');
     const r = await fetch('/batray/api/push/key', { signal: AbortSignal.timeout(RELAY_CALL_MS) }); const k = await r.json().catch(() => ({}));
     if (!k.key) throw new Error(`no server key (${r.status})`);
-    let sub = await reg.pushManager.getSubscription();
-    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uBytes(k.key) });
+    let sub = await stepWithin(reg.pushManager.getSubscription(), 'push subscription');
+    if (!sub) sub = await stepWithin(reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uBytes(k.key) }), 'push sign-up');
     if (publisher !== pub) return;                                     // the share stopped meanwhile
     const cfg = { title: T.pushTitle(shareS.name), body: T.pushBody, url: '/batray/?from=push' };
-    await (await caches.open('batray-push')).put('/batray/push-config', new Response(JSON.stringify(cfg), { headers: { 'Content-Type': 'application/json' } }));
+    await stepWithin((await stepWithin(caches.open('batray-push'), 'cache')).put('/batray/push-config', new Response(JSON.stringify(cfg), { headers: { 'Content-Type': 'application/json' } })), 'cache write');
     const res = await fetch(`/batray/api/room/${pub.room}/push?token=${pub.pubToken}`, { method: 'PUT', signal: AbortSignal.timeout(RELAY_CALL_MS), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) });
     if (!res.ok) throw new Error(`relay ${res.status}`);
     if (publisher !== pub) return;
@@ -3042,6 +3060,7 @@ void every(60000, () => {
   const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
   const rate = histS.hbDay === histS.day && histS.hbRows !== undefined ? `${histS.todayRows - histS.hbRows}/min` : '-'; histS.hbDay = histS.day; histS.hbRows = histS.todayRows;
   if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
+  if (battNow && !battNow.charging) syncWake();         // off the charger: the steady power rule's 5 min mark is judged here too
   if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now() }).action === 'request') void requestHistory();
   if (publisher && pushS.room !== publisher.room) void syncPush('minute');   // notifications allowed later, or a failed sign-up retried (push-logic paces it)
   log(hist.statsLine()); hist.statsReset(Date.now());
