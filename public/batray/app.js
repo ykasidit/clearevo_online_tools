@@ -836,17 +836,18 @@ async function corruptDb(e, where, rows) {
   log(`history: ${where}: ${day} database is corrupt -> ${d.action}: ${d.live ? 'deleted, a new live file starts' : 'deleted'}`);
   toast(d.live ? T.histCorruptLive : T.histCorruptDay(day), 10000);
   try { await hist.remove(day); } catch (e2) { log(`history: could not delete ${day}: ${e2.message}`); }
-  if (d.live) { histS.todayRows = 0; histS.nextId = 1; histS.contig = 0; histS.gap = null; }
+  const keep = histS.nextId;                                                 // the reader's ids go on: viewers hold today up to here under them (F5-1)
+  if (d.live) { histS.todayRows = 0; histS.contig = 0; histS.gap = null; if (viewer) histS.nextId = 1; }
   histMem.series = null;
   if (d.live && rows && rows.length) {
     try {
-      if (!viewer) {                                                            // the reader numbers its new file from 1: the flush's rows, then every row of today still queued (else they collide later and are dropped)
+      if (!viewer) {                                                            // the reader numbers on from its counter: the flush's rows, then every row of today still queued (else they collide later and are dropped)
         for (const r of rows) r.id = nextRowId(histS);
         for (const r of histMem.pending.get(day) || []) r.id = nextRowId(histS);
       }
       const r = await hist.insert(day, rows); const info = await hist.info(day);
-      histS.todayRows = info.rows; histS.nextId = info.maxId + 1; histS.contig = info.contig;
-      log(`history: ${r.inserted} rows written into the new ${day}.sqlite`);
+      histS.todayRows = info.rows; histS.nextId = viewer ? info.maxId + 1 : Math.max(info.maxId + 1, keep); histS.contig = info.contig;
+      log(`history: ${r.inserted} rows written into the new ${day}.sqlite${viewer ? '' : `, ids go on from ${keep}`}`);
     } catch (e3) { log(`history: rows for the new ${day}.sqlite failed: ${e3.message}`); }
   }
   try { histS.days = await hist.days(); } catch { histS.days = histS.days.filter((x) => x.day !== day); }

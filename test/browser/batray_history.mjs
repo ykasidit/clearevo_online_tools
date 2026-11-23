@@ -286,15 +286,17 @@ const live = await evalJs(`(async () => {
   return { dmg, info, ids: rows.map((r) => r.id), state: T.histState(), toast: document.getElementById('toast').textContent, hidden: document.getElementById('toast').hidden, logs: T.logLines().slice(before).filter((l) => /history/.test(l)), stats: T.histStatsRaw() };
 })()`);
 // whichever touches the damaged file first raises: the span refresh on the reading (a history read) or the flush's
-// insert (the live write); today is renewed either way and the flush's row lands in the new file as id 1
-check("a damaged today's file: the worker names the day and raises, the caller logs it, toasts, deletes the file, a new one starts and the flush's row is its id 1", before.rows >= 2 && live.dmg.bytes > 0
+// insert (the live write); today is renewed either way and the flush's row lands in the new file with the next id the
+// reader had (0.9.94, F5-1: viewers hold today's earlier rows under those ids - from 1 again they would drop the new ones)
+const m = before.maxId;
+check("a damaged today's file: the worker names the day and raises, the caller logs it, toasts, deletes the file, a new one starts and the flush's row takes the reader's next id", before.rows >= 2 && live.dmg.bytes > 0
   && live.logs.some((l) => new RegExp(`history worker: ${today} database is corrupt \\((insert|span|query|info|days)\\): SQLITE_CORRUPT`).test(l))
   && live.logs.some((l) => new RegExp(`history: (insert|span|query|info|days) failed after \\d+ ms: ${today} database is corrupt`).test(l))
   && live.logs.some((l) => new RegExp(`history: (live write|history read): ${today} database is corrupt -> renew: deleted, a new live file starts`).test(l))
-  && live.info.rows === 1 && live.info.maxId === 1 && live.info.contig === 1 && live.ids.join() === '1' && live.state.nextId === 2 && live.state.todayRows === 1
+  && live.info.rows === 1 && live.info.maxId === m + 1 && live.ids.join() === String(m + 1) && live.state.nextId === m + 2 && live.state.todayRows === 1
   && !live.hidden && /damaged: it was deleted and a new one started/.test(live.toast) && live.stats.restarts === 0, live);
 const more = await evalJs(`(async () => { const T = window.__batrayTest; window.__notify([${[...OWNER_32S_CELL].join(',')}]); await new Promise((r) => { setTimeout(r, 3200); }); window.__notify([${[...OWNER_32S_CELL].join(',')}]); await new Promise((r) => { setTimeout(r, 200); }); await T.flushHistory(); return (await T.histRows('${today}', 0, 10)).map((r) => r.id); })()`);
-check('the new live file keeps taking rows with dense ids', more.join() === '1,2', more);
+check('the new live file keeps taking rows with dense ids', more.join() === `${m + 1},${m + 2}`, more);
 await evalJs(`window.__batrayTest.histInsert('2026-09-05', Array.from({ length: 20 }, (_, i) => ({ id: i + 1, t: Date.UTC(2026, 8, 5, 0, 0, 0) + i * 60000, p: 'n11', soc: 50, v: 52, w: 100 })))`);
 const past = await evalJs(`(async () => {
   const T = window.__batrayTest; const before = T.logLines().length; document.getElementById('toast').hidden = true;

@@ -147,6 +147,10 @@ again, while every viewer held today's rows 1..N under the reader's ids - `repli
 re-send it already had, so viewers lost the readings until the numbering passed N (up to a day). A re-init on the
 same UTC day now keeps `nextId = max(maxId + 1, the id it had)`. Test: test/review/opus_r4_wipe_numbering.mjs.
 
+Round 5 (F5-1): the corrupt-live path (a damaged today file renewed) had the same defect - the reader numbered the
+new file from 1. It now numbers on from its counter; the browser history test expects the next id, not 1. Test:
+test/review/fable_r5_corrupt_ids.mjs. Round 5 otherwise found nothing (Opus: no provable finding).
+
 ## 0.9.93 (2026-11-23): review round 3 - a store whose files vanish starts over
 
 Both reviewers, independently, proved the year sim's "store broken for good" (every log write and new-day insert
