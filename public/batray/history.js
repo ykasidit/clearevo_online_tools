@@ -110,6 +110,7 @@ class WorkerBackend {
 }
 
 // a worker silent this long while its calls time out is stuck (not just busy); memory-only retries the store
+const GONE_RX = /could not be found at the time an operation was processed/;   // a NotFoundError whose name was lost on the way
 export const STUCK_SILENT_MS = 20000, RETRY_MS = 120000, RETRY_TRIES = 30, PERSIST_MS = 10000;
 const POOL_LOCKED_RX = /Access Handles? cannot be created|pool not taken/i;
 const KIND = { ping: 'ping', pause: 'other', resume: 'other', insert: 'insert', days: 'days', info: 'days', rows: 'rows', last: 'rows', query: 'query', span: 'query', remove: 'remove', clear: 'clear', export: 'export', import: 'import', oldFiles: 'days', slow: 'other', spin: 'other', corrupt: 'other', note: 'log', logAppend: 'log', logList: 'log', logRead: 'log', logRemove: 'log', logClear: 'log', logAllGz: 'export', estimate: 'days', config: 'other', stores: 'days', dropStore: 'remove' };
@@ -160,7 +161,8 @@ export class HistoryStore {
       // stuck = timeouts in a row AND the worker silent: a slow worker (a 7-day query) still answers other calls, and
       // killing it mid-wasm keeps its files locked until a reload (history review 2026-11-01)
       const silentMs = this.b instanceof WorkerBackend ? Date.now() - this.b.lastReplyAt : 0;
-      if (timeout && this.b instanceof WorkerBackend && stuckDecision(this.stats).action === 'restart' && silentMs >= this.stuckSilentMs) {
+      if (!timeout && e && (e.name === 'NotFoundError' || GONE_RX.test(String(e.message))) && this.b instanceof WorkerBackend && this.reopening === null) this.storageGone(op, e);
+      else if (timeout && this.b instanceof WorkerBackend && stuckDecision(this.stats).action === 'restart' && silentMs >= this.stuckSilentMs) {
         this.stats.restarts++; this.stats.timeoutsInRow = 0;
         this.log(`history: ${this.stats.timeouts} timeouts, the worker looks stuck: restarting it (restart ${this.stats.restarts})`);
         this.reopen();
@@ -168,6 +170,22 @@ export class HistoryStore {
       throw e;
     }
   }
+  /** The site's storage went away under the page (review round 3: "Clear site data", Android's Clear storage or an
+   *  eviction removed the files; the worker kept its directory handle and the pool's access handles to deleted files,
+   *  every log write failed and inserts wrote into nothing, until a reload). A fresh worker takes a fresh pool; when it
+   *  answers, the app is told the store is back (onBackend 'opfs': today's counters and the log store again). */
+  storageGone(op, e) {
+    this.stats.gone = (this.stats.gone || 0) + 1;
+    this.log(`history: this site's storage went away under the page (${op}: ${e && e.message}) - the store starts over on fresh files; what it held is gone`);
+    this.reopen();
+    void this.afterGone(this.reopening);
+  }
+  async afterGone(p) {
+    if (p) await p;
+    if (this.backend === 'opfs' && this.onBackend) { try { this.onBackend('opfs'); } catch { /* ui */ } }
+  }
+  /** The once-a-minute check that the files are still there (inserts into a deleted file do not fail by themselves). */
+  alive() { return this.call('alive'); }
   /** Kill the stuck worker, start a fresh one and ping it; every call waits for that ping (`reopening`). The fresh
    *  worker retries the pool for a while, so the ping deadline bounds the wait; a ping that fails or times out
    *  means the pool is lost for this page and the store goes memory-only. */

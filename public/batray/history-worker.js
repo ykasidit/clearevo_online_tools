@@ -200,6 +200,10 @@ const ops = {
     await remove(await dir(), `dayinfo-${store}.json`);                    // its day facts go with it
     return { removed: a || b };
   },
+  /** The store's files are still there (review round 3: the site's storage wiped under a running page - "Clear site
+   *  data", Android's Clear storage, eviction - left inserts writing into deleted files, answering ok). Looked up
+   *  from the root without creating: a NotFoundError says the storage is gone. */
+  async alive() { await init(); await (await rootDir()).getDirectoryHandle(DIRS.db); return { ok: true }; },
   async ping() { await init(); await dir(); return { ok: true, vfs: pool.vfsName, files: pool.getFileCount(), capacity: pool.getCapacity(), version: sqlite3.version.libVersion }; },
   /** Rows into the day's database (one transaction). */
   async insert({ day, rows }) { const r = await visit(day, (db) => insertRows(db, rows || []), true); if (r.inserted) await forget(day); closeIdle(todayKey()); return r; },   // forget is a no-op for a day not cached
@@ -349,6 +353,7 @@ async function runOp({ id, op, args }) {
       const msg = `${day} database is corrupt (${op}): ${(e && e.message) || e}`; wlog(msg);
       self.postMessage({ id, ok: false, error: msg, name: 'CorruptError', data: { day, op } }); return;
     }
+    if (e && e.name === 'NotFoundError') dirP = null;                      // a directory that went away is looked up again, never kept
     self.postMessage({ id, ok: false, error: (e && e.message) || String(e), name: e && e.name });
   }
 }

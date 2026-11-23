@@ -43,7 +43,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.92';
+export const APP_VERSION = '0.9.93';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -1112,6 +1112,14 @@ function memTick() {
   if (m) log(`mem: used=${Math.round(m.used / 1048576)}MB total=${Math.round(m.total / 1048576)}MB limit=${Math.round(m.limit / 1048576)}MB pct=${m.pct}${m.near ? ' NEAR THE LIMIT' : ''} rows=${pendingRows()} log=${logLines.length} precise=${m.precise ? 'yes' : 'no'}${m.parts ? ` measured=${Math.round(m.used / 1048576)}MB(${Object.entries(m.parts).filter(([, v]) => v > 0).map(([k, v]) => `${k} ${Math.round(v / 1048576)}`).join(', ')}MB)` : ''}`);
 }
 void every(MEM_LOG_MS, memTick, { onError: jobError('memory') });
+// once a minute: the store's files are still there (review round 3 - a wiped site storage is otherwise noticed only by
+// a failing log write, and inserts into a deleted file answer ok); a vanished storage makes the store start over
+const STORE_ALIVE_MS = 60000;
+async function storeAlive() {
+  if (histS.backend !== 'opfs' || !histMem.ready) return;
+  try { await hist.alive(); } catch { /* logged by the store; a vanished storage reopens it (storageGone) */ }
+}
+void every(STORE_ALIVE_MS, storeAlive, { onError: jobError('store check') });
 void every(MEM_UI_MS, () => renderMemory(memModel()), { onError: jobError('memory line') });
 void every(MEM_MEASURE_MS, memMeasure, { first: 3000, onError: jobError('memory measure') });   // takes ~10 s: a loop never runs two at once
 window.addEventListener('pagehide', () => { if (!(window.__batrayTest && window.__batrayTest.skipLastRun)) writeLastRun(true); });

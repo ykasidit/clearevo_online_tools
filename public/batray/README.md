@@ -134,6 +134,19 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.93 (2026-11-23): review round 3 - a store whose files vanish starts over
+
+Both reviewers, independently, proved the year sim's "store broken for good" (every log write and new-day insert
+failing with NotFoundError, never healing): the site's storage removed under the running page - "Clear site data",
+Android's Clear storage, or Chrome evicting a non-persistent site under disk pressure (the sandbox disk was 96 % full,
+headless reports persisted=false). The worker kept its directory handle and the pool's access handles to deleted
+files; inserts into an open day kept answering ok and were lost at the next reload. Now: a NotFoundError from any
+store call is `storageGone()` - a fresh worker takes a fresh pool, and when it answers the app hears `onBackend('opfs')`
+(today's counters and the log store again; queued rows go into the new files); the worker drops its cached directory
+on such an error; and the app checks once a minute that the pool directory is still there (`hist.alive()`), since
+writes into a deleted file do not fail by themselves. Tests: test/review/opus_r3_store_vanished.mjs,
+fable_r3_store_wiped.mjs (CDP Storage.clearDataForOrigin).
+
 ## 0.9.92 (2026-11-23): review round 2
 
 Every finding again came with a test that failed on 0.9.91 (test/review/*_r2_*); all pass now.
