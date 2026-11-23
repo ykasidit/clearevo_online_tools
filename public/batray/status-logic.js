@@ -75,7 +75,7 @@ export function statusDue({ lastSentAt, now, changed, why = 'tick' }) {
  *  'unknown'    none of the above */
 export function endReason({ code = null, lastWhy = null, lastVis = null } = {}) {
   if (lastWhy === 'pagehide' || code === 1001) return 'closed';
-  if (lastWhy === 'freeze') return 'frozen';
+  if (lastWhy === 'freeze' || code === 4004) return 'frozen';              // 4004: the reader closed its socket as Chrome froze it
   if (lastWhy === 'hidden' || lastVis === false) return 'hidden';
   if (code === 4001) return 'unanswered';
   if (code === 1006) return 'vanished';

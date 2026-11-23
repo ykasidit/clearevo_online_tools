@@ -66,6 +66,7 @@ check('the Back button closes the sheet (a messenger habit)', !sh.shown && sh.ui
 await evalJs(`document.getElementById('strip').click(); 1`); await sleep(250);
 sh = await evalJs(`({ title: document.getElementById('sheetTitle').textContent, lead: document.getElementById('sheetLead').textContent, tone: document.getElementById('sheetLead').className })`);
 check('the chips open the BMS status sheet with a verdict in plain words', sh.title === 'BMS status' && /alarm/.test(sh.lead) && /lead (ok|watch|act)/.test(sh.tone), sh);
+await sleep(600);                                                     // past the ghost-tap window (0.9.91: a tap within 500 ms of opening is ignored)
 await evalJs(`document.getElementById('sheetBack').click(); 1`); await sleep(400);
 sh = await evalJs(`({ shown: !document.getElementById('sheet').hidden, state: history.state })`);
 check('tapping outside closes it and takes its history entry back', !sh.shown && !(sh.state && sh.state.sheet), sh);

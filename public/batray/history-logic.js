@@ -193,6 +193,24 @@ export function transferPlan(readerDays, have, maxRows = XFER_MAX_ROWS) {
   return out;
 }
 
+/** A viewer's new plan into the running transfer's queue (review round 1: a viewer that reconnected during a transfer
+ *  added another full plan under its new socket id, and plans for ids long gone stayed queued - 108k rows for one
+ *  viewer). The asker's own items are replaced; items of at most keepIds socket ids are kept, the newest askers'. */
+/** How long the reader waits before planning a socket's ask: at most one answered ask per socket per HIST_ASK_GAP_MS
+ *  (review round 1: 60 asks from one socket in a second cost 60 flushes and day listings). A viewer's own asks come
+ *  GAP_REQ_MS or more apart, so it never waits; a later ask in the window replaces the waiting one, none is dropped. */
+export const HIST_ASK_GAP_MS = 4000;
+export function askDelayMs(lastAt, now, gapMs = HIST_ASK_GAP_MS) {
+  if (typeof lastAt !== 'number' || !(now >= lastAt)) return 0;          // never asked, or a clock set back: answer now
+  return Math.max(0, gapMs - (now - lastAt));
+}
+export function queueMerge(queue, plan, from, keepIds = 1) {
+  const q = queue.filter((x) => x.to !== from).concat(plan);
+  const ids = []; for (let i = q.length - 1; i >= 0; i--) if (!ids.includes(q[i].to)) ids.push(q[i].to);   // newest asker first
+  const keep = new Set(ids.slice(0, Math.max(1, keepIds)));
+  return q.filter((x) => keep.has(x.to));
+}
+
 /** When to ask the reader: at once when the link comes up (`wasLive` tracks it, so a flap is not four asks in one
  *  ms), within GAP_REQ_MS after a hole in today's copy (GAP_ASKS_MAX unanswered asks, then the rhythm), and
  *  every HIST_REQ_MS while live. */

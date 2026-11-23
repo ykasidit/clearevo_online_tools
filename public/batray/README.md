@@ -134,6 +134,30 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.91 (2026-11-23): review round 1 - the reader tab that is lost or does not come back
+
+Two independent reviewers (Opus, Fable) read the 57 uploaded logs and the code; every finding came with a test that
+failed on 0.9.90 (test/review/, run with `test/review/run.sh`; they all pass now). What the logs say ends a run:
+Chrome freezing the hidden page about a minute after it is hidden (until someone brings it back: 1.7 h to 22 h),
+Chrome updates (5 of 17 unclean ends), and power (a phone at 1 % not charging). Memory was 8-22 MB at every end.
+
+- **Freeze lets go of both links** (F1, F5): on `freeze` the share socket closes with 4004 'frozen' (the relay records
+  the end, viewers read "Chrome froze its page", the "reader stopped" push can fire) and each connected BMS link is
+  voided and closed (`bms.drop`: the BMS's one slot is free, the stack stops queueing notifications). The loops
+  reconnect on `resume` (the share at once). The encrypted last-words status cannot leave a page being frozen.
+- **A half-open share socket in a throttled hidden tab** (O2): only the first long turn gap counts as the page's own
+  sleep; the ping sent then is owed an answer, nothing for SIG_DEAD_MS = reopen.
+- **The wake lock lets an unplugged phone live** (O1): not charging and at or under 20 % (`wakePowerOk`), the screen
+  may sleep; on charge it is kept on again (battery events kick the wake loop).
+- **Reconnect back-off** (O4): consecutive failed rounds double the countdown 10/20/40/60 s (`backoffS`); a link
+  resets it, a tap connects at once. A night of 650 connects an hour becomes ~1 round a minute.
+- **Resume**: a stray tap within 500 ms of any sheet is ignored and the resume sheet ignores the backdrop
+  (`backdropDecision`; F3/O3: a log shows a resume cancelled by a tap 82 ms after the sheet opened); getDevices()
+  has a 2 s deadline everywhere (`devicesWithin`, F2).
+- **Load**: with no viewers a reading goes to the relay once per pack per 3 s (`dataPublishDue`, F4: ~0.4 GB a day
+  per pack before); history asks are planned one at a time, one per socket per 4 s (`askDelayMs`), and a transfer
+  queue keeps plans for at most as many sockets as the room has viewers (`queueMerge`, O5, O6).
+
 ## 0.9.90 (2026-11-23): three fixes from the uploaded logs of 21-23 Nov
 
 1. **History sent again in full on every ask.** A past day whose ids start above 1 (the reader's 2026-10-01 holds

@@ -110,7 +110,8 @@ export class BleConn {
       if (r.end === 'choose') return 'choose';
       if (r.end === 'stuck') { r = await this.stuck(signal); continue; }
       if (r.end === 'stop') return this.idle(signal, 'stopped');
-      const d = afterEnd(r.end, { autoRe: this.h.autoRe(), hasDevice: this.cs.hasDevice, origin: this.cs.origin, msg: r.msg });
+      this.cs.failRounds = r.end === 'failed' ? this.cs.failRounds + 1 : 0;   // any other end means a link was up
+      const d = afterEnd(r.end, { autoRe: this.h.autoRe(), hasDevice: this.cs.hasDevice, origin: this.cs.origin, msg: r.msg, fails: this.cs.failRounds });
       if (d.next === 'idle') return this.idle(signal, r.end);
       const c = await this.countdown(d.seconds, signal, r.end);
       if (c === 'stuck') { r = { end: 'stuck' }; continue; }

@@ -28,6 +28,15 @@ export function tabTap(ui, tab) {
   if (ui.role !== 'viewer' || !TABS.includes(tab) || ui.tab === tab) return { action: 'noop' };
   ui.tab = tab; return { action: 'switch', tab };
 }
+/** A tap on the sheet's backdrop (review round 1, 2026-11-23: a reader log shows a resume sheet closed by a tap outside
+ *  82 ms after it opened - the tap that opened the page, or the push's "tap to reopen", landing on the new sheet - and
+ *  nothing was resumed). A backdrop tap within SHEET_GHOST_MS of opening is ignored; the resume sheet is ended only by
+ *  its own buttons (its countdown resumes by itself, a stray tap must not cancel a 24/7 reader's comeback). */
+export const SHEET_GHOST_MS = 500;
+export function backdropDecision(kind, openForMs) {
+  if (kind === 'resume') return 'ignore';
+  return openForMs < SHEET_GHOST_MS ? 'ignore' : 'close';
+}
 export function sheetOpen(ui, kind) { const replace = !!ui.sheet; ui.sheet = { kind }; return { action: 'open', kind, replace }; }
 export function sheetClose(ui) { if (!ui.sheet) return { action: 'noop' }; const kind = ui.sheet.kind; ui.sheet = null; return { action: 'close', kind }; }
 /** The Back button, as a messenger user expects: closes a sheet, else goes to Now, else leaves the page. */

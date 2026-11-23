@@ -23,7 +23,12 @@ export const WAKE_RETRY_MAX_MS = 30000;
 
 /** Owner decision 2026-09-22: the screen wake lock alone by default; the near-silent video is an opt-in ('auto' =
  *  when the lock keeps dropping, 'always'), and a viewer never plays it. */
-export function wakeState(hasApi, viewer = false) { return { hasApi: !!hasApi, viewer: !!viewer, wanted: false, held: false, requesting: false, drops: 0, refusals: 0, mode: 'never', videoOn: false }; }
+export function wakeState(hasApi, viewer = false) { return { hasApi: !!hasApi, viewer: !!viewer, wanted: false, held: false, requesting: false, drops: 0, refusals: 0, mode: 'never', videoOn: false, powerOk: true }; }
+/** Whether the phone can afford a lit screen (review round 1: a reader unplugged in a power cut kept the screen on until
+ *  the phone died at 1 % - a dead phone needs a person, Chrome and a BMS pick to come back; one left alive resumes when
+ *  it is unlocked). Not charging and at or under WAKE_LOW_PCT: let the screen sleep. bat = {pct, chg} or null (unknown). */
+export const WAKE_LOW_PCT = 20;
+export function wakePowerOk(bat) { return !(bat && bat.chg === false && typeof bat.pct === 'number' && bat.pct <= WAKE_LOW_PCT); }
 export function wakeMode(v) { return ['auto', 'always', 'never'].includes(v) ? v : 'never'; }
 
 /** Ownership rule (link-logic): one request in flight at a time - two overlapping requests held two locks and only

@@ -34,7 +34,7 @@ export const DOWN_WAIT_MS = 2000;          // a closed link reports itself down 
 /** What the UI reads (the loop writes it): the phase, the attempt and its seconds left, the countdown, where the
  *  device came from, whether the last link went quiet, this link's connect time, whether data has come. */
 export function connState() {
-  return { phase: 'idle', hasDevice: false, attempt: 0, left: 0, count: 0, origin: null, stalled: false, stalledAge: 0, connectedAt: null, gotData: false };
+  return { phase: 'idle', hasDevice: false, attempt: 0, left: 0, count: 0, origin: null, stalled: false, stalledAge: 0, connectedAt: null, gotData: false, failRounds: 0 };
 }
 export const retryableConnectError = (msg) => !/cancel|not found|no such|permission/i.test(String(msg || ''));
 export const cancelledError = (msg) => /cancel/i.test(String(msg || ''));
@@ -65,9 +65,15 @@ export function retryDecision(attempt, msg) {
 /** How a round ended -> the next phase. end: 'failed' (every try of this round) | 'down' (the link fell) | 'stalled'
  *  (quiet past STALE_MS, dropped) | 'gap' (queued readings of a frozen tab, dropped) | 'settled' (a stuck connect
  *  ended after all). A picked device that refuses goes to the countdown, never back to the chooser (2026-09-18). */
-export function afterEnd(end, { autoRe, hasDevice, origin = null, msg = '' }) {
+/** The countdown after `fails` failed rounds in a row (review round 1: a BMS that is off, out of range or held by the
+ *  JK app was retried every ~13 s for ever - 650 connects an hour all night, each a GATT client registration in the
+ *  stack the owner's phones wedge). Doubles from the base up to RECONNECT_MAX_S; a link that comes up resets it, and a
+ *  tap on Reconnect now always connects at once. */
+export const RECONNECT_MAX_S = 60;
+export function backoffS(base, fails) { return Math.min(RECONNECT_MAX_S, base * 2 ** Math.max(0, Math.min(6, (fails || 1) - 1))); }
+export function afterEnd(end, { autoRe, hasDevice, origin = null, msg = '', fails = 1 }) {
   if (!autoRe || !hasDevice) return { next: 'idle' };
-  if (end === 'failed') return cancelledError(msg) ? { next: 'idle' } : { next: 'countdown', seconds: origin === 'chooser' ? RECONNECT_S.chooser : RECONNECT_S.auto };
+  if (end === 'failed') return cancelledError(msg) ? { next: 'idle' } : { next: 'countdown', seconds: backoffS(origin === 'chooser' ? RECONNECT_S.chooser : RECONNECT_S.auto, fails) };
   if (end === 'stalled') return { next: 'countdown', seconds: RECONNECT_S.stalled };
   return { next: 'countdown', seconds: RECONNECT_S.auto };
 }

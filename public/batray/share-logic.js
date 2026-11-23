@@ -109,6 +109,14 @@ export function remoteLiveDecision({ live, readerConnected, lastFrameAt, now, fr
 /** What a viewer says about one remote pack. 2026-11-21 viewer log: the reader's Bluetooth link to m-00 had been down
  * for 12 h while the stream and the other pack were live, and the page said "Reconnecting to the live stream" and
  * "viewing m-00 live" at once. The stream, the reader and each pack are three different things. */
+/** Whether a BMS reading goes to the relay now (review round 1: every frame was published with nobody watching - about
+ *  0.4 GB a day per pack of uplink, an encryption and a relay write per frame). With viewers: every frame. Without:
+ *  one per pack per everyMs, so the room's retained reading stays fresh for the next viewer. */
+export const IDLE_PUBLISH_MS = 3000;
+export function dataPublishDue({ viewers, lastAt, now, everyMs = IDLE_PUBLISH_MS }) {
+  if (viewers > 0) return true;
+  return lastAt === null || lastAt === undefined || !(now - lastAt < everyMs);
+}
 export function remotePackState({ streamLive, readerGone, packLive, readerConnected }) {
   if (packLive) return 'live';
   if (readerGone) return 'readerOff';

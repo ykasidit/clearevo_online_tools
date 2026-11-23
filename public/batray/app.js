@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
 import { castState, onCastStateEvent, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castSettle, castProgress, castButtons, castStateUi, castTapAllowed, castTvUpdate, CAST_FLOW_TIMEOUT_MS, CAST_TV_WAIT_MS } from './cast-logic.js';
-import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart } from './wake-logic.js';
+import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart, wakePowerOk } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO } from './jkbms.js';
 import { fmtWhen, stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fmtVersion } from './compat-logic.js';
@@ -23,8 +23,8 @@ import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggl
 import { pushDecision, pushState, b64uBytes } from './push-logic.js';
 import { connState, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES } from './conn-logic.js';
 import { BleConn } from './conn.js';
-import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision, remotePackState, viewPackPick } from './share-logic.js';
-import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel } from './ui-logic.js';
+import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision, remotePackState, viewPackPick, dataPublishDue } from './share-logic.js';
+import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel, backdropDecision } from './ui-logic.js';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, tvPreviewToggle, previewState, previewEvent, previewSource } from './tv-logic.js';
 import { startDemo } from './demo.js';
 import { I18N, detectLang } from './i18n.js';
@@ -34,7 +34,7 @@ import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
 import { Flag, Channel, select, sleep, every, isAbort, TIMEOUT } from './sync.js';
 import { TAB_SS, TAB_PREFIX, LEGACY, validTabId, LEGACY_DROP, tabLock, tabKey, metaKey, tabMeta, tabRecords, chooseTab, orphanDrops, legacyMoves, storeRows } from './tab-logic.js';
-import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysInRange, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs } from './history-logic.js';
+import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysInRange, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs, queueMerge, askDelayMs } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
@@ -43,7 +43,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.90';
+export const APP_VERSION = '0.9.91';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -246,7 +246,7 @@ function logHeaderLines() {
 async function logEnvAsync() {
   // each probe on its own: one that never settles (getBattery in some builds) must not hold the others
   void logBattery();
-  async function logBattery() { try { if (navigator.getBattery) { const b = await navigator.getBattery(); battNow = b; log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => log(`battery: ${Math.round(b.level * 100)}%`)); b.addEventListener('chargingchange', () => { log(`battery: charging=${b.charging}`); statusTick('charging'); onPhoneCharging(b); }); } } catch (e) { log(`battery: ${e.message}`); } }
+  async function logBattery() { try { if (navigator.getBattery) { const b = await navigator.getBattery(); battNow = b; log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => { log(`battery: ${Math.round(b.level * 100)}%`); syncWake(); }); b.addEventListener('chargingchange', () => { log(`battery: charging=${b.charging}`); statusTick('charging'); onPhoneCharging(b); syncWake(); }); syncWake(); } } catch (e) { log(`battery: ${e.message}`); } }
   if (typeof VideoEncoder !== 'undefined') {
     const out = [];
     for (const codec of ['avc1.42E01E', 'avc1.4D401F', 'vp09.00.10.08']) { try { const r = await VideoEncoder.isConfigSupported({ codec, width: 1280, height: 720, bitrate: 500000, framerate: 1, ...(codec.startsWith('avc') ? { avc: { format: 'avc' } } : {}) }); out.push(`${codec}=${yn(r.supported)}`); } catch (e) { out.push(`${codec}=err`); } }
@@ -298,7 +298,7 @@ class Pack {
     this.bms = remote ? null : new JkBms();
     this.device = null; this.info = null; this.settings = null; this.data = null; this.lastFrameAt = null;
     this.conn = remote ? null : new BleConn(this.bms, connHooks(this), CONN_OPTS);   // the connection: one loop per pack (conn.js), started by the first tap
-    this.demo = null; this.fresh = false;
+    this.demo = null; this.fresh = false; this.pubAt = null;          // pubAt: the last reading sent to the relay (dataPublishDue)
     this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.dumped = false;
     this.remoteLive = false; this.lastRowAt = null;              // last stored row: readings closer than MIN_ROW_MS apart are shown, not stored
     this.iEma = new Ema(60);                                 // smoothed current for the time-to-go; readings go to the stored history
@@ -353,7 +353,7 @@ class Pack {
     const row = this.take(d);
     if (this.isActive) scheduleRender(this);
     schedulePackBar();
-    if (publisher) void publisher.publish(envelope('data', this, d, row ? { r: row } : null));
+    if (publisher && dataPublishDue({ viewers: publisher.state.viewers, lastAt: this.pubAt, now: Date.now() })) { this.pubAt = Date.now(); void publisher.publish(envelope('data', this, d, row ? { r: row } : null)); }
     if (first) syncWake();
   }
   onInfo(i) { this.info = i; if (this.isActive) renderDevice(i); if (publisher) void publisher.publish(envelope('info', this, i)); }
@@ -515,7 +515,9 @@ async function wakeRun() {
   let lockRetryAt = 0, videoRetryAt = 0;
   for (;;) {
     try {
-      wakeS.wanted = [...packs.values()].some((p) => wakeWantedByConn(p.cs, p.connected)) || shareS.phase === 'on' || shareS.phase === 'starting' || !!(viewer && viewer.state.live) || tvS.phase === 'on';
+      const powerOk = wakePowerOk(battNow ? { pct: Math.round(battNow.level * 100), chg: !!battNow.charging } : null);
+      if (powerOk !== wakeS.powerOk) { wakeS.powerOk = powerOk; log(powerOk ? 'wake: the phone charges (or is above the low mark) again - the screen is kept on again' : `wake: phone at ${Math.round(battNow.level * 100)} % and not charging - letting the screen sleep so the phone lasts; it is kept on again once the phone charges`); }
+      wakeS.wanted = powerOk && ([...packs.values()].some((p) => wakeWantedByConn(p.cs, p.connected)) || shareS.phase === 'on' || shareS.phase === 'starting' || !!(viewer && viewer.state.live) || tvS.phase === 'on');
       if (wakeShouldRequest(wakeS, document.visibilityState === 'visible')) {
         wakeRequestStart(wakeS);
         try {
@@ -1551,15 +1553,20 @@ async function runChooser(p, signal) {
     return null;
   }
 }
+// getDevices() with a deadline (review round 1: one that never answers held the whole resume, the share included;
+// conn.js gives the same call 2 s). null = no getDevices in this Chrome, or no answer in time.
+const GET_DEVICES_MS = 2000;
+async function listDevices() { try { return await navigator.bluetooth.getDevices(); } catch { return []; } }
+async function devicesWithin(ms = GET_DEVICES_MS) {
+  if (!navigator.bluetooth || typeof navigator.bluetooth.getDevices !== 'function') return null;
+  const r = await select(null, { list: () => listDevices(), late: (s) => sleep(ms, s) });
+  if (r.key === 'late') { log(`bluetooth: getDevices() gave no answer in ${ms} ms - going on without it`); return null; }
+  return r.value;
+}
 async function freshHandle(device) {
-  try {
-    if (navigator.bluetooth.getDevices) {
-      const list = await navigator.bluetooth.getDevices();
-      const same = list.find((d) => d.id === device.id);
-      if (same) return same;
-    }
-  } catch { /* not supported or denied - keep the old handle */ }
-  return device;
+  const list = await devicesWithin();                                // not supported, denied or no answer: keep the old handle
+  const same = list ? list.find((d) => d.id === device.id) : null;
+  return same || device;
 }
 if (navigator.bluetooth && navigator.bluetooth.addEventListener) {
   navigator.bluetooth.addEventListener('availabilitychanged', (e) => {
@@ -1624,8 +1631,18 @@ function statusTick(why = 'tick') {
 }
 // last words: the socket is still open when the page goes to the background or freezes; pagehide is best effort
 document.addEventListener('visibilitychange', () => statusTick(document.visibilityState === 'hidden' ? 'hidden' : 'visible'));
-document.addEventListener('freeze', () => statusTick('freeze'));
-document.addEventListener('resume', () => statusTick('resume'));
+// Chrome Android freezes a hidden page about a minute after it is hidden and keeps it frozen until someone brings it
+// back (review round 1: 1.7 h to 22 h in the logs). A frozen page cannot read or send, so it lets go of both links at
+// once instead of holding them for hours: the share socket closes with 4004 'frozen' (the relay records the end, viewers
+// say so, the "reader stopped" push can fire) and each Bluetooth link is voided and closed (the BMS's one slot is free,
+// and the phone's stack stops queueing notifications for a page that cannot take them). Both loops reconnect on resume.
+// Synchronous: nothing awaited here runs before the freeze.
+function freezeLinks() {
+  if (publisher) { log('freeze: closing the share socket (4004 frozen); it reopens on resume'); publisher.suspend(); }
+  for (const p of packs.values()) if (p.conn && p.bms && p.cs.phase === 'connected') p.bms.drop('the page is being frozen; it reconnects after the resume');
+}
+document.addEventListener('freeze', () => { statusTick('freeze'); freezeLinks(); });
+document.addEventListener('resume', () => { statusTick('resume'); if (publisher) publisher.nudge(); });
 window.addEventListener('pagehide', () => statusTick('pagehide'));
 
 // ---- resume after a reopen (0.9.72, resume-logic.js): the intent is what the person last asked for; a reopened reader
@@ -1681,7 +1698,7 @@ async function doResume(plan) {
   // the share and the Bluetooth reconnect go together: a relay that does not answer must not hold the BMS back
   // (share review 2026-11-01: the reconnect waited on the share's fetches)
   const sharing = plan.share && !publisher ? resumeShare() : null;
-  let devs = []; try { devs = navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function' ? await navigator.bluetooth.getDevices() : []; } catch (e) { log(`resume: getDevices failed: ${e.message}`); }
+  const devs = (await devicesWithin()) || [];
   for (const x of plan.connect) {
     const dev = devs.find((d) => d.id === x.id);
     if (!dev) { log(`resume: ${x.name || x.id} is no longer allowed by Chrome`); continue; }
@@ -1810,8 +1827,8 @@ function rememberDevice(device) {
   void refreshPermitted();                                          // the checklist's 'still allowed' row
 }
 async function permittedIds() {
-  if (!navigator.bluetooth || !navigator.bluetooth.getDevices) return null;
-  try { return (await navigator.bluetooth.getDevices()).map((d) => d.id); } catch { return []; }
+  const list = await devicesWithin();
+  return list === null ? null : list.map((d) => d.id);
 }
 async function renderKnown() {
   const k = knownDevice(savedDevice(), await permittedIds());
@@ -1824,7 +1841,7 @@ async function startKnown() {
   if (!(await compatGate('reader'))) return;
   if (!(await setupGate())) return;
   const b = $('connectKnown'); if (!b.dataset.id || !navigator.bluetooth) return;
-  let dev = null; try { dev = (await navigator.bluetooth.getDevices()).find((d) => d.id === b.dataset.id) || null; } catch { /* below */ }
+  const dev = ((await devicesWithin()) || []).find((d) => d.id === b.dataset.id) || null;
   if (!dev) { log('known device: not in getDevices any more, opening the chooser'); b.hidden = true; await startConnect(null); return; }
   const dup = [...packs.values()].find((x) => x.device && x.device.id === dev.id);
   if (dup) { setActive(dup); dup.conn.tell('known'); return; }
@@ -1933,7 +1950,7 @@ async function beginShare() {
     wasLive = s.live;
     const v = viewersChange(shareS, s.viewers);
     if (v && alerts) alerts.notify('viewers', v.joined ? T.evViewerJoined : T.evViewerLeft, T.evWatching(v.viewers));
-  }, onRequest: (m) => histRequest(m), onLogRequest: (m) => { void readerLogRequest(m); } });
+  }, onRequest: (m) => histAsk(m), onLogRequest: (m) => { void readerLogRequest(m); } });
   const pub = publisher;
   try {
     await pub.start(b.reuse);
@@ -1966,6 +1983,31 @@ async function gunzipBytes(bytes) { return new Uint8Array(await new Response(new
 /** A viewer asked for history (its day listing with ids came with the request): send the rows it lacks, newest day
  *  first, as gzipped JSON files of XFER_ROWS rows in base64 chunks over the encrypted link, paced by the channels'
  *  backlog, only while live. */
+// A viewer's history ask (hist-req, relayed with its socket id). Asks are planned one at a time and only the newest
+// ask per socket waits (review round 1: every ask ran a flush and a day listing at once - 60 asks, 60 listings - and a
+// frozen tab ran its whole backlog on resume; the room id of the live demo is public). A transfer runs on its own; a
+// plan made while one runs joins its queue (queueMerge: the asker's items replaced, at most one asker per viewer).
+const histAsks = new Map();
+let histAskTask = null;
+function histAsk(m) {
+  const from = String(m.from || '');
+  histAsks.delete(from); histAsks.set(from, m);
+  if (histAskTask === null) histAskTask = histAskRun();
+}
+const histAskedAt = new Map();                                          // socket id -> when its last ask was planned
+async function histAskRun() {
+  try {
+    while (histAsks.size) {
+      const now = Date.now();
+      let pick = null, wait = Infinity;                                    // the ask that may go first
+      for (const from of histAsks.keys()) { const w = askDelayMs(histAskedAt.get(from), now); if (w < wait) { wait = w; pick = from; } }
+      if (wait > 0) { await sleep(wait); continue; }                       // a newer ask from the same socket may replace it meanwhile
+      const m = histAsks.get(pick); histAsks.delete(pick); histAskedAt.set(pick, Date.now());
+      if (histAskedAt.size > 200) for (const [k, t] of histAskedAt) if (Date.now() - t > 3600000) histAskedAt.delete(k);   // sockets come and go
+      try { await histRequest(m); } catch (e) { log(`history: request failed: ${e && e.message ? e.message : e}`); }
+    }
+  } finally { histAskTask = null; }
+}
 async function histRequest(m) {
   if (!publisher || histS.backend === 'memory') { log(`history: request from ${String(m.from || '').slice(0, 6)} ignored (${!publisher ? 'not sharing' : 'nothing stored'})`); return; }
   try { await flushHistory(); histS.days = await hist.days(); }
@@ -1973,15 +2015,17 @@ async function histRequest(m) {
   const plan = transferPlan(histS.days, Array.isArray(m.have) ? m.have : []).map((x) => ({ ...x, to: m.from }));   // to the viewer that asked
   log(`history: request from ${String(m.from || '').slice(0, 6)}: viewer has ${Array.isArray(m.have) ? m.have.length : 0} days -> ${plan.length ? plan.map((x) => `${x.day} after id ${x.after} (${x.rows} rows)`).join(', ') : 'nothing to send'}`);
   if (!plan.length) return;
-  if (histS.xfer) {                                                     // a transfer is running: this viewer's new plan replaces only its own items, other viewers keep theirs
-    histS.xfer.queue = histS.xfer.queue.filter((q) => q.to !== m.from).concat(plan);
+  if (histS.xfer) {                                                     // a transfer is running: the plan joins its queue
+    histS.xfer.queue = queueMerge(histS.xfer.queue, plan, m.from, publisher.state.viewers);
     log(`history: a transfer is running, queued for this viewer (${histS.xfer.queue.length} items in the queue)`); return;
   }
   // this transfer's own record: a share stopped and started again meanwhile has its own (an old finally had wiped the
   // new one's state, share review 2026-11-01)
   const x = { queue: plan, sent: 0 };
   histS.xfer = x;
-  const pub = publisher;
+  void histSend(x, publisher);
+}
+async function histSend(x, pub) {
   try {
     while (histS.xfer === x && x.queue.length && publisher === pub && pub.state.live) {
       const item = x.queue.shift();
@@ -2723,6 +2767,7 @@ function sheetCtx() {
 }
 /** Opens a sheet; resolves with the chosen option / action id, or null when dismissed. */
 /** @returns {Promise<any>} the answer when the sheet closes (null = dismissed) */
+let sheetOpenedAt = 0;                                           // a tap outside right after opening is a ghost tap (backdropDecision)
 function openSheet(kind) {
   endSheet(null);                                                           // a sheet over a sheet: the first one is dismissed
   const m = sheetModel(kind, sheetCtx(), T), d = sheetOpen(uiS, kind);
@@ -2732,7 +2777,7 @@ function openSheet(kind) {
   $('sheetRows').innerHTML = m.rows.map(([k, v]) => `<div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>`).join('');
   $('sheetOpts').innerHTML = m.options.map((o) => `<button type="button" data-opt="${esc(o.id)}"${o.on ? ' class="on"' : ''}>${esc(o.label)}</button>`).join('');
   $('sheetActs').innerHTML = m.actions.map((x) => `<button type="button" data-act="${esc(x.id)}" class="${x.primary ? 'demobtn' : 'linkbtn'}"${x.primary ? ' style="padding:10px 18px"' : ''}>${esc(x.label)}</button>`).join('');
-  $('sheet').hidden = false; $('sheetBox').style.transform = ''; $('sheetBox').scrollTop = 0;
+  $('sheet').hidden = false; $('sheetBox').style.transform = ''; $('sheetBox').scrollTop = 0; sheetOpenedAt = performance.now();
   if (!d.replace) history.pushState({ sheet: kind }, '');
   log(`ui: sheet ${kind}`);
   const e = { flag: new Flag(false), result: null }; sheetEnd = e;
@@ -2777,7 +2822,11 @@ function closeSheet(result = null, why = 'dismiss') {
   if (history.state && history.state.sheet) { suppressPop++; history.back(); }   // drop the entry the open pushed
 }
 (function () {
-  $('sheetBack').addEventListener('click', () => closeSheet(null, 'tap outside'));
+  $('sheetBack').addEventListener('click', () => {
+    const kind = uiS.sheet ? uiS.sheet.kind : null, ms = Math.round(performance.now() - sheetOpenedAt);
+    if (backdropDecision(kind, ms) === 'ignore') { log(`ui: tap outside the ${kind} sheet ${ms} ms after it opened - ignored`); return; }
+    closeSheet(null, 'tap outside');
+  });
   $('sheetOpts').addEventListener('click', (e) => { const b = e.target.closest('[data-opt]'); if (b) closeSheet(b.dataset.opt, 'pick'); });
   $('sheetActs').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) closeSheet(b.dataset.act, 'action'); });
   $('sheetItems').addEventListener('click', (e) => {

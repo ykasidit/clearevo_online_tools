@@ -25,7 +25,7 @@
 // Each side is ONE loop (house rule): open the socket, serve it until it dies
 // (messages, a ping every SIG_PING_MS, dead after SIG_DEAD_MS of silence),
 // count down, again. The socket callbacks only set a flag or push a channel.
-import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, readerPresent, FRESH_MS, SIG_PING_MS } from './live-logic.js';
+import { makeKeyB64, shareLink, importKey, encrypt, decrypt, validEnvelope, staleEnvelope, sigDecision, readerPresent, FRESH_MS, SIG_PING_MS, SIG_DEAD_MS } from './live-logic.js';
 import { Flag, Channel, sleep, select, isAbort, abortError, deadline } from './sync.js';
 
 const API = '/batray/api';
@@ -72,6 +72,7 @@ async function openSock(url, signal) {
  *  silence (a half-open socket after a Wi-Fi change, 2026-09-22), onTick every 2 s. Returns why it ended. */
 async function serve(sock, signal, { onMsg, onTick, onSlept, log, now, resumed }) {
   let lastMsgAt = now(), lastPingAt = now(), lastTurn = now();
+  let owedSince = null;                // the ping sent at a wake from the page's own sleep, while nothing has answered it
   for (;;) {
     // channel arms only wait (ready); the item is taken once the arm has won, so a message never vanishes in a turn
     // the tick or the close won (0.9.84)
@@ -79,7 +80,7 @@ async function serve(sock, signal, { onMsg, onTick, onSlept, log, now, resumed }
     const t = now(), gap = t - lastTurn; lastTurn = t;
     if (r.key === 'closed') { const c = sock.closeInfo || {}; return `closed code=${c.code} reason="${c.reason}" clean=${c.clean}`; }
     if (r.key === 'msg') {
-      lastMsgAt = t;
+      lastMsgAt = t; owedSince = null;
       const raw = sock.msgs.take();
       let m; try { m = JSON.parse(raw); } catch { log('signal: unparsable message'); continue; }
       if (m.type !== 'pong') await onMsg(m);
@@ -89,7 +90,14 @@ async function serve(sock, signal, { onMsg, onTick, onSlept, log, now, resumed }
     // The page itself slept (Android froze the tab, or Chrome ran its timers once a minute): the socket's silence is
     // ours, not the relay's - ask before judging it, or a healthy socket is torn down and the relay records the
     // reader as unanswered (share review 2026-11-01).
-    if (gap > 2 * SIG_PING_MS) { log(`signal: the page slept ${Math.round(gap / 1000)} s - asking the relay before judging the socket`); lastMsgAt = t; lastPingAt = t; sock.send({ type: 'ping' }); if (onSlept) onSlept(); if (onTick) onTick(); continue; }
+    // A hidden page that Chrome throttles to one timer run a minute has a long gap on EVERY turn: only the first counts
+    // as sleep, and the ping sent then is owed an answer - nothing at all for SIG_DEAD_MS and the socket is dead
+    // (review round 1: a half-open share socket was never reopened while the reader stayed hidden).
+    if (gap > 2 * SIG_PING_MS) {
+      if (owedSince !== null && t - owedSince > SIG_DEAD_MS) { log(`signal: nothing has answered the ping sent ${Math.round((t - owedSince) / 1000)} s ago at a wake - the socket is dead, reopening`); sock.close(4001, 'no pong'); return 'dead'; }
+      if (owedSince === null) { log(`signal: the page slept ${Math.round(gap / 1000)} s - asking the relay before judging the socket`); owedSince = t; lastMsgAt = t; if (onSlept) onSlept(); }
+      lastPingAt = t; sock.send({ type: 'ping' }); if (onTick) onTick(); continue;
+    }
     const d = sigDecision({ lastMsgAt, lastPingAt, now: t });
     if (d.action === 'reopen') { log(`signal: no answer for ${d.silentS} s - the socket is dead, reopening`); sock.close(4001, 'no pong'); return 'dead'; }
     if (d.action === 'ping' || r.key === 'resume') { lastPingAt = now(); sock.send({ type: 'ping' }); }   // a resumed tab asks at once
@@ -238,6 +246,10 @@ export class Publisher {
   }
   /** The tab just came back: end a countdown now, ping a serving socket now. */
   nudge() { if (!this.stopped) this.resumed.push(1); }
+  /** The page is about to be frozen (Chrome Android, about a minute after it is hidden): close the socket with a code
+   *  the relay keeps (4004 'frozen'), so viewers and the "reader stopped" push learn it now instead of never - a
+   *  frozen page's socket stayed in the room, answered by the relay itself (review round 1). The loop reopens it on resume. */
+  suspend() { if (this.sock) this.sock.close(4004, 'frozen'); }
 
   async stop() {
     this.stopped = true;
