@@ -157,6 +157,33 @@ export function receivedContig(contig, dbContig, after, lastId) {
   return Math.max(c, lastId);
 }
 
+/** The reader's id mark (round 7): today's next id, kept beside the store, so a delete, a Clear, a renewed or wiped
+ *  file or a reload never numbers today from 1 again - viewers hold today's earlier rows under those ids. */
+export function idMark(raw, today) {
+  let m; try { m = JSON.parse(raw || 'null'); } catch { return 0; }
+  return m && m.day === today && Number.isInteger(m.next) && m.next > 0 ? m.next : 0;
+}
+/** A viewer's closed runs per day (round 7): {day: id}, from received files (receivedContig). Parsed defensively. */
+export function parseRuns(raw) {
+  let m; try { m = JSON.parse(raw || 'null'); } catch { return {}; }
+  const out = {};
+  if (m && typeof m === 'object' && !Array.isArray(m)) for (const [d, v] of Object.entries(m)) if (/^\d{4}-\d{2}-\d{2}$/.test(d) && Number.isInteger(v) && v > 0) out[d] = v;
+  return out;
+}
+/** Only the days still on disk whose file still reaches the mark: a deleted, wiped or renewed file never looks
+ *  complete because of a mark it no longer backs. */
+export function pruneRuns(done, days) {
+  const max = new Map((days || []).map((d) => [d.day, d.maxId || 0]));
+  const out = {};
+  for (const [d, v] of Object.entries(done || {})) if (max.has(d) && max.get(d) >= v) out[d] = v;
+  return out;
+}
+/** The run a viewer reports for a day: its file's own run from id 1, or the closed run when the file reaches it. */
+export function haveContig(dbContig, dbMaxId, done) {
+  const c = dbContig || 0;
+  return Number.isInteger(done) && (dbMaxId || 0) >= done ? Math.max(c, done) : c;
+}
+
 /** From a listing of day databases, what to delete: the oldest past days, until the browser's free space is at
  *  least `headroom` (no day limit, owner decision 2026-09-21). */
 export function retentionDecision(days, today, { usage = 0, quota = 0, headroom = HEADROOM_BYTES } = {}) {

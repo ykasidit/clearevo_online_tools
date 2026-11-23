@@ -157,6 +157,16 @@ copy as complete (the run is counted from id 1) and asked for, and was sent, the
 to the file's last id - the reader sends everything it has above `after`, whatever ids it lost. A "0 new" answer no
 longer resets the gap asks. Test: test/review/fable_r6_today_resend.mjs (+ unit cases in batray_review_r1.test.js).
 
+Round 7: (F7-1) Browse > Delete of today and Clear on the reader still numbered today from 1, and a reload while the
+renewed file was empty would too (the kept counter lived in memory only). The reader now keeps an id mark
+`{day, next}` in its tab state (`tk('ids')`, written after each flush; `idMark()`), and init takes
+`max(maxId + 1, the mark)`; delete / Clear reset only the row count and run. (O7-1) Past days had no closed run: a
+day the reader lost rows of went to a viewer again in full on every ask. A viewer now keeps the run each received
+file closes per day (`tk('done')`, `parseRuns` / `pruneRuns` / `haveContig`) and reports it; a mark counts only while
+its day file still reaches it, marks of deleted days go at each ask, and a wipe or a Clear drops them all. It also
+ends the one full resend of a renumbered today after a viewer reload. Tests: test/review/fable_r7_delete_today_ids.mjs,
+opus_r7_past_day_resend.test.js (models the new ask), unit cases in batray_review_r1.test.js.
+
 ## 0.9.93 (2026-11-23): review round 3 - a store whose files vanish starts over
 
 Both reviewers, independently, proved the year sim's "store broken for good" (every log write and new-day insert

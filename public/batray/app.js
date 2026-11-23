@@ -34,7 +34,7 @@ import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
 import { Flag, Channel, select, sleep, every, isAbort, TIMEOUT } from './sync.js';
 import { TAB_SS, TAB_PREFIX, LEGACY, validTabId, LEGACY_DROP, tabLock, tabKey, metaKey, tabMeta, tabRecords, chooseTab, orphanDrops, legacyMoves, storeRows } from './tab-logic.js';
-import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysInRange, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs, queueMerge, askDelayMs, receivedContig } from './history-logic.js';
+import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysInRange, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs, queueMerge, askDelayMs, receivedContig, idMark, parseRuns, pruneRuns, haveContig } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
@@ -699,7 +699,7 @@ function renderCellsStat(d) { $('cellsStat').textContent = cellsStat(d, T); }
 // from bucket queries and logs what happened. ----
 const histS = historyState();
 const hist = new HistoryStore({ log, store: TAB.id });
-hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') dropMemoryRows(); renderHistOff(); if (name === 'opfs') { histMem.ready = false; void initHistory(); void initLogStore(); } };   // memory-only after a locked pool: the Storage box says so; the store back on a later try: today's counters and the stored log again
+hist.onBackend = (name) => { histS.backend = name; renderStorage(); if (name === 'memory') dropMemoryRows(); renderHistOff(); if (name === 'opfs') { histMem.ready = false; if (viewer) saveDone({}); void initHistory(); void initLogStore(); } };   // memory-only after a locked pool: the Storage box says so; the store back on a later try: today's counters and the stored log again
 const histMem = { ready: false, inflight: null, failAt: 0, dropped: 0, dropLogAt: 0, pending: new Map(), plot: null, plotParams: '', cursorIdx: null, series: null, drawAt: 0, drawing: false, redraw: false, spanAt: 0, demoId: 0 };
 const utf8 = new TextEncoder();
 function pendingRows() { let n = 0; for (const l of histMem.pending.values()) n += l.length; return n; }
@@ -773,11 +773,16 @@ const diskFull = (e) => !!e && (e.name === 'QuotaExceededError' || /SQLITE_FULL|
  *  (bounded); the store has already logged why. */
 /** The day changed: what was queued for yesterday goes into yesterday's file, then the store is tidied. */
 async function rollover() { await flushHistory(); await maintainHistory(); }
+// round 7: the reader's id mark and a viewer's closed runs, beside the store in this tab's state
+function saveIdMark() { if (viewer || !histS.day) return; try { localStorage.setItem(tk('ids'), JSON.stringify({ day: histS.day, next: histS.nextId })); } catch { /* no storage: the file's own highest id still counts */ } }
+function loadDone() { try { return parseRuns(localStorage.getItem(tk('done'))); } catch { return {}; } }
+function saveDone(m) { try { localStorage.setItem(tk('done'), JSON.stringify(m)); } catch { /* no storage: the next ask may send a day once more */ } }
 async function flushHistory() {
   while (histFlush !== null) await histFlush;   // a caller that needs its rows stored (a history request) waits for the flush in flight, then flushes what came since
   if (!histMem.pending.size || !histMem.ready) return;
   histFlush = flushBatch();
   try { await histFlush; } finally { histFlush = null; }
+  saveIdMark();
   if (active && !$('trendCard').hidden) scheduleDraw(false);   // the throttle decides (half a bucket at least): a 7-day window is not re-queried every 10 s
 }
 async function flushBatch() {
@@ -836,6 +841,7 @@ async function corruptDb(e, where, rows) {
   log(`history: ${where}: ${day} database is corrupt -> ${d.action}: ${d.live ? 'deleted, a new live file starts' : 'deleted'}`);
   toast(d.live ? T.histCorruptLive : T.histCorruptDay(day), 10000);
   try { await hist.remove(day); } catch (e2) { log(`history: could not delete ${day}: ${e2.message}`); }
+  if (viewer) { const m = loadDone(); delete m[day]; saveDone(m); }
   const keep = histS.nextId;                                                 // the reader's ids go on: viewers hold today up to here under them (F5-1)
   if (d.live) { histS.todayRows = 0; histS.contig = 0; histS.gap = null; if (viewer) histS.nextId = 1; }
   histMem.series = null;
@@ -910,7 +916,8 @@ async function initHistoryOnce() {
   histS.backend = hist.backend;                                               // the store's backend NOW: a store that opened on a later try is 'opfs' although its first open said 'memory' (Fable review 2026-11-01)
   if (histS.backend === 'memory') dropMemoryRows();
   const now = Date.now(), today = dayKey(now);
-  const again = histS.day === today ? histS.nextId : 0;                      // a re-init on the same day (the store started over after a wipe)
+  let again = histS.day === today ? histS.nextId : 0;                        // a re-init on the same day (the store started over after a wipe)
+  if (!viewer) { try { again = Math.max(again, idMark(localStorage.getItem(tk('ids')), today)); } catch { /* no storage */ } }   // ... or a reload after a delete / renewal (round 7)
   histS.day = today;
   // today's counters first, on their own, until they are read: numbering from 1 over a file that has rows makes every
   // new row a duplicate the store ignores until midnight (long-run review 2026-11-05: a slow listing of a year of day
@@ -925,11 +932,13 @@ async function initHistoryOnce() {
     }
   }
   histS.todayRows = info.rows; histS.nextId = Math.max(info.maxId + 1, again); histS.contig = info.contig;
+  if (viewer) { const done = loadDone(); histS.contig = haveContig(info.contig, info.maxId, done[today]); }
   if (again > info.maxId + 1) log(`history: today's file started over; ids go on from ${again} (viewers hold the ones before as the reader's)`);
   try {
     const old = await hist.oldFiles();                                        // before 0.9.40: NDJSON, not read, not migrated (owner: day 0)
     if (old.files) log(`history: ${old.files} day file${old.files === 1 ? '' : 's'} from before 0.9.40 (${Math.round(old.bytes / 1048576)} MB, NDJSON) are not read any more; Clear stored history removes them`);
     histS.days = await hist.days();
+    if (viewer) saveDone(pruneRuns(loadDone(), histS.days));                // marks of deleted / wiped / renewed days go
     let early = 0;
     for (const [day, l] of histMem.pending) for (const r of l) if (r.id === null) { if (day === today) { r.id = nextRowId(histS); early++; } }
     for (const [day, l] of histMem.pending) if (day !== today && day !== 'demo') histMem.pending.set(day, l.filter((r) => r.id !== null));
@@ -989,7 +998,8 @@ async function restoreHistoryFile() {
 async function clearHistory() {
   histMem.pending = new Map();
   try { const r = await hist.clear(); log(`history: cleared (${r.removed} day databases)`); } catch (e) { /* logged by the store */ }
-  histS.days = []; histS.todayRows = 0; histS.nextId = 1; histS.contig = 0; histS.gap = null; histS.spanFirst = null; histS.spanLast = null; histMem.series = null;
+  if (viewer) { histS.nextId = 1; saveDone({}); }                           // the reader's ids go on (round 7): viewers hold today's earlier rows under them
+  histS.days = []; histS.todayRows = 0; histS.contig = 0; histS.gap = null; histS.spanFirst = null; histS.spanLast = null; histMem.series = null;
   toast(T.histCleared, 5000);
   if (active) { renderTrend(active); if ($('trendCard').hidden) renderHistNote(); }
 }
@@ -1226,7 +1236,7 @@ async function openBrowse(type) {
 async function browseDelete(id) {
   const t = browseS.type;
   if (t === 'hist' && id.startsWith('store:')) { const sid = id.slice(6); await hist.dropStore(sid); forgetTab(sid); log(`tab: deleted the store of tab ${sid}`); }
-  else if (t === 'hist') { await flushHistory(); await hist.remove(id); histMem.series = null; if (id === histS.day) { histS.todayRows = 0; histS.nextId = 1; histS.contig = 0; histS.gap = null; histMem.pending.delete(id); } }
+  else if (t === 'hist') { await flushHistory(); await hist.remove(id); histMem.series = null; if (viewer) { const m = loadDone(); delete m[id]; saveDone(m); } if (id === histS.day) { histS.todayRows = 0; if (viewer) histS.nextId = 1; histS.contig = 0; histS.gap = null; histMem.pending.delete(id); } }
   else if (t === 'set') { try { localStorage.removeItem(id); } catch { /* */ } }
   else {
     const cut = id.indexOf('/'), store = cut > 0 ? id.slice(0, cut) : TAB.id, name = cut > 0 ? id.slice(cut + 1) : id;
@@ -2192,11 +2202,11 @@ async function requestHistory() {
   // 2026-11-01), and not without a file store (nothing would be kept); the 10 min rhythm asks again
   if (!viewer || !histMem.ready || histS.backend !== 'opfs') { if (viewer) log(`history: not asking the reader yet (${histMem.ready ? `store ${histS.backend}` : 'history store still starting'})`); return; }
   try { await flushHistory(); histS.days = await hist.days(); } catch (e) { log(`history: asking the reader with the old listing (the store failed: ${e.message})`); }
-  const have = [];
+  const have = [], done = pruneRuns(loadDone(), histS.days); saveDone(done);   // a day deleted since (retention, Browse) loses its mark
   for (const d of histS.days) {
     if (d.day === histS.day) { have.push({ day: d.day, maxId: Math.max(d.maxId || 0, histS.todayRows), contig: histS.contig }); continue; }
     const info = await hist.info(d.day).catch(() => ({ maxId: d.maxId, contig: d.maxId }));
-    have.push({ day: d.day, maxId: info.maxId, contig: info.contig, rows: info.rows });
+    have.push({ day: d.day, maxId: info.maxId, contig: haveContig(info.contig, info.maxId, done[d.day]), rows: info.rows });
   }
   if (viewer.request(have)) log(`history: asked the reader (this device has ${have.length} days; today complete to id ${histS.contig}, highest ${histS.todayRows}${histS.gap ? ', a hole' : ''})`);
 }
@@ -2216,9 +2226,12 @@ async function storeReceived(file) {
   const r = await hist.insert(file.day, rows);
   if (r.inserted > 0) histS.gapAsks = 0;                                   // new rows: holes may be asked about again ("0 new" answers do not restart the asks, round 6)
   let note = '';
+  const done = loadDone(), dInfo = await hist.info(file.day);
+  const run = receivedContig(file.day === histS.day ? histS.contig : haveContig(dInfo.contig, dInfo.maxId, done[file.day]), dInfo.contig, file.after, rows[rows.length - 1].id);
+  if (run > dInfo.contig) { done[file.day] = run; saveDone(done); }       // past days too (O7-1): the next ask reports this run, not the file's run from id 1
   if (file.day === histS.day) {
-    const info = await hist.info(file.day);
-    histS.contig = receivedContig(histS.contig, info.contig, file.after, rows[rows.length - 1].id); histS.todayRows = Math.max(histS.todayRows, info.maxId); histS.nextId = info.maxId + 1;
+    const info = dInfo;
+    histS.contig = run; histS.todayRows = Math.max(histS.todayRows, info.maxId); histS.nextId = info.maxId + 1;
     const hole = histS.contig < info.maxId; note = `; today complete to ${histS.contig} of ${info.maxId}${hole ? ' (still a hole)' : ''}`;
     histS.gap = hole ? 'gap' : null;
     if (hole && viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') void requestHistory();

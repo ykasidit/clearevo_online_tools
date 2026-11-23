@@ -251,7 +251,8 @@ h = await hist(); list = await evalJs('window.__batrayTest.histList()');
 const after = await evalJs(`({ confirms: window.__confirms, toast: document.getElementById('toast').textContent, wait: getComputedStyle(document.getElementById('trendWait')).display !== 'none', card: document.getElementById('trendCard').hidden })`);
 const oldLeft = await evalJs(`(async () => { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('batray-history'); const names = []; for await (const [n] of d.entries()) names.push(n); return names.filter((n) => /^\\d{4}-\\d{2}-\\d{2}\\.ndjson/.test(n)); })()`);
 check('Clear stored history also removes the old NDJSON day files', oldLeft.length === 0, oldLeft);
-check('the store is empty afterwards, a toast says so, and the History tab shows the collecting bar again', list.length === 0 && h.days.length === 0 && h.nextId === 1 && after.confirms === 0 && /deleted/i.test(after.toast) && after.wait && after.card, { h, list, after });
+// the reader's ids go on after a Clear (0.9.94, review round 7): a viewer holds today's earlier rows under them
+check('the store is empty afterwards, a toast says so, and the History tab shows the collecting bar again', list.length === 0 && h.days.length === 0 && h.todayRows === 0 && h.nextId > 1 && after.confirms === 0 && /deleted/i.test(after.toast) && after.wait && after.card, { h, list, after });
 
 // ---- last: a worker stuck in JavaScript. Chrome's terminate() never releases its OPFS access handles (probed in
 // this sandbox 2026-09-24: not after 2 min), so the fresh worker cannot take the pool; the store must not fail

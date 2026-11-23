@@ -131,3 +131,22 @@ test('receivedContig: a file that follows the run makes the copy complete to its
   assert.equal(receivedContig(10, 10, null, 150), 10);        // garbage after / last id: unchanged
   assert.equal(receivedContig(10, 10, 5, Number.NaN), 10);
 });
+
+// review round 7: the reader's id mark (O4/F5/F7: delete, Clear, renewal, reload never number today from 1) and a
+// viewer's closed runs per day (O7-1: a past day the reader lost rows of was resent in full on every ask)
+import { idMark, parseRuns, pruneRuns, haveContig } from '../public/batray/history-logic.js';
+test('idMark: today\'s next id from the stored mark, nothing for another day or junk', () => {
+  assert.equal(idMark(JSON.stringify({ day: '2026-11-23', next: 15 }), '2026-11-23'), 15);
+  assert.equal(idMark(JSON.stringify({ day: '2026-11-22', next: 15 }), '2026-11-23'), 0);
+  for (const raw of [null, '', '{', '[]', '"x"', JSON.stringify({ day: '2026-11-23', next: -3 }), JSON.stringify({ day: '2026-11-23', next: 1.5 })]) assert.equal(idMark(raw, '2026-11-23'), 0, String(raw));
+});
+test('parseRuns / pruneRuns / haveContig: a mark counts only while its day file still reaches it', () => {
+  assert.deepEqual(parseRuns(JSON.stringify({ '2026-11-22': 9000, bad: 3, '2026-11-21': -1, '2026-11-20': 'x' })), { '2026-11-22': 9000 });
+  assert.deepEqual(parseRuns('{'), {}); assert.deepEqual(parseRuns('[1]'), {}); assert.deepEqual(parseRuns(null), {});
+  const done = { '2026-11-22': 9000, '2026-11-21': 500, '2026-11-20': 70 };
+  assert.deepEqual(pruneRuns(done, [{ day: '2026-11-22', maxId: 9000 }, { day: '2026-11-21', maxId: 0 }]), { '2026-11-22': 9000 });   // 11-21 wiped / renewed, 11-20 deleted
+  assert.equal(haveContig(3000, 9000, 9000), 9000);
+  assert.equal(haveContig(3000, 9000, undefined), 3000);
+  assert.equal(haveContig(0, 40, 150), 0);                   // the file no longer reaches the mark: it counts for nothing
+  assert.equal(haveContig(200, 200, 150), 200);
+});
