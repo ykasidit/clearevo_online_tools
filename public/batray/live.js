@@ -70,7 +70,7 @@ async function openSock(url, signal) {
 }
 /** Serve an open socket until it dies: each message to onMsg, a ping when due, a reopen after SIG_DEAD_MS of
  *  silence (a half-open socket after a Wi-Fi change, 2026-09-22), onTick every 2 s. Returns why it ended. */
-async function serve(sock, signal, { onMsg, onTick, log, now, resumed }) {
+async function serve(sock, signal, { onMsg, onTick, onSlept, log, now, resumed }) {
   let lastMsgAt = now(), lastPingAt = now(), lastTurn = now();
   for (;;) {
     // channel arms only wait (ready); the item is taken once the arm has won, so a message never vanishes in a turn
@@ -89,7 +89,7 @@ async function serve(sock, signal, { onMsg, onTick, log, now, resumed }) {
     // The page itself slept (Android froze the tab, or Chrome ran its timers once a minute): the socket's silence is
     // ours, not the relay's - ask before judging it, or a healthy socket is torn down and the relay records the
     // reader as unanswered (share review 2026-11-01).
-    if (gap > 2 * SIG_PING_MS) { log(`signal: the page slept ${Math.round(gap / 1000)} s - asking the relay before judging the socket`); lastMsgAt = t; lastPingAt = t; sock.send({ type: 'ping' }); if (onTick) onTick(); continue; }
+    if (gap > 2 * SIG_PING_MS) { log(`signal: the page slept ${Math.round(gap / 1000)} s - asking the relay before judging the socket`); lastMsgAt = t; lastPingAt = t; sock.send({ type: 'ping' }); if (onSlept) onSlept(); if (onTick) onTick(); continue; }
     const d = sigDecision({ lastMsgAt, lastPingAt, now: t });
     if (d.action === 'reopen') { log(`signal: no answer for ${d.silentS} s - the socket is dead, reopening`); sock.close(4001, 'no pong'); return 'dead'; }
     if (d.action === 'ping' || r.key === 'resume') { lastPingAt = now(); sock.send({ type: 'ping' }); }   // a resumed tab asks at once
@@ -295,7 +295,9 @@ export class Viewer {
       }
       this.sock = sock; this.state.sig = true; this.openAt = this.now(); this.emit();
       this.log(`signal: socket open (view) in ${Date.now() - t0} ms`);
-      const why = await serve(sock, signal, { onMsg: (m) => this.onMsg(m), onTick: () => this.judgeReader(), log: this.log, now: this.now, resumed: this.resumed });
+      // the page's own sleep is not the reader's silence: the watch starts again at the wake (viewer log 2026-11-21: a
+      // 44 s background sleep fired "Reader offline" then "Reader online" 4 s later)
+      const why = await serve(sock, signal, { onMsg: (m) => this.onMsg(m), onTick: () => this.judgeReader(), onSlept: () => { this.openAt = this.now(); }, log: this.log, now: this.now, resumed: this.resumed });
       this.sock = null; sock.close();
       this.state.sig = false; this.state.live = false; this.emit();
       this.log(`signal: socket ${why} - reopening in ${this.retryS} s`);

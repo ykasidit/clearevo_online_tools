@@ -134,6 +134,20 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.90 (2026-11-23): three fixes from the uploaded logs of 21-23 Nov
+
+1. **History sent again in full on every ask.** A past day whose ids start above 1 (the reader's 2026-10-01 holds
+   31961..53541) has contiguity 0 on both sides, so `transferPlan` resent all of it at every link-up and every
+   10 min (55 chunks, each "0 new"). The viewer's `have` now carries the day's row count; the same count and the same
+   highest id mean the same rows (a viewer only holds rows from this reader), and the day is skipped.
+2. **"Reader offline" for the viewer's own sleep.** A viewer tab that slept 44 s in the background judged the reader
+   silent for those 44 s on waking and alerted "Reader offline", then "Reader online" 4 s later. `serve()` now calls
+   `onSlept()` on a detected sleep and the viewer restarts its silence watch at the wake; a reader that stays silent
+   after it is still caught by the 35 s rule.
+3. **One pack listed many times in the resume record.** Without getDevices Chrome gives the same BMS a new id each
+   session, and the intent kept one entry per id (8 for one pack in a log). `intentEvent` replaces a pack of the same
+   name when ids are not stable, and `resumePlan` names each pack once under "needs a tap".
+
 ## 0.9.89 (2026-11-21): a viewer's log upload brings the reader's log along
 
 Owner ask: "if reader already debug on, a viewer can try get it within timeout if connected on upload debug log of

@@ -151,3 +151,29 @@ test('the "reader stopped" push: sign up only while sharing with notifications a
   const key = b64uBytes('BPm3-_Yz' + 'A'.repeat(80));
   assert.ok(key instanceof Uint8Array && key[0] === 0x04, 'base64url with - and _, unpadded');
 });
+
+test('India reader log 2026-11-22: without getDevices each session\'s new id for the same BMS replaces the old one (it was listed 8 times)', () => {
+  let i = emptyIntent();
+  for (let s = 0; s < 10; s++) i = intentEvent(i, 'connected', { id: `id${s}`, name: '51-100-jk-650', stableIds: false }, 1000 + s);
+  assert.deepEqual(i.packs, [{ id: 'id9', name: '51-100-jk-650' }], 'one entry, the newest id');
+  i = intentEvent(i, 'connected', { id: 'idB', name: 'other-pack', stableIds: false }, 2000);
+  assert.deepEqual(i.packs.map((p) => p.name), ['51-100-jk-650', 'other-pack'], 'a second pack of another name stays');
+  // with getDevices the ids are stable: two packs that happen to share a name are both kept
+  let j = emptyIntent();
+  j = intentEvent(j, 'connected', { id: 'a', name: 'JK-B2A24S', stableIds: true }, 1);
+  j = intentEvent(j, 'connected', { id: 'b', name: 'JK-B2A24S', stableIds: true }, 2);
+  assert.equal(j.packs.length, 2);
+  // an old caller without the flag keeps the id-only rule; an unnamed pack never matches another unnamed one
+  let k = intentEvent(intentEvent(emptyIntent(), 'connected', { id: 'x', name: 'n' }, 1), 'connected', { id: 'y', name: 'n' }, 2);
+  assert.equal(k.packs.length, 2);
+  k = intentEvent(intentEvent(emptyIntent(), 'connected', { id: 'x', stableIds: false }, 1), 'connected', { id: 'y', stableIds: false }, 2);
+  assert.equal(k.packs.length, 2);
+});
+
+test('resume plan without getDevices: one "needs a tap" per pack name, not one per old id (records written before 0.9.90)', () => {
+  const intent = parseIntent({ share: false, packs: [{ id: 'a', name: 'P' }, { id: 'b', name: 'P' }, { id: 'c', name: 'P' }, { id: 'd', name: 'Q' }], at: 1 });
+  const plan = resumePlan({ intent, permittedIds: null });
+  assert.deepEqual(plan.cannot.map((p) => p.name), ['P', 'Q']);
+  assert.match(resumeLine(plan), /needs a tap: P \(Chrome does not remember[^)]*\), Q \(/);
+  assert.equal(resumePlan({ intent, permittedIds: ['a', 'b'] }).connect.length, 2, 'with getDevices every permitted id is its own link');
+});

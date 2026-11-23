@@ -204,3 +204,13 @@ test('a live chart is re-queried every 10 s on a short window and no more than e
   assert.equal(trendRefreshMs(756000), 378000);                  // 7 d: 12.6 min buckets -> 6.3 min
   assert.equal(trendRefreshMs(undefined), TREND_REFRESH_MS);
 });
+
+test('transferPlan: a past day numbered from above 1 that the viewer already holds is not sent again (viewer log 2026-11-21)', () => {
+  // the reader's 2026-10-01 holds ids 31961..53541 (21581 rows): contig from 1 is 0 on both sides
+  const reader = [{ day: '2026-11-21', rows: 2386, maxId: 2386 }, { day: '2026-10-01', rows: 21581, maxId: 53541 }];
+  assert.deepEqual(transferPlan(reader, [{ day: '2026-11-21', maxId: 2386, contig: 2386 }, { day: '2026-10-01', maxId: 53541, contig: 0, rows: 21581 }]), [], 'same count, same highest id: nothing to send');
+  assert.deepEqual(transferPlan(reader, [{ day: '2026-10-01', maxId: 53541, contig: 0, rows: 21000 }]).map((x) => x.day), ['2026-11-21', '2026-10-01'], 'rows missing: the day is sent again');
+  assert.deepEqual(transferPlan(reader, [{ day: '2026-10-01', maxId: 53541, contig: 0 }]).map((x) => x.day), ['2026-11-21', '2026-10-01'], 'a viewer from before 0.9.90 (no rows field): as before');
+  assert.deepEqual(transferPlan(reader, [{ day: '2026-10-01', maxId: 53000, contig: 0, rows: 21581 }]).map((x) => x.day), ['2026-11-21', '2026-10-01'], 'a different highest id is never taken for the same rows');
+  assert.deepEqual(transferPlan(reader, [{ day: '2026-10-01', maxId: 53541, contig: 0, rows: '21581' }]).map((x) => x.day), ['2026-11-21', '2026-10-01'], 'garbage rows: as before, never a skip');
+});

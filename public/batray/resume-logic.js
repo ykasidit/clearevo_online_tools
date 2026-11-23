@@ -39,7 +39,9 @@ export function emptyIntent() { return { share: false, packs: [], at: 0 }; }
  *  nothing - that is exactly what a resume is for. Returns a new intent. */
 export function intentEvent(intent, ev, inp = {}, now = Date.now()) {
   const i = { share: intent.share, packs: intent.packs.map((p) => ({ ...p })), at: now };
-  if (ev === 'connected' && inp.id) { i.packs = i.packs.filter((p) => p.id !== inp.id); i.packs.push({ id: inp.id, name: String(inp.name || '').slice(0, 40) }); i.packs = i.packs.slice(-8); }
+  // without getDevices (stableIds false) Chrome gives the same BMS a new id every session: an old id can never be
+  // reconnected, so a pack of the same name replaces it (India reader log 2026-11-22: one pack listed 8 times)
+  if (ev === 'connected' && inp.id) { const name = String(inp.name || ''); i.packs = i.packs.filter((p) => p.id !== inp.id && (inp.stableIds !== false || !name || p.name !== name)); i.packs.push({ id: inp.id, name: String(inp.name || '').slice(0, 40) }); i.packs = i.packs.slice(-8); }
   else if (ev === 'disconnected' && inp.id) i.packs = i.packs.filter((p) => p.id !== inp.id);
   else if (ev === 'share-on') i.share = true;
   else if (ev === 'share-off') i.share = false;
@@ -55,7 +57,7 @@ export function resumePlan({ intent, enabled = true, viewer = false, demo = fals
   if (!intent || (!intent.share && !intent.packs.length)) return { action: 'none', why: 'nothing was running' };
   const connect = [], cannot = [];
   for (const p of intent.packs) {
-    if (permittedIds === null) cannot.push({ ...p, why: 'no-getdevices' });
+    if (permittedIds === null) { if (!cannot.some((c) => p.name && c.name === p.name)) cannot.push({ ...p, why: 'no-getdevices' }); }   // one tap per pack, not per old id
     else if (permittedIds.includes(p.id)) connect.push(p);
     else cannot.push({ ...p, why: 'not-permitted' });
   }

@@ -43,7 +43,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.89';
+export const APP_VERSION = '0.9.90';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -1633,7 +1633,7 @@ window.addEventListener('pagehide', () => statusTick('pagehide'));
 let intentNow = (() => { try { return parseIntent(localStorage.getItem(tk('resume'))); } catch { return parseIntent(null); } })();
 function intentNote(ev, inp = {}) {
   if (viewMode) return;
-  intentNow = intentEvent(intentNow, ev, inp);
+  intentNow = intentEvent(intentNow, ev, { ...inp, stableIds: !!(navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function') });
   try { localStorage.setItem(tk('resume'), JSON.stringify(intentNow)); } catch { /* no storage */ }
   log(`resume intent: ${ev}${inp.name ? ` ${inp.name}` : ''} -> share ${intentNow.share ? 'on' : 'off'}, packs ${intentNow.packs.map((x) => x.name || x.id).join(', ') || 'none'}`);
 }
@@ -2123,7 +2123,7 @@ async function requestHistory() {
   for (const d of histS.days) {
     if (d.day === histS.day) { have.push({ day: d.day, maxId: Math.max(d.maxId || 0, histS.todayRows), contig: histS.contig }); continue; }
     const info = await hist.info(d.day).catch(() => ({ maxId: d.maxId, contig: d.maxId }));
-    have.push({ day: d.day, maxId: info.maxId, contig: info.contig });
+    have.push({ day: d.day, maxId: info.maxId, contig: info.contig, rows: info.rows });
   }
   if (viewer.request(have)) log(`history: asked the reader (this device has ${have.length} days; today complete to id ${histS.contig}, highest ${histS.todayRows}${histS.gap ? ', a hole' : ''})`);
 }

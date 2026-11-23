@@ -268,3 +268,25 @@ test('2026-11-01 review: a reader whose socket is in the room but who sends noth
   assert.equal(readerPresent({ serverLive: false, lastRxAt: t0, openAt: t0, now: t0 + 1000 }), true, 'fresh data beats the room');
   assert.equal(readerPresent({ serverLive: true, lastRxAt: null, openAt: t0, lastAnyAt: t0 + 30_000, now: t0 + 50_000 }), true, 'readings judged stale (a reader clock that is off) still prove it is not frozen');
 });
+
+test('viewer log 2026-11-21: the viewer\'s OWN sleep is not the reader\'s silence - no "reader offline" on waking, the watch starts again', async () => {
+  const logs = [], states = [];
+  const keyB64 = makeKeyB64(); const key = await importKey(keyB64);
+  const v = new Viewer({ room: 'r1', keyB64, log: (m) => logs.push(m), onState: (s) => states.push({ ...s }), onEnvelope: () => {}, retryS: 1 });
+  let t = 9_500_000; v.now = () => t;
+  try {
+  await v.start(); await settle();
+  const ws = last(); ws.open(); await settle();
+  ws.push({ type: 'status', viewers: 1, live: true }); await settle();
+  const env = envelope('hello', { id: '*', name: '*' }, { channel: 'x' }); env.t = t;
+  ws.push({ type: 'd', b: await cipher(key, env) }); await settle();
+  assert.equal(v.state.reader, true);
+  t += 44_000; v.nudge(); await settle();                                 // the viewer tab slept 44 s in the background
+  assert.ok(logs.some((m) => /the page slept 44 s/.test(m)), logs.slice(-3));
+  assert.equal(v.state.reader, true, 'nothing could arrive while this page slept: the reader is not judged offline for it');
+  assert.ok(!logs.some((m) => /reader offline/.test(m)), logs.filter((m) => /offline/.test(m)));
+  for (let i = 0; i < SILENT_MS / 2000 + 2; i++) { t += 2000; v.nudge(); await settle(); ws.push({ type: 'pong' }); }   // awake now, the relay answers, the reader sends nothing
+  assert.equal(v.state.reader, false, 'a reader that stays silent after the wake is still caught by the 35 s rule');
+  assert.ok(logs.some((m) => /nothing has come from it for 3\d s - reader offline/.test(m)), logs.filter((m) => /offline/.test(m)));
+  } finally { v.stop(); }                                                  // a failed check must not leave the loop running (node would never exit)
+});

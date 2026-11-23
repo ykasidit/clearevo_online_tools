@@ -181,6 +181,9 @@ export function transferPlan(readerDays, have, maxRows = XFER_MAX_ROWS) {
   const out = []; let total = 0;
   for (const d of [...readerDays].sort((x, y) => (x.day < y.day ? 1 : -1))) {
     const h = mine.get(d.day);
+    // the viewer only holds rows it got from this reader, so the same count and the same highest id = the same rows;
+    // a day numbered from above 1 has contig 0 and was otherwise sent again in full on every ask (viewer log 2026-11-21)
+    if (h && Number.isInteger(h.rows) && h.rows === d.rows && h.maxId === d.maxId) continue;
     const after = h ? Math.max(0, Math.min(h.contig !== undefined && h.contig !== null ? h.contig : h.maxId || 0, d.maxId || 0)) : 0;
     const rows = Math.max(0, (d.maxId || 0) - after);
     if (!rows) continue;
