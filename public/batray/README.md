@@ -142,6 +142,11 @@ healthy store with a false "storage went away" line. The worker's `otherLogDir()
 other-store log directory (`logRead` -> empty, `logRemove` -> false), as `fileBytes` / `remove` already did for
 files. Test: test/review/fable_r4_notfound_other_store.mjs.
 
+Also (O4-1): after a wipe the store came back on an empty today file and `initHistory()` numbered today from 1
+again, while every viewer held today's rows 1..N under the reader's ids - `replicaDecision` took each new row for a
+re-send it already had, so viewers lost the readings until the numbering passed N (up to a day). A re-init on the
+same UTC day now keeps `nextId = max(maxId + 1, the id it had)`. Test: test/review/opus_r4_wipe_numbering.mjs.
+
 ## 0.9.93 (2026-11-23): review round 3 - a store whose files vanish starts over
 
 Both reviewers, independently, proved the year sim's "store broken for good" (every log write and new-day insert

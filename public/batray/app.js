@@ -909,6 +909,7 @@ async function initHistoryOnce() {
   histS.backend = hist.backend;                                               // the store's backend NOW: a store that opened on a later try is 'opfs' although its first open said 'memory' (Fable review 2026-11-01)
   if (histS.backend === 'memory') dropMemoryRows();
   const now = Date.now(), today = dayKey(now);
+  const again = histS.day === today ? histS.nextId : 0;                      // a re-init on the same day (the store started over after a wipe)
   histS.day = today;
   // today's counters first, on their own, until they are read: numbering from 1 over a file that has rows makes every
   // new row a duplicate the store ignores until midnight (long-run review 2026-11-05: a slow listing of a year of day
@@ -922,7 +923,8 @@ async function initHistoryOnce() {
       else { log(`history: today's counters not read (${e.message}), try ${i} - new readings wait in memory until they are`); await sleep(i < 3 ? 2000 : 60000); }
     }
   }
-  histS.todayRows = info.rows; histS.nextId = info.maxId + 1; histS.contig = info.contig;
+  histS.todayRows = info.rows; histS.nextId = Math.max(info.maxId + 1, again); histS.contig = info.contig;
+  if (again > info.maxId + 1) log(`history: today's file started over; ids go on from ${again} (viewers hold the ones before as the reader's)`);
   try {
     const old = await hist.oldFiles();                                        // before 0.9.40: NDJSON, not read, not migrated (owner: day 0)
     if (old.files) log(`history: ${old.files} day file${old.files === 1 ? '' : 's'} from before 0.9.40 (${Math.round(old.bytes / 1048576)} MB, NDJSON) are not read any more; Clear stored history removes them`);
