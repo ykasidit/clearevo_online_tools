@@ -119,3 +119,15 @@ test('review round 2: the power rule is steady - 5 min off the charger before th
   assert.equal(wakePowerStep({ offSince: null, ok: true }, null, 1), true, 'no Battery API: on');
   assert.equal(wakePowerStep({ offSince: null, ok: true }, { pct: undefined, chg: false }, 1), true, 'no level: on');
 });
+
+// review round 6 (F6-1): a today file numbered from above 1 (after a wipe or a renewed file) was asked for again and
+// again: the copy's run from id 1 never closed. A received file that follows the copy's run closes it to its last id.
+import { receivedContig } from '../public/batray/history-logic.js';
+test('receivedContig: a file that follows the run makes the copy complete to its last id', () => {
+  assert.equal(receivedContig(0, 0, 0, 150), 150);            // nothing of today, the reader's ids start at 101
+  assert.equal(receivedContig(50, 50, 50, 150), 150);         // held 1..50, the reader lost 51..100
+  assert.equal(receivedContig(0, 0, 120, 200), 0);            // a later file of a transfer whose first file was lost: no
+  assert.equal(receivedContig(10, 180, 0, 150), 180);         // the db's own run is longer: kept
+  assert.equal(receivedContig(10, 10, null, 150), 10);        // garbage after / last id: unchanged
+  assert.equal(receivedContig(10, 10, 5, Number.NaN), 10);
+});

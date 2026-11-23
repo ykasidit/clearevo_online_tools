@@ -34,7 +34,7 @@ import { initAlerts } from './alerts.js';
 import { Ema } from './trend.js';
 import { Flag, Channel, select, sleep, every, isAbort, TIMEOUT } from './sync.js';
 import { TAB_SS, TAB_PREFIX, LEGACY, validTabId, LEGACY_DROP, tabLock, tabKey, metaKey, tabMeta, tabRecords, chooseTab, orphanDrops, legacyMoves, storeRows } from './tab-logic.js';
-import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysInRange, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs, queueMerge, askDelayMs } from './history-logic.js';
+import { corruptDecision, historyState, dayKey, dayStartMs, rowFromReading, rowDue, rolloverDecision, nextRowId, replicaDecision, retentionDecision, quotaDecision, historySummary, transferPlan, histReqDecision, chunkB64, rxChunk, chartRange, bucketStep, seriesFromBuckets, daysInRange, parseParams, paramTap, paramChips, PARAMS, PARAM_KEYS, HISTORY_FLUSH_MS, HEADROOM_BYTES, XFER_BACKLOG, XFER_ROWS, RANGES, trendRefreshMs, queueMerge, askDelayMs, receivedContig } from './history-logic.js';
 import { tarPack, tarParse, backupDays, backupName, BACKUP_DIR, BACKUP_MAX_BYTES } from './backup-logic.js';
 import { HistoryStore } from './history.js';
 import { settingsSnapshot, settingsBytes, settingsFileName, settingsFile, settingsRestorePlan, storageModel, browseItems, memoryModel, memoryParts, MEM_LOG_MS, MEM_UI_MS, MEM_MEASURE_MS } from './storage-logic.js';
@@ -2212,14 +2212,14 @@ function rxHistFile(env) {
 async function storeReceived(file) {
   const rows = JSON.parse(new TextDecoder().decode(await gunzipBytes(unb64(file.b64))));
   if (!Array.isArray(rows) || !rows.length || !rows.every((r) => r && typeof r.t === 'number' && typeof r.id === 'number' && r.p)) throw new Error('not a row file');
-  histS.gapAsks = 0;                                                     // the reader answers: holes may be asked about again
   await flushHistory();
   const r = await hist.insert(file.day, rows);
+  if (r.inserted > 0) histS.gapAsks = 0;                                   // new rows: holes may be asked about again ("0 new" answers do not restart the asks, round 6)
   let note = '';
   if (file.day === histS.day) {
     const info = await hist.info(file.day);
-    histS.contig = info.contig; histS.todayRows = Math.max(histS.todayRows, info.maxId); histS.nextId = info.maxId + 1;
-    const hole = info.contig < info.maxId; note = `; today complete to ${info.contig} of ${info.maxId}${hole ? ' (still a hole)' : ''}`;
+    histS.contig = receivedContig(histS.contig, info.contig, file.after, rows[rows.length - 1].id); histS.todayRows = Math.max(histS.todayRows, info.maxId); histS.nextId = info.maxId + 1;
+    const hole = histS.contig < info.maxId; note = `; today complete to ${histS.contig} of ${info.maxId}${hole ? ' (still a hole)' : ''}`;
     histS.gap = hole ? 'gap' : null;
     if (hole && viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') void requestHistory();
   }

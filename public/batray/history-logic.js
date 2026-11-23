@@ -148,6 +148,15 @@ export function replicaDecision(hs, row, today) {
   return { action: 'gap', expected: hs.contig + 1, got: row.id };
 }
 
+/** A viewer's today after a received file (review round 6): the reader sends the rows it has above `after`, so a
+ *  file whose `after` is within the viewer's complete run makes the copy complete to its last id - whatever ids the
+ *  reader lost (a wiped or renewed file goes on numbering above the lost ones). Else the run is unchanged. */
+export function receivedContig(contig, dbContig, after, lastId) {
+  const c = Math.max(contig || 0, dbContig || 0);
+  if (!Number.isInteger(after) || !Number.isInteger(lastId) || after > c) return c;
+  return Math.max(c, lastId);
+}
+
 /** From a listing of day databases, what to delete: the oldest past days, until the browser's free space is at
  *  least `headroom` (no day limit, owner decision 2026-09-21). */
 export function retentionDecision(days, today, { usage = 0, quota = 0, headroom = HEADROOM_BYTES } = {}) {

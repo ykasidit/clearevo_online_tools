@@ -151,6 +151,12 @@ Round 5 (F5-1): the corrupt-live path (a damaged today file renewed) had the sam
 new file from 1. It now numbers on from its counter; the browser history test expects the next id, not 1. Test:
 test/review/fable_r5_corrupt_ids.mjs. Round 5 otherwise found nothing (Opus: no provable finding).
 
+Round 6 (F6-1): those kept ids made a today file start above id 1, so a viewer with nothing of today never saw its
+copy as complete (the run is counted from id 1) and asked for, and was sent, the whole day every ~6 s until midnight.
+`receivedContig()` (history-logic): a received file whose `after` is within the copy's complete run makes it complete
+to the file's last id - the reader sends everything it has above `after`, whatever ids it lost. A "0 new" answer no
+longer resets the gap asks. Test: test/review/fable_r6_today_resend.mjs (+ unit cases in batray_review_r1.test.js).
+
 ## 0.9.93 (2026-11-23): review round 3 - a store whose files vanish starts over
 
 Both reviewers, independently, proved the year sim's "store broken for good" (every log write and new-day insert
