@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
 import { castState, onCastStateEvent, castTapDecision, castAfterDiscovery, castRequestStarted, castRequestEnded, castErrorDecision, castFlowStart, castFlowPhase, castFlowEnd, castSettle, castProgress, castButtons, castStateUi, castTapAllowed, castTvUpdate, CAST_FLOW_TIMEOUT_MS, CAST_TV_WAIT_MS } from './cast-logic.js';
-import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart, wakePowerStep, WAKE_UNPLUG_MS } from './wake-logic.js';
+import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO } from './jkbms.js';
 import { fmtWhen, stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fmtVersion } from './compat-logic.js';
@@ -43,7 +43,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.94';
+export const APP_VERSION = '0.9.95';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -247,7 +247,7 @@ function logHeaderLines() {
 async function logEnvAsync() {
   // each probe on its own: one that never settles (getBattery in some builds) must not hold the others
   void logBattery();
-  async function logBattery() { try { if (navigator.getBattery) { const b = await navigator.getBattery(); battNow = b; log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => { log(`battery: ${Math.round(b.level * 100)}%`); syncWake(); }); b.addEventListener('chargingchange', () => { log(`battery: charging=${b.charging}`); statusTick('charging'); onPhoneCharging(b); syncWake(); }); syncWake(); } } catch (e) { log(`battery: ${e.message}`); } }
+  async function logBattery() { try { if (navigator.getBattery) { const b = await navigator.getBattery(); battNow = b; log(`battery: ${Math.round(b.level * 100)}% charging=${b.charging}`); b.addEventListener('levelchange', () => { log(`battery: ${Math.round(b.level * 100)}%`); }); b.addEventListener('chargingchange', () => { log(`battery: charging=${b.charging}`); statusTick('charging'); onPhoneCharging(b); }); } } catch (e) { log(`battery: ${e.message}`); } }
   if (typeof VideoEncoder !== 'undefined') {
     const out = [];
     for (const codec of ['avc1.42E01E', 'avc1.4D401F', 'vp09.00.10.08']) { try { const r = await VideoEncoder.isConfigSupported({ codec, width: 1280, height: 720, bitrate: 500000, framerate: 1, ...(codec.startsWith('avc') ? { avc: { format: 'avc' } } : {}) }); out.push(`${codec}=${yn(r.supported)}`); } catch (e) { out.push(`${codec}=err`); } }
@@ -512,14 +512,11 @@ function syncWake() {
   wakeKick.push({ kind: 'sync' });
   if (wakeTask === null) wakeTask = wakeRun();
 }
-const wakePower = { offSince: null, ok: true };                    // the steady power rule's own state (wakePowerStep)
 async function wakeRun() {
   let lockRetryAt = 0, videoRetryAt = 0;
   for (;;) {
     try {
-      const powerOk = wakePowerStep(wakePower, battNow ? { pct: Math.round(battNow.level * 100), chg: !!battNow.charging } : null, Date.now());
-      if (powerOk !== wakeS.powerOk) { wakeS.powerOk = powerOk; log(powerOk ? 'wake: the phone charges (or is above the low mark) again - the screen is kept on again while this page is in front' : `wake: phone at ${Math.round(battNow.level * 100)} % and off the charger for ${Math.round(WAKE_UNPLUG_MS / 60000)} min - letting the screen sleep so the phone lasts; once the power is back, someone has to unlock the phone to bring the reader back`); }
-      wakeS.wanted = powerOk && ([...packs.values()].some((p) => wakeWantedByConn(p.cs, p.connected)) || shareS.phase === 'on' || shareS.phase === 'starting' || !!(viewer && viewer.state.live) || tvS.phase === 'on');
+      wakeS.wanted = ([...packs.values()].some((p) => wakeWantedByConn(p.cs, p.connected)) || shareS.phase === 'on' || shareS.phase === 'starting' || !!(viewer && viewer.state.live) || tvS.phase === 'on');
       if (wakeShouldRequest(wakeS, document.visibilityState === 'visible')) {
         wakeRequestStart(wakeS);
         try {
@@ -3092,7 +3089,6 @@ void every(60000, () => {
   const mem = performance.memory ? ` heap=${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
   const rate = histS.hbDay === histS.day && histS.hbRows !== undefined ? `${histS.todayRows - histS.hbRows}/min` : '-'; histS.hbDay = histS.day; histS.hbRows = histS.todayRows;
   if (wakeS.wanted && document.visibilityState === 'visible' && (!wakeS.held || (wakeS.videoOn && keepVideo && keepVideo.paused))) syncWake();   // watchdog
-  if (battNow && !battNow.charging) syncWake();         // off the charger: the steady power rule's 5 min mark is judged here too
   if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now() }).action === 'request') void requestHistory();
   if (publisher && pushS.room !== publisher.room) void syncPush('minute');   // notifications allowed later, or a failed sign-up retried (push-logic paces it)
   log(hist.statsLine()); hist.statsReset(Date.now());

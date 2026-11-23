@@ -18,8 +18,10 @@
 // last status, ~11 h later, says phone=1% not charging wake=held vis=yes. A dead phone comes back only when a person
 // powers it on and opens Chrome, and then - getDevices off - taps Connect and picks the BMS. A phone whose screen was
 // allowed to sleep near empty would still be alive when the power returns, with the page and its BluetoothDevice
-// handle (an unlock resumes it, no chooser). Here the fake phone battery goes unplugged and down to 15 %: the reader
-// must stop holding the screen (and say so); unplugged at 90 % it keeps it (the outage itself is worth recording).
+// handle (an unlock resumes it, no chooser). 0.9.91-0.9.94 let the screen sleep at 20 % unplugged; the owner reversed
+// that on 2026-11-23 ("no screen sleep"): a slept screen lets Chrome freeze the page, which ends the readings, so the
+// reader keeps the screen on to the end and the phone's own alerts (unplugged / low) tell the viewers.
+// Here the fake phone battery goes unplugged and down to 15 %: the lock must stay held throughout.
 // Run: CDP=9411 PORT=8411 node test/review/opus_r1_battery_wake.mjs
 import { cdp, startReader, sleep, checker } from './opus_r1_lib.mjs';
 const { check, done } = checker();
@@ -37,6 +39,6 @@ await c.evalJs(`(() => { const real = Date.now.bind(Date); Date.now = () => real
 await c.evalJs(`window.__bat.level = 0.15; window.__bat.dispatchEvent(new Event('levelchange')); 1`);
 await sleep(3000);
 const w = await c.evalJs('window.__batrayTest.wakeState()');
-check('unplugged at 15 %: the reader lets the screen sleep so the phone survives the outage (no wake lock held)', w.lock === false, w);
+check('unplugged at 15 % for 6 min: the screen is still held (no screen sleep, owner 2026-11-23)', w.lock === true, w);
 c.close();
 done('opus_r1_battery_wake');

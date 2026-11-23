@@ -134,6 +134,14 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.95 (2026-11-23): no screen sleep
+
+Owner decision: the reader keeps the screen on whatever the phone's battery. A slept screen lets Chrome freeze the
+page (the logs: about a minute after it is hidden, until someone brings it back), which ends the readings - so the
+0.9.91/0.9.92 low-battery release (`wakePowerOk`, `wakePowerStep`) is removed. The phone's unplugged / low alerts to
+viewers (`phonePowerEvent`) stay: they are how a power cut is noticed. `test/review/opus_r1_battery_wake.mjs` now
+checks the lock is still held after 6 min unplugged at 15 %.
+
 ## 0.9.94 (2026-11-23): review round 4 - another tab's vanished logs are not "the storage went away"
 
 Browse lists every tab's log files; a closed viewer store freed meanwhile (midnight clean-up, a Delete in Browse)
@@ -198,14 +206,13 @@ Every finding again came with a test that failed on 0.9.91 (test/review/*_r2_*);
 - **Last words leave before the freeze** (O2-4): each status tick also encrypts a "freeze" copy
   (`prepareLastWords`), which `suspend()` sends synchronously before the close; a publish still encrypting is counted
   dropped, not sent.
-- **The power rule is steady** (O2-1): `wakePowerStep` lets the screen go only after 5 min off the charger without a
-  break at or under 20 %, and takes it back on charge or above 25 % (a 3 s charger blink had let it go).
+- **The power rule is steady** (O2-1; removed in 0.9.95, no screen sleep at all): `wakePowerStep` let the screen go
+  only after 5 min off the charger without a break at or under 20 %.
 - **Back-off**: a round whose link gave no reading counts as failed (F2-2: a BMS that connects but never streams was
   reconnected every 23 s for ever); a stop / Cancel / fresh Connect starts the count over (O2-5).
 - **Push sign-up** (F2-3): one at a time (`pushTask`), each browser step under 30 s (`stepWithin`), a hang is logged
   as a failure.
-- Waiting on the owner (test parked in test/review/pending/): once the screen has slept at low battery, power coming
-  back does not light it again (O2-3) - someone has to unlock the phone.
+- (O2-3 is moot since 0.9.95: the screen no longer sleeps at low battery.)
 
 ## 0.9.91 (2026-11-23): review round 1 - the reader tab that is lost or does not come back
 
@@ -220,8 +227,8 @@ Chrome updates (5 of 17 unclean ends), and power (a phone at 1 % not charging). 
   reconnect on `resume` (the share at once). The encrypted last-words status cannot leave a page being frozen.
 - **A half-open share socket in a throttled hidden tab** (O2): only the first long turn gap counts as the page's own
   sleep; the ping sent then is owed an answer, nothing for SIG_DEAD_MS = reopen.
-- **The wake lock lets an unplugged phone live** (O1): not charging and at or under 20 % (`wakePowerOk`), the screen
-  may sleep; on charge it is kept on again (battery events kick the wake loop).
+- **The wake lock lets an unplugged phone live** (O1; reversed by the owner in 0.9.95 - the screen stays on): not
+  charging and at or under 20 % (`wakePowerOk`), the screen could sleep.
 - **Reconnect back-off** (O4): consecutive failed rounds double the countdown 10/20/40/60 s (`backoffS`); a link
   resets it, a tap connects at once. A night of 650 connects an hour becomes ~1 round a minute.
 - **Resume**: a stray tap within 500 ms of any sheet is ignored and the resume sheet ignores the backdrop
