@@ -1,0 +1,25 @@
+[package]
+name = "jkbms"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "JK BMS (JiKong) BLE protocol: framing and decoding, no_std and no allocation. Shared by BatRay (WebAssembly) and its server side."
+repository = "https://github.com/ykasidit/clearevo_online_tools"
+publish = false
+
+[lib]
+crate-type = ["rlib"]   # the wasm build adds cdylib: build_wasm.sh
+
+[features]
+# the WebAssembly entry points BatRay loads (static in/out buffers, JSON out, own panic handler)
+wasm-abi = []
+
+[dev-dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

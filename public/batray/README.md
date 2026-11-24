@@ -134,6 +134,24 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.96 (2026-11-24): the JK parser is Rust, shared with the server side
+
+Owner ask: one JK parser for BatRay and its server side (MantaRay, the SleeperRay ESP32 readers'
+backend). `rust/jkbms` (no_std, no allocation, GPL v2 like the rest) is the port of this app's decoder:
+framing (resync on the header, ACKs, "AT" splices, bad checksums, spliced windows), device info,
+settings and cell info in the three layouts (JK04 floats, JK02_24S, JK02_32S, with the firmware hint
+and the cell-sum cross-check). It writes JSON with the same keys and numbers the JavaScript decoder
+produced; the page loads it as WebAssembly embedded in `jkbms-wasm-bytes.js` (38 KB, no imports, no
+fetch) through `jkbms-wasm.js`, and `jkbms.js` hands those functions out under the old names.
+
+- The JavaScript decoder is kept, frozen, as `test/batray_jk_oracle.js`. `test/batray_jk_parity.test.js`
+  holds the two equal (deepStrictEqual: NaN and -0 count) over every real frame with 11 hints, more than
+  2000 mutated frames and 150 randomly chunked streams; it also fails when the wasm was not rebuilt
+  after a Rust change (`rust/jkbms/build_wasm.sh` writes `wasm.sha256`).
+- One behaviour change: a frame shorter than 300 bytes now throws a RangeError (the JavaScript decoder
+  read past its end and returned partial values). Every frame BatRay decodes comes from the framing and
+  is 300 bytes.
+
 ## 0.9.95 (2026-11-23): no screen sleep
 
 Owner decision: the reader keeps the screen on whatever the phone's battery. A slept screen lets Chrome freeze the
