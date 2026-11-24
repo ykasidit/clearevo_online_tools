@@ -12,6 +12,9 @@
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
 
+//! Credits (README.md): protocol layouts and alarm names after syssi/esphome-jk-bms (Apache-2.0); test
+//! frames from it, patman15/aiobmsble (Apache-2.0) and jblance/mpp-solar (MIT).
+//!
 //! JK BMS (JiKong) BLE protocol: framing and decoding, the port of BatRay's jkbms.js (which it now
 //! replaces in the browser through WebAssembly) and the decoder of BatRay's server side.
 //! No standard library, no allocation: decoders read a 300-byte frame and write JSON with exactly the

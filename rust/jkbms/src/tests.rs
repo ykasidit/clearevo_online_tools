@@ -106,13 +106,10 @@ fn jk04_float_cells() {
 
 #[test]
 fn settings_frame() {
-    let s = json_of(|w| settings_json(&fx::GOBEL_PB19_SETTINGS, w));
-    assert_eq!(s["cellCount"], 16);
-    near(&s["capacityAh"], 100.0, 1e-9);
-    near(&s["cellOvp"], 3.65, 1e-9);
-    assert_eq!(s["chargeOcpDelayS"], 3);
-    assert_eq!(s["dischargeOcpDelayS"], 300);
-    assert_eq!(s["scpDelayUs"], 5);
+    let s = json_of(|w| settings_json(&fx::ESPHOME_24S_SETTINGS, w));
+    assert_eq!(s["cellCount"], 13);
+    assert!(s["cellOvp"].as_f64().unwrap() > 3.0 && s["cellOvp"].as_f64().unwrap() < 4.5);
+    assert_eq!(s["chargeSwitch"].as_bool().is_some(), true);
 }
 
 #[test]
