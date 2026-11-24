@@ -1,5 +1,7 @@
 # ClearEvo online tools
 
+> **ARCHIVED (2026-11-24): no further development until further notice.** The tools stay live at https://www.clearevo.com/tools/ as they are; this repository is read-only, so it takes no new issues or pull requests. The code stays here under the GPL v2.
+
 Free, privacy-respecting tools that run **100% in your browser**. No upload is the
 default: your files and readings stay on your device. The few features that need a
 server say so clearly where you turn them on, and each app's status bar carries a
