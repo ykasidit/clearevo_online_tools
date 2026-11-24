@@ -8,6 +8,10 @@ Live: **https://www.clearevo.com/dicom/**
 
 Part of [ClearEvo online tools](../../README.md) - runs 100% in your browser, nothing uploaded.
 
+## A personal learning project - not for production
+
+Besides opening my own CT scan CD on my phone, I made this viewer to learn how to build with [Claude Code](https://code.claude.com/docs/en/overview) (Anthropic's command-line coding tool) and Chrome's web APIs. It is not meant for production or clinical use (it is not a medical device), and I am no longer developing it: the repository is archived, and the live version stays online as it is.
+
 ## How the code is organised (1.8.0, 2026-10-03)
 
 - `index.html` is markup and styles only; the shell is `app.js` (DOM, files, decode, paint), the decisions are in `logic.js` (pure, unit-tested in `test/fun.test.js` and `test/dicom.test.js`), the strings in `i18n.js` (EN + Thai, parity-tested), and `sync.js` is a link to BatRay's wait primitives (`sleep` with a stop signal).
