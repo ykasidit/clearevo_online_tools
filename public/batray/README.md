@@ -2,6 +2,8 @@
 
 # BatRay by ClearEvo.com
 
+> **ARCHIVED (2026-11-24).** BatRay is no longer developed. It was a personal learning project (see below); the live version at https://www.clearevo.com/batray/ stays online as it is, and this directory is frozen: `test/batray_archived.test.js` fails the build if any file under `public/batray/` changes. For battery monitoring, use [Home Assistant](https://www.home-assistant.io) with [ESPHome](https://esphome.io).
+
 JK (JiKong) BMS monitor over Web Bluetooth: pack voltage, state of charge, current, power, per-cell voltages, temperatures, capacity, cycles and the configured protection limits, live in Chrome. Frame layout chosen from the firmware version and cross-checked against the cell sum. Share live to any other browser (readings encrypted on the phone, key only in the link), several BMS in parallel, Chrome-notification alerts, EN/ไทย. The relay behind `/batray/api/` is a separate, private Cloudflare Worker; this app talks to it over a small JSON/WebSocket contract (see `live.js`).
 
 Live: **https://www.clearevo.com/batray/**

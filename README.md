@@ -17,6 +17,8 @@ how it is built and tested, its privacy notes, and the coding rules it follows. 
 author adds those rules gradually, one per lesson learned, each with a test that fails
 the build; the newest app follows all of them, older apps only partly or not yet.
 
+**BatRay (`public/batray/`) is archived** (2026-11-24): a personal learning project, no longer developed, frozen by `test/batray_archived.test.js`. Its README says why and what to use instead.
+
 ## Build / test
 
 The static-analysis and house-rule checks are one file each under `test/common/`; a tool opts in with symlinks named `test/<tool>_<check>.test.js` and its parameters in `test/rules/<tool>.mjs`.
