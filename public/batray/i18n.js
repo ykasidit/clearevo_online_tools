@@ -242,7 +242,7 @@ export const I18N = {
     aboutP1: 'Reads the cell-info frame of a JK BMS and shows pack voltage, state of charge, current, power, per-cell voltages, temperatures, capacity and cycles. Runs in your browser. Nothing is uploaded unless you turn on Share live, and then the readings are encrypted for your viewers only.',
     aboutP2: 'The frame layout is auto-detected: both known layouts are decoded and the one whose pack voltage agrees with the sum of the cell voltages wins - the check line under the meters shows how closely it agreed. If it reads <b>layout uncertain</b>, do not trust the numbers; copy the debug log instead.',
     aboutP3: 'Written by <a href="https://www.clearevo.com/about" target="_blank" rel="noopener">Kasidit Yusuf</a>, co-founder of ClearEvo.<br><b>© 2026 Kasidit Yusuf.</b> Free software under the <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" target="_blank" rel="noopener">GNU General Public License, version 2</a> - <a href="https://github.com/ykasidit/clearevo_online_tools" target="_blank" rel="noopener">source on GitHub</a>.',
-    asIs: 'Provided "as is", with NO WARRANTY and no support - without even the implied warranty of merchantability or fitness for a particular purpose. Not a safety device: BatRay cannot be relied on to prevent damage or danger. Comments, issues and pull requests are welcome.',
+    asIs: 'Provided "as is", with NO WARRANTY and no support - without even the implied warranty of merchantability or fitness for a particular purpose. Not a safety device: BatRay cannot be relied on to prevent damage or danger. BatRay is no longer developed; its source stays on GitHub, read-only.',
     close: 'Close',
   },
   th: {
@@ -466,7 +466,7 @@ export const I18N = {
     aboutP1: 'อ่านเฟรมข้อมูลเซลล์จาก JK BMS แล้วแสดงแรงดันแพ็ก ระดับแบตเตอรี่ กระแสไฟ กำลังไฟ แรงดันแต่ละเซลล์ อุณหภูมิ ความจุ และจำนวนรอบ ทำงานในเบราว์เซอร์ของคุณ ไม่มีการอัปโหลด เว้นแต่คุณเปิดแชร์สด ซึ่งค่าที่อ่านจะถูกเข้ารหัสให้ผู้ชมของคุณเท่านั้น',
     aboutP2: 'รูปแบบเฟรมตรวจจับอัตโนมัติ: ถอดรหัสทั้งสองรูปแบบที่รู้จัก แล้วเลือกรูปแบบที่แรงดันแพ็กตรงกับผลรวมแรงดันเซลล์ - บรรทัดตรวจสอบใต้มิเตอร์บอกว่าตรงกันแค่ไหน ถ้าขึ้นว่า <b>รูปแบบเฟรมไม่แน่ใจ</b> อย่าเชื่อตัวเลข ให้คัดลอกบันทึกดีบักแทน',
     aboutP3: 'เขียนโดย <a href="https://www.clearevo.com/about" target="_blank" rel="noopener">Kasidit Yusuf</a> ผู้ร่วมก่อตั้ง ClearEvo<br><b>© 2026 Kasidit Yusuf</b> ซอฟต์แวร์เสรีภายใต้สัญญาอนุญาต <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" target="_blank" rel="noopener">GNU General Public License เวอร์ชัน 2</a> - <a href="https://github.com/ykasidit/clearevo_online_tools" target="_blank" rel="noopener">ซอร์สโค้ดบน GitHub</a>',
-    asIs: 'BatRay ให้ใช้ตามสภาพ โดยหวังว่าจะเป็นประโยชน์แก่ผู้ใช้ แต่ไม่ใช่อุปกรณ์เพื่อความปลอดภัย: ไม่สามารถใช้ BatRay ในการป้องกันความเสียหายหรืออันตราย ไม่มีการรับประกันใด ๆ ทั้งสิ้น ยินดีรับความคิดเห็นและรายงานข้อผิดพลาด',
+    asIs: 'BatRay ให้ใช้ตามสภาพ โดยหวังว่าจะเป็นประโยชน์แก่ผู้ใช้ แต่ไม่ใช่อุปกรณ์เพื่อความปลอดภัย: ไม่สามารถใช้ BatRay ในการป้องกันความเสียหายหรืออันตราย ไม่มีการรับประกันใด ๆ ทั้งสิ้น BatRay หยุดพัฒนาแล้ว ซอร์สโค้ดยังอยู่บน GitHub แบบอ่านอย่างเดียว',
     close: 'ปิด',
   },
 };
