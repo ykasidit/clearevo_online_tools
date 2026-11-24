@@ -8,6 +8,12 @@ Live: **https://www.clearevo.com/batray/**
 
 Part of [ClearEvo online tools](../../README.md). Battery data stays on the device unless Share live is turned on.
 
+## A personal learning project - not for production
+
+BatRay is my personal project for learning how to build with [Claude Code](https://code.claude.com/docs/en/overview) (Anthropic's command-line coding tool) and Chrome's web APIs (Web Bluetooth, WebCodecs, OPFS, Web Locks, Web Push and more). It is not meant for production use or for long-running monitoring, and I am no longer developing it; the live version stays online for anyone who wants it, and the code stays here under the GPL.
+
+For monitoring a battery bank day and night I recommend [Home Assistant](https://www.home-assistant.io) with [ESPHome](https://esphome.io) - for a JK BMS, the [esphome-jk-bms](https://github.com/syssi/esphome-jk-bms) component - which is what I am moving my own battery banks to.
+
 ## House rules, and the tests that enforce them
 
 Decided by the author over 2026-09-20 to 2026-10-01, after flaky state had
