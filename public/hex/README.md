@@ -1,5 +1,7 @@
 # ClearEvo.com Hex Editor
 
+> **Archived (2026-11-26):** this tool is no longer developed or supported. It stays online as it is at https://www.clearevo.com/hex/.
+
 🔢 View and edit any file as hex, search by hex/text/number/bit-sequence.
 
 Live: **https://www.clearevo.com/hex/**

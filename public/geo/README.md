@@ -1,5 +1,7 @@
 # ClearEvo.com GIS Converter
 
+> **Archived (2026-11-26):** this tool is no longer developed or supported. It stays online as it is at https://www.clearevo.com/geo/.
+
 🌍 GDAL ogr2ogr in WebAssembly: convert Shapefile/GeoJSON/GPX/KML/KMZ/GPKG/DXF and more, optional EPSG reprojection.
 
 Live: **https://www.clearevo.com/geo/**
