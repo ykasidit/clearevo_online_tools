@@ -1,7 +1,5 @@
 # ClearEvo online tools
 
-> **ARCHIVED (2026-11-24): no further development until further notice.** The tools stay live at https://www.clearevo.com/tools/ as they are; this repository is read-only, so it takes no new issues or pull requests. The code stays here under the GPL v2.
-
 Free, privacy-respecting tools that run **100% in your browser**. No upload is the
 default: your files and readings stay on your device. The few features that need a
 server say so clearly where you turn them on, and each app's status bar carries a
@@ -19,7 +17,6 @@ how it is built and tested, its privacy notes, and the coding rules it follows. 
 author adds those rules gradually, one per lesson learned, each with a test that fails
 the build; the newest app follows all of them, older apps only partly or not yet.
 
-**BatRay (`public/batray/`) is archived** (2026-11-24): a personal learning project, no longer developed, frozen by `test/batray_archived.test.js`. Its README says why and what to use instead.
 
 ## Build / test
 
