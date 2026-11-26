@@ -18,7 +18,7 @@
 export const I18N = {
   en: {
     shareManual: 'Copy this link:', pngSave: 'Save', pngCancel: 'Cancel',
-    tsUnsupported: (ts) => `transfer syntax ${ts} is not supported yet - please tell me by email: support@clearevo.com`,
+    tsUnsupported: (ts) => `transfer syntax ${ts} is not supported yet - please open an issue at github.com/ykasidit/clearevo_online_tools`,
     archiveRefused: {
       gz: 'This looks like a .gz / .tar.gz. gzip has no random access, so a gigabyte CD would have to be fully downloaded and decompressed. Please unzip it to a plain .tar or a folder first, then open that.',
       '7z': '.7z is not supported: its solid compression blocks prevent reading one slice at a time. Please use a .zip, a plain .tar, or the unzipped CD folder.',
@@ -57,7 +57,7 @@ export const I18N = {
     privacy: '100% in-browser - your medical images are NEVER uploaded', langName: 'EN' },
   th: {
     shareManual: 'คัดลอกลิงก์นี้:', pngSave: 'บันทึก', pngCancel: 'ยกเลิก',
-    tsUnsupported: (ts) => `ยังไม่รองรับ transfer syntax ${ts} - แจ้งได้ทางอีเมล support@clearevo.com`,
+    tsUnsupported: (ts) => `ยังไม่รองรับ transfer syntax ${ts} - แจ้งได้ที่ github.com/ykasidit/clearevo_online_tools`,
     archiveRefused: {
       gz: 'ไฟล์นี้ดูเป็น .gz / .tar.gz ซึ่ง gzip อ่านข้ามตำแหน่งไม่ได้ แผ่น CD ขนาดกิกะไบต์จึงต้องดาวน์โหลดและคลายทั้งก้อน กรุณาแตกเป็น .tar ธรรมดาหรือโฟลเดอร์ก่อน แล้วเปิดไฟล์นั้น',
       '7z': 'ไม่รองรับ .7z: การบีบอัดแบบ solid ทำให้อ่านทีละ slice ไม่ได้ กรุณาใช้ .zip, .tar ธรรมดา หรือโฟลเดอร์ของแผ่น CD ที่แตกแล้ว',
