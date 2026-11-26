@@ -10,7 +10,7 @@ Part of [ClearEvo online tools](../../README.md) - runs 100% in your browser, no
 
 ## A personal learning project - not for production
 
-Besides opening my own CT scan CD on my phone, I made this viewer to learn how to build with [Claude Code](https://code.claude.com/docs/en/overview) (Anthropic's command-line coding tool) and Chrome's web APIs. It is not meant for production or clinical use (it is not a medical device), and I am no longer developing it; the live version stays online as it is.
+Besides opening my own CT scan CD on my phone, I made this viewer to learn how to build with [Claude Code](https://code.claude.com/docs/en/overview) (Anthropic's command-line coding tool) and Chrome's web APIs. It is not meant for production or clinical use (it is not a medical device).
 
 ## How the code is organised (1.8.0, 2026-10-03)
 

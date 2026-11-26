@@ -1,5 +1,7 @@
 # ClearEvo.com Calc
 
+> **Archived (2026-11-26):** this tool is no longer developed or supported. It stays online as it is at https://www.clearevo.com/calc/.
+
 🧮 The Emacs M-x calc RPN stack calculator.
 
 Live: **https://www.clearevo.com/calc/**

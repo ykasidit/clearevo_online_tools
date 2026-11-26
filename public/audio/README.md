@@ -1,5 +1,7 @@
 # ClearEvo.com Audio Converter
 
+> **Archived (2026-11-26):** this tool is no longer developed or supported. It stays online as it is at https://www.clearevo.com/audio/.
+
 🎵 ffmpeg.wasm: extract audio from video and convert between MP3/WAV/FLAC/OGG/Opus/M4A.
 
 Live: **https://www.clearevo.com/audio/**

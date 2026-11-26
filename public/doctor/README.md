@@ -1,5 +1,7 @@
 # ClearEvo.com Doctor
 
+> **Archived (2026-11-26):** this tool is no longer developed or supported. It stays online as it is at https://www.clearevo.com/doctor/.
+
 🩺 The Emacs M-x doctor (ELIZA) psychotherapist, rebuilt in the browser.
 
 Live: **https://www.clearevo.com/doctor/**

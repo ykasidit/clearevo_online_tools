@@ -10,6 +10,8 @@ Copyright (C) 2026 Kasidit Yusuf. Free software under the **GNU GPL v2** (see [`
 Every first-party source file carries the GPL notice, so the licence ships with the
 code to every browser. Vendored third-party files keep their own licences and headers.
 
+**Archived (2026-11-26):** Doctor, Calc, iSearch, Hex Editor, GIS Converter, QR Code Generator and Audio Converter are no longer developed or supported; they stay online as they are. The DICOM viewer and BatRay are still supported.
+
 ## Where things are
 
 One app per directory under `public/`, each with its own `README.md`: what it does,

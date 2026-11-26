@@ -1,5 +1,7 @@
 # ClearEvo.com QR Code Generator
 
+> **Archived (2026-11-26):** this tool is no longer developed or supported. It stays online as it is at https://www.clearevo.com/qr/.
+
 🔳 Static QR that carries the real link you typed - never expires, no redirect. 12 languages, PNG/SVG.
 
 Live: **https://www.clearevo.com/qr/**
