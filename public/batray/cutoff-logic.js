@@ -26,7 +26,7 @@ export const GAP_MS = 300000;     // rows further apart than this are a gap, not
 export const STOP_MS = 30000;     // the row after the last discharge row within this: the discharge stopped
 export const DIS_A = -0.2;        // discharging below this current
 export const IDLE_A = -0.1;       // stopped (idle or charging) above this current
-export const DROP = 0.2;          // ...or the load fell to under a fifth in one row (an inverter's standby draw stays)
+export const DROP = 0.5;          // ...or the load at least halved in one row (an inverter's standby draw stays)
 export const STANDBY_A = -2;      // ...to a draw under this: a motor start that ends at -9 A is not a cut
 
 const num = (x) => typeof x === 'number' && Number.isFinite(x);
@@ -34,14 +34,14 @@ const num = (x) => typeof x === 'number' && Number.isFinite(x);
 /** How far above the setting the BMS may still read when the inverter cuts (it measures at its own terminals, after
  *  the cables, with its own calibration): 1 % of the voltage, at least 0.3 V. */
 export function cutTol(v) { return Math.max(0.3, v * 0.01); }
-/** The discharge stopped from one row (current i) to the next (ni): idle or charging, or the load fell under a fifth
- *  and under STANDBY_A (what an inverter draws idling). */
+/** The discharge stopped from one row (current i) to the next (ni): idle or charging, or the load at least halved and
+ *  fell under STANDBY_A (what an inverter draws idling; a 4 A night load falling to 0.9 A is a cut, Fable round 3). */
 export function stopped(i, ni) { return ni > IDLE_A || (ni > DROP * i && ni > STANDBY_A); }
 
 /**
  * A cut, as stored rows show it: a discharge row at or near the cut-off voltage (from 2 x cutTol under it to cutTol
- * over it), and the next row (within STOP_MS) stopped - idle, charging, or the load fell under a fifth (an inverter's
- * standby draw stays on the BMS, Fable round 2): the inverter dropped its load (Fable review 2026-11-27: a 1-2 s cut leaves one row under
+ * over it), and the next row (within STOP_MS) stopped - idle, charging, or the load at least halved to under STANDBY_A
+ * (an inverter's standby draw stays on the BMS, Fable rounds 2-3): the inverter dropped its load (Fable review 2026-11-27: a 1-2 s cut leaves one row under
  * the voltage, and the BMS may still read 46.2 V when a 46.0 V inverter cuts). One day's facts for learnCut, over
  * that day's rows of pack p in time order: { n, ms (time between rows, gaps over GAP_MS left out), ends: [{t, soc,
  * v}], first: {t, i}, last: {t, soc, v, i}, low: the lowest discharge reading {v, soc} }. history-sql.js cutDay is

@@ -746,17 +746,19 @@ async function learnFor(p, volts) {
   // past days kept per voltage, read afresh every CUT_CACHE_MS (anything missed) or when marked dirty (a delete, a
   // clear, a restore); the day that was today at the last read is read once more after midnight (Fable round 2)
   if (!p.cutCache || p.cutCacheV !== volts || p.cutDirty || now - p.cutCacheAt >= CUT_CACHE_MS) { p.cutCache = new Map(); p.cutCacheV = volts; p.cutDirty = false; p.cutCacheAt = now; }
-  if (p.cutToday && p.cutToday !== today) p.cutCache.delete(p.cutToday);
-  for (const d of [...p.cutCache.keys()]) if (!range.includes(d)) p.cutCache.delete(d);
-  const want = range.filter((d) => d === today || !p.cutCache.has(d));
+  const map = p.cutCache;
+  if (p.cutToday && p.cutToday !== today) map.delete(p.cutToday);
+  for (const d of [...map.keys()]) if (!range.includes(d)) map.delete(d);
+  const want = range.filter((d) => d === today || !map.has(d));
   try {
     for (let k = 0; k < want.length; k += CUT_DAYS_PER_CALL) {            // a few days per call: each kept as it comes, a slow store still gets there
       const part = want.slice(k, k + CUT_DAYS_PER_CALL), got = await hist.cutDays(p.label, volts, part);
-      for (const d of part) p.cutCache.set(d, null);                     // a day without rows of this pack is known too
-      for (const d of got) p.cutCache.set(d.day, d);
+      if (p.cutCache !== map) { p.learnLoading = false; return; }       // the setting changed meanwhile: the next frame reads afresh
+      for (const d of part) map.set(d, null);                            // a day without rows of this pack is known too
+      for (const d of got) map.set(d.day, d);
     }
     p.cutToday = today;
-    p.learn = learnCut([...p.cutCache.values()].filter(Boolean), volts);
+    p.learn = learnCut([...map.values()].filter(Boolean), volts);
   } catch (e) {
     p.plog(`cutoff: reading the stored history failed (${e.message}) - again in a minute`);
     if (isCorrupt(e)) void corruptDb(e, 'history read');
@@ -1078,7 +1080,6 @@ async function backupHistory() {
   return { name, bytes: tar.length, days: files.length };
 }
 async function restoreHistory(bytes, from = 'file') {
-  cutStale();
   let days;
   try { days = backupDays(tarParse(bytes)); } catch (e) { toast(T.histRestoreBad, 8000); log(`history: restore (${from}) failed: ${e.message}`); return null; }
   if (!days.length) { toast(T.histRestoreBad, 8000); log(`history: restore (${from}): no day databases in the archive`); return null; }
@@ -1088,6 +1089,7 @@ async function restoreHistory(bytes, from = 'file') {
     try { const r = await hist.importDay(d.day, d.bytes); written++; log(`history: restored ${d.day}: ${r.rows} rows ${r.merged ? 'merged into this device\'s copy' : 'as a new day'}`); }
     catch (e) { failed++; }
   }
+  cutStale();                                                            // after the days changed: a read before would cache the old ones
   histS.days = await hist.days();
   const info = await hist.info(histS.day).catch(() => null);
   if (info) { histS.todayRows = info.rows; histS.nextId = Math.max(histS.nextId, info.maxId + 1); histS.contig = info.contig; }
@@ -1345,7 +1347,6 @@ async function openBrowse(type) {
   renderStorage();
 }
 async function browseDelete(id) {
-  cutStale();
   const t = browseS.type;
   if (t === 'hist' && id.startsWith('store:')) { const sid = id.slice(6); await hist.dropStore(sid); forgetTab(sid); log(`tab: deleted the store of tab ${sid}`); }
   else if (t === 'hist') { await flushHistory(); await hist.remove(id); histMem.series = null; if (viewer) { const m = loadDone(); delete m[id]; saveDone(m); } if (id === histS.day) { histS.todayRows = 0; if (viewer) histS.nextId = 1; histS.contig = 0; histS.gap = null; histMem.pending.delete(id); } }
@@ -1356,6 +1357,7 @@ async function browseDelete(id) {
     await hist.logRemove(name, store === TAB.id ? null : store);
   }
   log(`browse: deleted ${t} ${id}`);
+  if (t === 'hist') cutStale();                                          // after the file is gone
   // eslint-disable-next-line house/ui-after-await -- updateSheet() re-checks that the open sheet is still the browse sheet
   await refreshBrowse(); updateSheet('browse'); renderStorage();
   if (t === 'hist' && active) renderTrend(active);

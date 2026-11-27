@@ -153,8 +153,8 @@ what the pack's own stored history shows, nothing else - no chemistry curve (Fab
 
 - A cut, as the stored rows (one per 3 s) show it: a discharge row (i < -0.2 A) near the voltage (from 2 x `cutTol`
   under it to `cutTol` = 1 %, at least 0.3 V, over it: the inverter measures at its own terminals, with its own
-  calibration), whose next row within `STOP_MS` 30 s stopped - over -0.1 A (idle or charging), or under a fifth of
-  the load and under `STANDBY_A` 2 A (the inverter's own standby draw stays on the BMS; a motor start that ends at
+  calibration), whose next row within `STOP_MS` 30 s stopped - over -0.1 A (idle or charging), or at least halved
+  to under `STANDBY_A` 2 A (the inverter's own standby draw stays on the BMS; a motor start that ends at
   9 A is not a cut). A 1-2 s cut leaves one
   such row, and that is enough; a surge that dips under the voltage and goes on discharging is not a cut; a
   discharge that stops far above it (dawn) is not one either.
