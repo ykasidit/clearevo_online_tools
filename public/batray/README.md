@@ -151,9 +151,11 @@ reader". Notes offers the cut-off as a battery % or as a pack voltage (radio; re
 what the pack's own stored history shows, nothing else - no chemistry curve (Fable reviewed the first learning rule,
 "rows under the voltage, per UTC day": a real cut leaves 0-1 such rows, a midnight split, surges - all fixed):
 
-- A cut, as the stored rows (one per 3 s) show it: a discharge row (i < -0.2 A) at or near the voltage (up to
-  `cutTol` = 1 %, at least 0.3 V, above it: the inverter measures at its own terminals, with its own calibration),
-  whose next row within `STOP_MS` 30 s no longer discharges (i > -0.1 A: the load is gone). A 1-2 s cut leaves one
+- A cut, as the stored rows (one per 3 s) show it: a discharge row (i < -0.2 A) near the voltage (from 2 x `cutTol`
+  under it to `cutTol` = 1 %, at least 0.3 V, over it: the inverter measures at its own terminals, with its own
+  calibration), whose next row within `STOP_MS` 30 s stopped - over -0.1 A (idle or charging), or under a fifth of
+  the load and under `STANDBY_A` 2 A (the inverter's own standby draw stays on the BMS; a motor start that ends at
+  9 A is not a cut). A 1-2 s cut leaves one
   such row, and that is enough; a surge that dips under the voltage and goes on discharging is not a cut; a
   discharge that stops far above it (dawn) is not one either.
 - `hist.cutDays(p, volts, days)` (worker op `cutDays`, SQL `cutDay()` with LAG/LEAD; the in-memory store
@@ -164,8 +166,9 @@ what the pack's own stored history shows, nothing else - no chemistry curve (Fab
   the last `LEARN_DAYS` 30 days. Not ready under `MIN_HOURS` 24 h of readings ('hours'), without a cut ('never':
   the note names the lowest discharge reading), without a history store ('store'), for the DEMO ('demo'). Not ready
   = no number and no red line; the picture says "learning" (not for 'store' / 'demo', where it never can).
-- Past days are read once per voltage and kept for `CUT_CACHE_MS` 6 h (a restore or a Browse delete is seen then;
-  a viewer's received history marks them dirty, read again a minute later); today is read every `LEARN_MS` 10 min;
+- Past days are read once per voltage, `CUT_DAYS_PER_CALL` 4 per worker call (each kept as it comes), and kept for
+  `CUT_CACHE_MS` 6 h; a delete, clear, restore or renewed corrupt file reads them all again, a viewer's received file
+  that day only, the day that was today once more after midnight; today is read every `LEARN_MS` 10 min;
   a setting change reads every day again; a failed read is tried again a minute later, never from the next frame
   (Fable review: a fast-failing store had looped).
 - The reader sends its setting in the hello (`cut`); a viewer uses it until it sets its own for that room

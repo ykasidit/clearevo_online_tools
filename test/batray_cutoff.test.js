@@ -141,3 +141,12 @@ test('effectiveCut and the note: % mode untouched; no voltage; loading; no store
   assert.equal(cutNote(effectiveCut({ mode: 'v', volts: 46, learn: { ready: false, why: 'demo' } }), T), T.cutNoteDemo);
   assert.equal(cutNote(effectiveCut({ mode: 'pct', pct: 10 }), T), '');
 });
+
+test('Fable round 2: a cut where the inverter\'s standby draw stays on the BMS (20 A -> 0.9 A) counts; a motor start (60 A -> 9 A) does not; a load that stops far under the setting is not "near" it', () => {
+  const at = (tail) => learnRows((() => { const rows = history(); let t = rows[rows.length - 1].t + 60000; for (const [v, i, soc] of tail) { rows.push({ t, p: 'hut', soc, v, i }); t += 3000; } return rows; })());
+  assert.equal(at([[46.2, -20, 14], [46.1, -20, 14], [47.4, -0.9, 14]]).soc, 14, 'standby draw after the cut');
+  assert.equal(at([[46.2, -20, 14], [46.1, -20, 14], [47.4, -0.15, 14]]).soc, 14, 'the old dead zone between -0.2 and -0.1 A');
+  assert.equal(at([[46.0, -60, 40], [48.9, -9, 40]]).why, 'never', 'a motor start');
+  const far = learnRows((() => { const rows = history(); let t = rows[rows.length - 1].t + 60000; for (const [v, i] of [[49.0, -12], [49.4, 0]]) { rows.push({ t, p: 'hut', soc: 45, v, i }); t += 3000; } return rows; })(), 52.0);
+  assert.equal(far.why, 'never', 'a 52.0 V setting does not learn a load switching off at 49.0 V');
+});

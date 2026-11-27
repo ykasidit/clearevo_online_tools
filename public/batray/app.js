@@ -304,7 +304,7 @@ class Pack {
     this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.dumped = false;
     this.remoteLive = false; this.lastRowAt = null;              // last stored row: readings closer than MIN_ROW_MS apart are shown, not stored
     this.iEma = new Ema(60);                                 // smoothed current for the time-to-go; readings go to the stored history
-    this.learn = null; this.learnV = null; this.learnAt = 0; this.learnLoading = false; this.cutLogged = null; this.cutCache = null; this.cutCacheV = null; this.cutCacheAt = 0; this.cutDirty = false; this.cutNoteTxt = null;   // the learned voltage cut-off
+    this.learn = null; this.learnV = null; this.learnAt = 0; this.learnLoading = false; this.cutLogged = null; this.cutCache = null; this.cutCacheV = null; this.cutCacheAt = 0; this.cutDirty = false; this.cutToday = null; this.cutNoteTxt = null;   // the learned voltage cut-off
     if (this.bms) this.wire();
   }
   /** Connected = the loop serves the link (a link still being set up is 'connecting', whatever gatt.connected says). */
@@ -703,7 +703,7 @@ function cutChanged(next) {
     else { ownCut = c; localStorage.setItem('batray_cutoff_pct', c.pct); localStorage.setItem('batray_cutoff_mode', c.mode); if (c.v !== null) localStorage.setItem('batray_cutoff_v', c.v); else localStorage.removeItem('batray_cutoff_v'); }
   } catch {}
   log(`cutoff: ${cutDesc(c)}${viewMode ? ' (this viewer)' : ''}`);
-  for (const p of packs.values()) { p.learnAt = 0; p.cutCache = null; }    // learn again, every stored day, with the setting in force
+  for (const p of packs.values()) { p.learnAt = 0; p.cutCache = null; p.learn = null; }   // learn again, every stored day, with the setting in force
   cutRefresh();
 }
 function cutRefresh() {
@@ -734,24 +734,33 @@ function renderCutNote() {
   const l = cut.learn, key = `${cut.mode}:${cut.v}:${l ? `${l.ready}:${l.why || ''}:${l.ready ? `${l.soc}/${l.n}` : Math.floor(l.hours || 0)}` : '-'}`;
   if (p && cut.mode === 'v' && l && p.cutLogged !== key) { p.cutLogged = key; p.plog(`cutoff: ${cut.v} V ${l.ready ? `= ${cut.pct} % (median of ${l.n} discharges, ${l.min}..${l.max} %)` : `not learned yet (${l.why}${l.why === 'hours' ? `, ${l.hours.toFixed(1)} h stored` : ''}${l.low ? `, lowest ${l.low.v} V at ${l.low.soc} %` : ''})`}`); }
 }
+/** Stored days were deleted, cleared, restored or renewed: the learned cut-off reads them all again. */
+function cutStale() { for (const p of packs.values()) { p.cutDirty = true; p.learnAt = 0; } }
 /** What the pack's stored days say about the cut-off voltage. Past days are read once per voltage and kept (their
  *  rows do not change - a viewer's received history marks them dirty); today is read again every LEARN_MS. */
-const LEARN_MS = 10 * 60 * 1000, CUT_CACHE_MS = 6 * 3600 * 1000;
+const LEARN_MS = 10 * 60 * 1000, CUT_CACHE_MS = 6 * 3600 * 1000, CUT_DAYS_PER_CALL = 4;
 async function learnFor(p, volts) {
   if (p.learnLoading) return;
   p.learnLoading = true;
+  const now = Date.now(), today = dayKey(now), range = daysInRange(now - LEARN_DAYS * 86400000, now);
+  // past days kept per voltage, read afresh every CUT_CACHE_MS (anything missed) or when marked dirty (a delete, a
+  // clear, a restore); the day that was today at the last read is read once more after midnight (Fable round 2)
+  if (!p.cutCache || p.cutCacheV !== volts || p.cutDirty || now - p.cutCacheAt >= CUT_CACHE_MS) { p.cutCache = new Map(); p.cutCacheV = volts; p.cutDirty = false; p.cutCacheAt = now; }
+  if (p.cutToday && p.cutToday !== today) p.cutCache.delete(p.cutToday);
+  for (const d of [...p.cutCache.keys()]) if (!range.includes(d)) p.cutCache.delete(d);
+  const want = range.filter((d) => d === today || !p.cutCache.has(d));
   try {
-    const now = Date.now(), today = dayKey(now);
-    // past days kept per voltage, read afresh every CUT_CACHE_MS (a restore, a Browse delete) or when marked dirty
-    if (!p.cutCache || p.cutCacheV !== volts || p.cutDirty || now - p.cutCacheAt >= CUT_CACHE_MS) { p.cutCache = new Map(); p.cutCacheV = volts; p.cutDirty = false; p.cutCacheAt = now; }
-    const want = daysInRange(now - LEARN_DAYS * 86400000, now).filter((d) => d === today || !p.cutCache.has(d));
-    const got = await hist.cutDays(p.label, volts, want);
-    for (const d of want) p.cutCache.set(d, null);                       // a day without rows of this pack is known too
-    for (const d of got) p.cutCache.set(d.day, d);
+    for (let k = 0; k < want.length; k += CUT_DAYS_PER_CALL) {            // a few days per call: each kept as it comes, a slow store still gets there
+      const part = want.slice(k, k + CUT_DAYS_PER_CALL), got = await hist.cutDays(p.label, volts, part);
+      for (const d of part) p.cutCache.set(d, null);                     // a day without rows of this pack is known too
+      for (const d of got) p.cutCache.set(d.day, d);
+    }
+    p.cutToday = today;
     p.learn = learnCut([...p.cutCache.values()].filter(Boolean), volts);
   } catch (e) {
     p.plog(`cutoff: reading the stored history failed (${e.message}) - again in a minute`);
     if (isCorrupt(e)) void corruptDb(e, 'history read');
+    if (p.learnV !== volts) p.learn = null;                                  // never the old voltage's % for the new one
     p.learnAt = Date.now() - LEARN_MS + 60000; p.learnV = volts; p.learnLoading = false;   // no instant retry from the next frame
     return;
   }
@@ -935,6 +944,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
  *  starts and the flush's rows go into it) or 'history read' (the file is deleted; today's counters start over). */
 const isCorrupt = (e) => !!(e && e.name === 'CorruptError' && e.day);
 async function corruptDb(e, where, rows) {
+  cutStale();
   const day = e.day, d = corruptDecision(day, histS.day);
   log(`history: ${where}: ${day} database is corrupt -> ${d.action}: ${d.live ? 'deleted, a new live file starts' : 'deleted'}`);
   toast(d.live ? T.histCorruptLive : T.histCorruptDay(day), 10000);
@@ -1068,6 +1078,7 @@ async function backupHistory() {
   return { name, bytes: tar.length, days: files.length };
 }
 async function restoreHistory(bytes, from = 'file') {
+  cutStale();
   let days;
   try { days = backupDays(tarParse(bytes)); } catch (e) { toast(T.histRestoreBad, 8000); log(`history: restore (${from}) failed: ${e.message}`); return null; }
   if (!days.length) { toast(T.histRestoreBad, 8000); log(`history: restore (${from}): no day databases in the archive`); return null; }
@@ -1095,6 +1106,7 @@ async function restoreHistoryFile() {
   try { await restoreHistory(new Uint8Array(await f.arrayBuffer()), f.name); } catch (e) { log(`history: restore failed: ${e.message}`); }
 }
 async function clearHistory() {
+  cutStale();
   histMem.pending = new Map();
   try { const r = await hist.clear(); log(`history: cleared (${r.removed} day databases)`); } catch (e) { /* logged by the store */ }
   if (viewer) { histS.nextId = 1; saveDone({}); }                           // the reader's ids go on (round 7): viewers hold today's earlier rows under them
@@ -1333,6 +1345,7 @@ async function openBrowse(type) {
   renderStorage();
 }
 async function browseDelete(id) {
+  cutStale();
   const t = browseS.type;
   if (t === 'hist' && id.startsWith('store:')) { const sid = id.slice(6); await hist.dropStore(sid); forgetTab(sid); log(`tab: deleted the store of tab ${sid}`); }
   else if (t === 'hist') { await flushHistory(); await hist.remove(id); histMem.series = null; if (viewer) { const m = loadDone(); delete m[id]; saveDone(m); } if (id === histS.day) { histS.todayRows = 0; if (viewer) histS.nextId = 1; histS.contig = 0; histS.gap = null; histMem.pending.delete(id); } }
@@ -2328,7 +2341,7 @@ async function storeReceived(file) {
   await flushHistory();
   const r = await hist.insert(file.day, rows);
   if (r.inserted > 0) histS.gapAsks = 0;                                   // new rows: holes may be asked about again ("0 new" answers do not restart the asks, round 6)
-  if (r.inserted > 0) for (const q of packs.values()) q.cutDirty = true;    // the learned cut-off reads its days again (a minute later, not per file)
+  if (r.inserted > 0) for (const q of packs.values()) { if (q.cutCache) q.cutCache.delete(file.day); if (q.learnAt) q.learnAt = Math.min(q.learnAt, Date.now() - LEARN_MS + 60000); }   // the learned cut-off reads that day again, a minute later
   let note = '';
   const done = loadDone(), dInfo = await hist.info(file.day);
   const run = receivedContig(file.day === histS.day ? histS.contig : haveContig(dInfo.contig, dInfo.maxId, done[file.day]), dInfo.contig, file.after, rows[rows.length - 1].id);

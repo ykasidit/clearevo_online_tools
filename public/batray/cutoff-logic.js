@@ -26,16 +26,22 @@ export const GAP_MS = 300000;     // rows further apart than this are a gap, not
 export const STOP_MS = 30000;     // the row after the last discharge row within this: the discharge stopped
 export const DIS_A = -0.2;        // discharging below this current
 export const IDLE_A = -0.1;       // stopped (idle or charging) above this current
+export const DROP = 0.2;          // ...or the load fell to under a fifth in one row (an inverter's standby draw stays)
+export const STANDBY_A = -2;      // ...to a draw under this: a motor start that ends at -9 A is not a cut
 
 const num = (x) => typeof x === 'number' && Number.isFinite(x);
 
 /** How far above the setting the BMS may still read when the inverter cuts (it measures at its own terminals, after
  *  the cables, with its own calibration): 1 % of the voltage, at least 0.3 V. */
 export function cutTol(v) { return Math.max(0.3, v * 0.01); }
+/** The discharge stopped from one row (current i) to the next (ni): idle or charging, or the load fell under a fifth
+ *  and under STANDBY_A (what an inverter draws idling). */
+export function stopped(i, ni) { return ni > IDLE_A || (ni > DROP * i && ni > STANDBY_A); }
 
 /**
- * A cut, as stored rows show it: a discharge row at or near the cut-off voltage, and the next row (within STOP_MS)
- * no longer discharging - the inverter dropped its load (Fable review 2026-11-27: a 1-2 s cut leaves one row under
+ * A cut, as stored rows show it: a discharge row at or near the cut-off voltage (from 2 x cutTol under it to cutTol
+ * over it), and the next row (within STOP_MS) stopped - idle, charging, or the load fell under a fifth (an inverter's
+ * standby draw stays on the BMS, Fable round 2): the inverter dropped its load (Fable review 2026-11-27: a 1-2 s cut leaves one row under
  * the voltage, and the BMS may still read 46.2 V when a 46.0 V inverter cuts). One day's facts for learnCut, over
  * that day's rows of pack p in time order: { n, ms (time between rows, gaps over GAP_MS left out), ends: [{t, soc,
  * v}], first: {t, i}, last: {t, soc, v, i}, low: the lowest discharge reading {v, soc} }. history-sql.js cutDay is
@@ -50,7 +56,7 @@ export function cutDayFromRows(rows, p, volts) {
     if (k > 0 && r.t - rs[k - 1].t <= GAP_MS) ms += r.t - rs[k - 1].t;
     if (!num(r.i) || r.i >= DIS_A || !num(r.v) || !num(r.soc)) continue;
     if (low === null || r.v < low.v) low = { v: r.v, soc: r.soc };
-    if (nx && num(nx.i) && nx.i > IDLE_A && nx.t - r.t <= STOP_MS && r.v <= top) ends.push({ t: r.t, soc: r.soc, v: r.v });
+    if (nx && num(nx.i) && stopped(r.i, nx.i) && nx.t - r.t <= STOP_MS && r.v <= top && r.v >= volts - 2 * cutTol(volts)) ends.push({ t: r.t, soc: r.soc, v: r.v });
   }
   const a = rs[0], z = rs[rs.length - 1];
   return { n: rs.length, ms, ends, first: a ? { t: a.t, i: num(a.i) ? a.i : null } : null, last: z ? { t: z.t, soc: num(z.soc) ? z.soc : null, v: num(z.v) ? z.v : null, i: num(z.i) ? z.i : null } : null, low };
@@ -75,7 +81,7 @@ export function learnCut(days, volts) {
     const a = d.last, b = nx && nx.first;
     if (a && b && num(a.t) && num(b.t) && b.t > a.t) {
       if (b.t - a.t <= GAP_MS) ms += b.t - a.t;
-      if (num(a.i) && a.i < DIS_A && num(a.v) && a.v <= top && num(a.soc) && num(b.i) && b.i > IDLE_A && b.t - a.t <= STOP_MS) events.push({ t: a.t, soc: a.soc });
+      if (num(a.i) && a.i < DIS_A && num(a.v) && a.v <= top && a.v >= volts - 2 * cutTol(volts) && num(a.soc) && num(b.i) && stopped(a.i, b.i) && b.t - a.t <= STOP_MS) events.push({ t: a.t, soc: a.soc });
     }
   }
   const hours = ms / 3600000;

@@ -23,7 +23,7 @@
 // numbers, c = cell millivolts as a little-endian u16 blob. The unique
 // (p, t) index is also the range index every chart query walks.
 
-import { cutTol, GAP_MS, STOP_MS, DIS_A, IDLE_A } from './cutoff-logic.js';
+import { cutTol, GAP_MS, STOP_MS, DIS_A, IDLE_A, DROP, STANDBY_A } from './cutoff-logic.js';
 
 export const SCHEMA_VERSION = 1;
 export const COLS = ['t', 'p', 'soc', 'v', 'i', 'w', 'ah', 'tm', 't1', 't2', 'ch', 'ds', 'bal', 'err'];
@@ -127,7 +127,7 @@ export function cutDay(db, p, volts) {
   const top = volts + cutTol(volts);
   const w = `WITH r AS (SELECT t, soc, v, i, LAG(t) OVER (ORDER BY t) AS pt, LEAD(t) OVER (ORDER BY t) AS nt, LEAD(i) OVER (ORDER BY t) AS ni FROM readings WHERE p = ?)`;
   const agg = db.selectObject(`${w} SELECT count(*) AS n, coalesce(sum(CASE WHEN t - pt <= ? THEN t - pt ELSE 0 END), 0) AS ms FROM r`, [p, GAP_MS]);
-  const ends = db.selectObjects(`${w} SELECT t, soc, v FROM r WHERE i < ? AND ni > ? AND nt - t <= ? AND v <= ? AND soc IS NOT NULL ORDER BY t`, [p, DIS_A, IDLE_A, STOP_MS, top]);
+  const ends = db.selectObjects(`${w} SELECT t, soc, v FROM r WHERE i < ? AND (ni > ? OR (ni > ? * i AND ni > ?)) AND nt - t <= ? AND v <= ? AND v >= ? AND soc IS NOT NULL ORDER BY t`, [p, DIS_A, IDLE_A, DROP, STANDBY_A, STOP_MS, top, volts - 2 * cutTol(volts)]);
   const first = db.selectObject('SELECT t, i FROM readings WHERE p = ? ORDER BY t LIMIT 1', [p]);
   const last = db.selectObject('SELECT t, soc, v, i FROM readings WHERE p = ? ORDER BY t DESC LIMIT 1', [p]);
   const low = db.selectObject('SELECT v, soc FROM readings WHERE p = ? AND i < ? AND v IS NOT NULL AND soc IS NOT NULL ORDER BY v LIMIT 1', [p, DIS_A]);
