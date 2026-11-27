@@ -23,6 +23,8 @@
 // numbers, c = cell millivolts as a little-endian u16 blob. The unique
 // (p, t) index is also the range index every chart query walks.
 
+import { cutTol, GAP_MS, STOP_MS, DIS_A, IDLE_A } from './cutoff-logic.js';
+
 export const SCHEMA_VERSION = 1;
 export const COLS = ['t', 'p', 'soc', 'v', 'i', 'w', 'ah', 'tm', 't1', 't2', 'ch', 'ds', 'bal', 'err'];
 const NUM = new Set(['soc', 'v', 'i', 'w', 'ah', 'tm', 't1', 't2']);
@@ -119,13 +121,18 @@ export function buckets(db, { p, from, to, stepMs }) {
   return out;
 }
 
-/** One day's evidence for the learned voltage cut-off (cutoff-logic.js learnCut): the pack's stored span, its
- *  discharge rows at or under `volts` (pack volts) by whole battery %, and its lowest discharge reading. */
+/** One day's facts for the learned voltage cut-off over SQLite: the same as cutDayFromRows in cutoff-logic.js (a cut
+ *  = a discharge row at or near the voltage whose next row, within STOP_MS, no longer discharges). */
 export function cutDay(db, p, volts) {
-  const sp = db.selectObject('SELECT min(t) AS first, max(t) AS last, count(*) AS n FROM readings WHERE p = ?', [p]);
-  const below = db.selectObjects('SELECT round(soc) AS s, count(*) AS n FROM readings WHERE p = ? AND i < -0.5 AND v <= ? AND soc IS NOT NULL GROUP BY round(soc)', [p, volts]);
-  const low = db.selectObject('SELECT v, soc FROM readings WHERE p = ? AND i < -0.5 AND v IS NOT NULL AND soc IS NOT NULL ORDER BY v LIMIT 1', [p]);
-  return { first: sp ? sp.first : null, last: sp ? sp.last : null, n: sp ? sp.n : 0, below, low: low || null };
+  const top = volts + cutTol(volts);
+  const w = `WITH r AS (SELECT t, soc, v, i, LAG(t) OVER (ORDER BY t) AS pt, LEAD(t) OVER (ORDER BY t) AS nt, LEAD(i) OVER (ORDER BY t) AS ni FROM readings WHERE p = ?)`;
+  const agg = db.selectObject(`${w} SELECT count(*) AS n, coalesce(sum(CASE WHEN t - pt <= ? THEN t - pt ELSE 0 END), 0) AS ms FROM r`, [p, GAP_MS]);
+  const ends = db.selectObjects(`${w} SELECT t, soc, v FROM r WHERE i < ? AND ni > ? AND nt - t <= ? AND v <= ? AND soc IS NOT NULL ORDER BY t`, [p, DIS_A, IDLE_A, STOP_MS, top]);
+  const first = db.selectObject('SELECT t, i FROM readings WHERE p = ? ORDER BY t LIMIT 1', [p]);
+  const last = db.selectObject('SELECT t, soc, v, i FROM readings WHERE p = ? ORDER BY t DESC LIMIT 1', [p]);
+  const low = db.selectObject('SELECT v, soc FROM readings WHERE p = ? AND i < ? AND v IS NOT NULL AND soc IS NOT NULL ORDER BY v LIMIT 1', [p, DIS_A]);
+  const plain = (o) => (o ? { ...o } : null);
+  return { n: agg ? agg.n : 0, ms: agg ? agg.ms : 0, ends: ends.map(plain), first: plain(first), last: plain(last), low: plain(low) };
 }
 
 /** Charged / discharged watt-hours of pack p between from and to: each row's power over the time since the row

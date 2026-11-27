@@ -148,18 +148,26 @@ not want to guess that all LFP manufacturers are the same, so better learn from 
 than 24 hours or a complete cycle, just say estimate not ready" and "viewer can set separate from reader, default from
 reader". Notes offers the cut-off as a battery % or as a pack voltage (radio; reader keys `batray_cutoff_mode` pct|v,
 `batray_cutoff_pct`, `batray_cutoff_v`). Time to go counts the BMS's battery %, so a voltage is placed on that scale by
-what the pack's own stored history shows, nothing else - no chemistry curve:
+what the pack's own stored history shows, nothing else - no chemistry curve (Fable reviewed the first learning rule,
+"rows under the voltage, per UTC day": a real cut leaves 0-1 such rows, a midnight split, surges - all fixed):
 
-- `hist.cutDays(p, volts, days)` (worker op `cutDays`, SQL `cutDay()`; the in-memory store `cutDayFromRows()`): per
-  stored day of the last `LEARN_DAYS` 30, the pack's time span, its discharge rows (i < -0.5) at or under the cut-off
-  pack voltage by whole %, and its lowest discharge reading.
-- `cutoff-logic.js` `learnCut()`: a day's cut-off % = the highest % with `BELOW_ROWS` 2 rows (3-6 s at a row per 3 s) at
-  or under the voltage, counted from the top (a single surge is not a cut; an inverter that cuts within seconds still
-  leaves two rows); the estimate = the median of the latest
-  `USE_EVENTS` 5 such discharges. Not ready under `MIN_HOURS` 24 h of stored readings ('hours'), or without a discharge
-  that reached the voltage ('never': the note names the lowest voltage the pack reached and its %), or without a
-  history store ('store'). Not ready = no number: the picture says "learning", no red line.
-- Learned again hourly, a minute after a stored reading under the voltage, and at once on any setting change.
+- A cut, as the stored rows (one per 3 s) show it: a discharge row (i < -0.2 A) at or near the voltage (up to
+  `cutTol` = 1 %, at least 0.3 V, above it: the inverter measures at its own terminals, with its own calibration),
+  whose next row within `STOP_MS` 30 s no longer discharges (i > -0.1 A: the load is gone). A 1-2 s cut leaves one
+  such row, and that is enough; a surge that dips under the voltage and goes on discharging is not a cut; a
+  discharge that stops far above it (dawn) is not one either.
+- `hist.cutDays(p, volts, days)` (worker op `cutDays`, SQL `cutDay()` with LAG/LEAD; the in-memory store
+  `cutDayFromRows()`, the same facts): per stored day, the cuts, the hours of readings (time between rows, gaps over
+  `GAP_MS` 5 min left out: a frozen tab is not readings), the first and last row (a cut across UTC midnight - 07:00
+  in Thailand, the pack's morning low - is stitched from the two day files), the lowest discharge reading.
+- `cutoff-logic.js` `learnCut(days, volts)`: the estimate = the median battery % of the latest `USE_EVENTS` 5 cuts of
+  the last `LEARN_DAYS` 30 days. Not ready under `MIN_HOURS` 24 h of readings ('hours'), without a cut ('never':
+  the note names the lowest discharge reading), without a history store ('store'), for the DEMO ('demo'). Not ready
+  = no number and no red line; the picture says "learning" (not for 'store' / 'demo', where it never can).
+- Past days are read once per voltage and kept for `CUT_CACHE_MS` 6 h (a restore or a Browse delete is seen then;
+  a viewer's received history marks them dirty, read again a minute later); today is read every `LEARN_MS` 10 min;
+  a setting change reads every day again; a failed read is tried again a minute later, never from the next frame
+  (Fable review: a fast-failing store had looped).
 - The reader sends its setting in the hello (`cut`); a viewer uses it until it sets its own for that room
   (`batray_cutoff_view` = {room: setting}, never the reader keys), shown by `#cutSrc`, with "Use the reader's".
 

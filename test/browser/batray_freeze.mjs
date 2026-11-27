@@ -240,15 +240,16 @@ await evalJs(`{ const c = document.getElementById('cutoffV'); c.value = '46.5'; 
 let cv = await evalJs(`({ st: window.__batrayTest.cutState(), radio: document.getElementById('cutModeV').checked, mode: localStorage.getItem('batray_cutoff_mode'), v: localStorage.getItem('batray_cutoff_v'), note: document.getElementById('cutNote').hidden ? '' : document.getElementById('cutNote').textContent, line: document.getElementById('fCut').getAttribute('display') !== 'none' })`);
 check('typing a voltage picks the voltage cut-off and saves it; with no stored day yet it is not ready, says why, and draws no line', cv.radio && cv.mode === 'v' && cv.v === '46.5' && cv.st.pct === null && /^Not ready/.test(cv.note) && !cv.line, cv);
 const seeded = await evalJs(`(async () => {
-  const D = 86400000, today = Math.floor(Date.now() / D) * D, rows = []; let k = 0;
-  for (const d of [2, 1]) for (let h = 1; h <= 23; h++) rows.push({ t: today - d * D + h * 3600000, p: 'n11', soc: 60 - h, v: 50 - h * 0.05, i: -8 });   // two 22 h days
-  for (let j = 0; j < 4; j++) rows.push({ t: today - D + 23 * 3600000 + 60000 + (k++) * 3000, p: 'n11', soc: 33, v: 46.3, i: -12 });   // a discharge under 46.5 V at 33 %
+  const D = 86400000, today = Math.floor(Date.now() / D) * D, rows = [];
+  for (const d of [2, 1]) for (let m = 0; m < 330; m++) rows.push({ t: today - d * D + 3600000 + m * 240000, p: 'n11', soc: 60, v: 50, i: -8 });   // two 22 h days, a row per 4 min
+  const t0 = today - D + 3600000 + 330 * 240000;
+  rows.push({ t: t0, p: 'n11', soc: 33, v: 46.6, i: -12 }, { t: t0 + 3000, p: 'n11', soc: 33, v: 46.3, i: -12 }, { t: t0 + 6000, p: 'n11', soc: 33, v: 47.6, i: 0 });   // the inverter cut: the load gone
   return window.__batrayTest.histSeed(rows);
 })()`);
 await evalJs(`{ document.getElementById('cutModePct').click(); document.getElementById('cutModeV').click(); } 1`);   // learn again with the seeded rows
 for (let i = 0; i < 40; i++) { cv = await evalJs(`window.__batrayTest.cutState()`); if (cv.learn && cv.learn.ready) break; await sleep(100); }
 const cl = await evalJs(`({ st: window.__batrayTest.cutState(), d: document.getElementById('fCut').getAttribute('d'), shown: document.getElementById('fCut').getAttribute('display') !== 'none', note: document.getElementById('cutNote').textContent })`);
-check(`after two stored days with one discharge under 46.5 V at 33 %: learned 33 %, the line moves there (${seeded} rows seeded)`, cl.st.learn && cl.st.learn.ready && cl.st.pct === 33 && cl.d === 'M9 107.4 H111' && cl.shown && /about 33 % on this pack, learned from its last discharge/.test(cl.note), cl);
+check(`after two stored days and one cut (the discharge stopped at 46.3 V, 33 %): learned 33 %, the line moves there (${seeded} rows seeded)`, cl.st.learn && cl.st.learn.ready && cl.st.pct === 33 && cl.d === 'M9 107.4 H111' && cl.shown && /about 33 % on this pack, learned from the one time a discharge stopped at or near 46\.5 V/.test(cl.note), cl);
 await evalJs(`document.getElementById('cutModePct').click(); 1`); await sleep(200);
 const back = await evalJs(`({ d: document.getElementById('fCut').getAttribute('d'), mode: localStorage.getItem('batray_cutoff_mode'), note: document.getElementById('cutNote').hidden })`);
 check('back to the % cut-off: the line at 10 % again, no voltage note', back.d === 'M9 137.8 H111' && back.mode === 'pct' && back.note, back);

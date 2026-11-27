@@ -304,7 +304,7 @@ class Pack {
     this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.dumped = false;
     this.remoteLive = false; this.lastRowAt = null;              // last stored row: readings closer than MIN_ROW_MS apart are shown, not stored
     this.iEma = new Ema(60);                                 // smoothed current for the time-to-go; readings go to the stored history
-    this.learn = null; this.learnV = null; this.learnAt = 0; this.learnLoading = false; this.cutLogged = null;   // the learned voltage cut-off
+    this.learn = null; this.learnV = null; this.learnAt = 0; this.learnLoading = false; this.cutLogged = null; this.cutCache = null; this.cutCacheV = null; this.cutCacheAt = 0; this.cutDirty = false; this.cutNoteTxt = null;   // the learned voltage cut-off
     if (this.bms) this.wire();
   }
   /** Connected = the loop serves the link (a link still being set up is 'connecting', whatever gatt.connected says). */
@@ -700,10 +700,10 @@ function cutChanged(next) {
   const c = cutSetting(next);
   try {
     if (viewMode) { viewOwn[viewMode.room] = c; localStorage.setItem('batray_cutoff_view', JSON.stringify(viewOwn)); }
-    else { ownCut = c; localStorage.setItem('batray_cutoff_pct', c.pct); localStorage.setItem('batray_cutoff_mode', c.mode); if (c.v !== null) localStorage.setItem('batray_cutoff_v', c.v); }
+    else { ownCut = c; localStorage.setItem('batray_cutoff_pct', c.pct); localStorage.setItem('batray_cutoff_mode', c.mode); if (c.v !== null) localStorage.setItem('batray_cutoff_v', c.v); else localStorage.removeItem('batray_cutoff_v'); }
   } catch {}
   log(`cutoff: ${cutDesc(c)}${viewMode ? ' (this viewer)' : ''}`);
-  for (const p of packs.values()) p.learnAt = 0;                          // learn again with the setting in force
+  for (const p of packs.values()) { p.learnAt = 0; p.cutCache = null; }    // learn again, every stored day, with the setting in force
   cutRefresh();
 }
 function cutRefresh() {
@@ -729,22 +729,33 @@ function helloCutSeen(v) {
 }
 function renderCutNote() {
   const p = active, cut = cutFor(p), el = $('cutNote');
-  el.textContent = cutNote(cut, T, { loading: !!(p && p.learnLoading), days: LEARN_DAYS, minHours: MIN_HOURS }); el.hidden = !el.textContent;
+  const txt = cutNote(cut, T, { loading: !!(p && p.learnLoading), days: LEARN_DAYS, minHours: MIN_HOURS });
+  if (el.textContent !== txt) { el.textContent = txt; el.hidden = !txt; }
   const l = cut.learn, key = `${cut.mode}:${cut.v}:${l ? `${l.ready}:${l.why || ''}:${l.ready ? `${l.soc}/${l.n}` : Math.floor(l.hours || 0)}` : '-'}`;
   if (p && cut.mode === 'v' && l && p.cutLogged !== key) { p.cutLogged = key; p.plog(`cutoff: ${cut.v} V ${l.ready ? `= ${cut.pct} % (median of ${l.n} discharges, ${l.min}..${l.max} %)` : `not learned yet (${l.why}${l.why === 'hours' ? `, ${l.hours.toFixed(1)} h stored` : ''}${l.low ? `, lowest ${l.low.v} V at ${l.low.soc} %` : ''})`}`); }
 }
-/** What the pack's stored days say about the cut-off voltage: read again hourly, a minute after a stored reading
- *  under it, and at once when the voltage changes. */
-const LEARN_MS = 3600 * 1000;
+/** What the pack's stored days say about the cut-off voltage. Past days are read once per voltage and kept (their
+ *  rows do not change - a viewer's received history marks them dirty); today is read again every LEARN_MS. */
+const LEARN_MS = 10 * 60 * 1000, CUT_CACHE_MS = 6 * 3600 * 1000;
 async function learnFor(p, volts) {
   if (p.learnLoading) return;
   p.learnLoading = true;
   try {
-    const now = Date.now();
-    const days = await hist.cutDays(p.label, volts, daysInRange(now - LEARN_DAYS * 86400000, now));
-    p.learn = learnCut(days); p.learnV = volts; p.learnAt = Date.now();
-  } catch (e) { p.learnAt = Date.now() - LEARN_MS + 60000; p.plog(`cutoff: reading the stored history failed (${e.message}) - again in a minute`); }
-  finally { p.learnLoading = false; }
+    const now = Date.now(), today = dayKey(now);
+    // past days kept per voltage, read afresh every CUT_CACHE_MS (a restore, a Browse delete) or when marked dirty
+    if (!p.cutCache || p.cutCacheV !== volts || p.cutDirty || now - p.cutCacheAt >= CUT_CACHE_MS) { p.cutCache = new Map(); p.cutCacheV = volts; p.cutDirty = false; p.cutCacheAt = now; }
+    const want = daysInRange(now - LEARN_DAYS * 86400000, now).filter((d) => d === today || !p.cutCache.has(d));
+    const got = await hist.cutDays(p.label, volts, want);
+    for (const d of want) p.cutCache.set(d, null);                       // a day without rows of this pack is known too
+    for (const d of got) p.cutCache.set(d.day, d);
+    p.learn = learnCut([...p.cutCache.values()].filter(Boolean), volts);
+  } catch (e) {
+    p.plog(`cutoff: reading the stored history failed (${e.message}) - again in a minute`);
+    if (isCorrupt(e)) void corruptDb(e, 'history read');
+    p.learnAt = Date.now() - LEARN_MS + 60000; p.learnV = volts; p.learnLoading = false;   // no instant retry from the next frame
+    return;
+  }
+  p.learnV = volts; p.learnAt = Date.now(); p.learnLoading = false;
   if (active === p && p.data) { renderEta(p, p.data); renderFlow(p.data); }
 }
 function learnDue(p) {
@@ -753,13 +764,14 @@ function learnDue(p) {
   if (p.demo) { if (!p.learn || p.learnV !== c.v) { p.learn = { ready: false, why: 'demo', hours: 0, low: null }; p.learnV = c.v; } return; }
   if (!histMem.ready) return;
   if (histS.backend !== 'opfs') { if (p.learnV !== c.v || !p.learn || p.learn.why !== 'store') { p.learn = { ready: false, why: 'store', hours: 0, low: null }; p.learnV = c.v; } return; }
-  if (p.learnV !== c.v || Date.now() - p.learnAt >= LEARN_MS) void learnFor(p, c.v);
+  if (p.learnV !== c.v || Date.now() - p.learnAt >= (p.cutDirty ? 60000 : LEARN_MS)) void learnFor(p, c.v);
 }
 
 function renderEta(p, d) {
   learnDue(p);
   const cut = cutFor(p);
-  const e = etaModel({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: p && p.iEma.v !== null ? p.iEma.v : d.current, cutoffPct: cut.pct, cutoffV: cut.mode === 'v' ? cut.v : null }, T);
+  const canLearn = !(cut.learn && (cut.learn.why === 'store' || cut.learn.why === 'demo'));   // never says "learning" where it cannot
+  const e = etaModel({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: p && p.iEma.v !== null ? p.iEma.v : d.current, cutoffPct: cut.pct, cutoffV: cut.mode === 'v' && canLearn ? cut.v : null }, T);
   const el = $('fEta');
   el.textContent = e.text; el.setAttribute('fill', e.bad ? '#ff8a80' : '#a7bccf');
   // the choice stays reachable whatever the estimate says; it hides only for a BMS without a capacity (JK04)
@@ -836,7 +848,7 @@ function recordRow(p, d, t, remoteRow = null) {
       histS.gap = 'gap';
       if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') void requestHistory();
     }
-    if (!rd.dup) { queueRow(row); histS.todayRows = Math.max(histS.todayRows, row.id); learnSoon(p, row); }
+    if (!rd.dup) { queueRow(row); histS.todayRows = Math.max(histS.todayRows, row.id); }
     return row;
   }
   // a JK BMS pushes cell frames 2-3 times a second by itself: the meters show every frame, the store keeps one
@@ -845,13 +857,7 @@ function recordRow(p, d, t, remoteRow = null) {
   p.lastRowAt = t;
   const row = rowFromReading(p.label, d, t); row.id = nextRowId(histS); reserveIds();
   queueRow(row);
-  learnSoon(p, row);
   return row;
-}
-/** A stored discharge reading at or under the cut-off voltage: learn again a minute later (after the flush). */
-function learnSoon(p, row) {
-  const c = cutSet();
-  if (c.mode === 'v' && c.v !== null && typeof row.v === 'number' && row.v <= c.v && typeof row.i === 'number' && row.i < -0.5 && p.learnAt) p.learnAt = Math.min(p.learnAt, Date.now() - LEARN_MS + 60000);
 }
 let histFlush = null;   // the flush in flight: a promise is a handle, never a boolean (house rule; review 2026-11-01)
 /** A full disk: the SQLite pool turns the browser's QuotaExceededError into SQLITE_FULL / SQLITE_IOERR on write
@@ -2322,6 +2328,7 @@ async function storeReceived(file) {
   await flushHistory();
   const r = await hist.insert(file.day, rows);
   if (r.inserted > 0) histS.gapAsks = 0;                                   // new rows: holes may be asked about again ("0 new" answers do not restart the asks, round 6)
+  if (r.inserted > 0) for (const q of packs.values()) q.cutDirty = true;    // the learned cut-off reads its days again (a minute later, not per file)
   let note = '';
   const done = loadDone(), dInfo = await hist.info(file.day);
   const run = receivedContig(file.day === histS.day ? histS.contig : haveContig(dInfo.contig, dInfo.maxId, done[file.day]), dInfo.contig, file.after, rows[rows.length - 1].id);

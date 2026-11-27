@@ -1,4 +1,4 @@
-// BatRay by ClearEvo.com - tests: the inverter's voltage cut-off, learned from the pack's own stored discharges
+// BatRay by ClearEvo.com - tests: the inverter's voltage cut-off, learned from the pack's own stored cuts
 // Copyright (C) 2026 Kasidit Yusuf
 //
 // This program is free software; you can redistribute it and/or modify it
@@ -14,65 +14,109 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dayCutSoc, learnCut, cutDayFromRows, cutSetting, viewerCut, effectiveCut, MIN_HOURS, BELOW_ROWS, USE_EVENTS } from '../public/batray/cutoff-logic.js';
+import { learnCut, cutDayFromRows, cutTol, cutSetting, viewerCut, effectiveCut, MIN_HOURS, USE_EVENTS, LEARN_DAYS } from '../public/batray/cutoff-logic.js';
 import { timeToGo } from '../public/batray/trend.js';
 import { etaModel, cutNote } from '../public/batray/view-logic.js';
 import { I18N } from '../public/batray/i18n.js';
 
-const T = I18N.en, H = 3600000, D0 = Date.UTC(2026, 10, 1);
-const day = (k) => new Date(D0 + k * 86400000).toISOString().slice(0, 10);
-/** a stored day: 20 h of readings, optionally a discharge that sat under the cut-off at `cutAt` % for `rows` rows */
-const stored = (k, { cutAt = null, rows = 4, low = null } = {}) => ({ day: day(k), first: D0 + k * 86400000, last: D0 + k * 86400000 + 20 * H, n: 24000, below: cutAt === null ? [] : [{ s: cutAt, n: rows - 1 }, { s: cutAt - 1, n: 1 }], low: low || (cutAt === null ? { v: 49.9, soc: 52 } : { v: 45.6, soc: cutAt - 1 }) });
+const T = I18N.en, H = 3600000, D0 = Date.UTC(2026, 10, 1), CUT = 46.0;
+const dayOf = (t) => new Date(t).toISOString().slice(0, 10);
+/** Rows of pack 'hut': `hours` of ordinary discharge (a row a minute here), then each cut: discharge rows 3 s apart
+ *  down to the given volts at that %, then the load gone (0 A) and the voltage back up. */
+function history({ hours = 30, t0 = D0, cuts = [] } = {}) {
+  const rows = [];
+  let t = t0;
+  for (; t < t0 + hours * H; t += 60000) rows.push({ t, p: 'hut', soc: 60, v: 51.5, i: -8 });
+  for (const { soc, tail, gapH = 6 } of cuts) {
+    t += gapH * H;
+    for (const v of tail) { rows.push({ t, p: 'hut', soc, v, i: -20 }); t += 3000; }
+    for (const v of [47.6, 48.2, 48.5]) { rows.push({ t, p: 'hut', soc, v, i: 0 }); t += 3000; }
+  }
+  return rows;
+}
+/** What the store does: the rows split into UTC day files, one cutDay each, then learnCut. */
+function learnRows(rows, volts = CUT) {
+  const byDay = new Map();
+  for (const r of rows) { const d = dayOf(r.t); if (!byDay.has(d)) byDay.set(d, []); byDay.get(d).push(r); }
+  return learnCut([...byDay].map(([day, rs]) => ({ day, ...cutDayFromRows(rs, 'hut', volts) })), volts);
+}
 
-test('a day\'s evidence: the highest % with BELOW_ROWS rows at or under the cut-off counted from the top - a single surge is not a cut', () => {
-  assert.equal(dayCutSoc([{ s: 31, n: 1 }, { s: 30, n: 5 }]), 30, 'one row at 31 % is not enough on its own');
-  assert.equal(dayCutSoc([{ s: 32, n: 1 }, { s: 31, n: 1 }]), 31, 'two rows, counted from the top');
-  assert.equal(dayCutSoc([{ s: 60, n: 1 }]), null, 'one surge row');
-  assert.equal(dayCutSoc([{ s: 40, n: BELOW_ROWS }]), 40);
-  for (const bad of [null, [], [null, { s: 'x', n: 9 }, { s: 30, n: 0 }, { s: 30, n: -4 }]]) assert.equal(dayCutSoc(bad), null);
+test('a cut: the BMS still read 46.1-46.3 V when the 46.0 V inverter dropped its load - learned at that %', () => {
+  const l = learnRows(history({ cuts: [{ soc: 13, tail: [46.6, 46.4, 46.2, 46.1] }] }));
+  assert.equal(l.ready, true, JSON.stringify(l)); assert.equal(l.soc, 13); assert.equal(l.n, 1);
+  assert.equal(cutTol(46), 0.46); assert.equal(cutTol(12), 0.3);
 });
 
-test('not ready under a day of readings: says how many hours are stored and how many are needed', () => {
-  const l = learnCut([{ day: day(0), first: D0, last: D0 + 5 * H, n: 6000, below: [{ s: 31, n: 9 }], low: { v: 45.8, soc: 31 } }]);
-  assert.deepEqual({ ready: l.ready, why: l.why, hours: l.hours }, { ready: false, why: 'hours', hours: 5 });
-  assert.match(cutNote(effectiveCut({ mode: 'v', volts: 46, learn: l }), T), new RegExp(`5 h of stored readings so far, it needs ${MIN_HOURS} h`));
+test('a cut within 1-2 s leaves one stored row under the voltage - still a cut', () => {
+  const l = learnRows(history({ cuts: [{ soc: 31, tail: [46.3, 46.1, 45.95] }] }));
+  assert.equal(l.ready, true); assert.equal(l.soc, 31);
 });
 
-test('not ready without a discharge to the cut-off: says how low the pack went and that it needs one discharge there; no number, no time to go', () => {
-  const l = learnCut([stored(0), stored(1), stored(2, { low: { v: 47.52, soc: 34 } })]);
-  assert.equal(l.ready, false); assert.equal(l.why, 'never'); assert.deepEqual(l.low, { v: 47.52, soc: 34 });
-  const cut = effectiveCut({ mode: 'v', volts: 46, learn: l });
+test('not a cut: a load that dips under the voltage and goes on discharging; a discharge that stops far above it (the sun came up at 50 V)', () => {
+  const rows = history();
+  let t = rows[rows.length - 1].t + 60000;
+  for (const [v, i] of [[45.5, -60], [48.9, -9], [48.8, -9]]) { rows.push({ t, p: 'hut', soc: 40, v, i }); t += 3000; }   // a motor start
+  for (const [v, i] of [[50.2, -6], [50.4, 3], [50.6, 9]]) { rows.push({ t, p: 'hut', soc: 45, v, i }); t += 3000; }     // dawn
+  const l = learnRows(rows);
+  assert.equal(l.ready, false); assert.equal(l.why, 'never');
+  assert.match(cutNote(effectiveCut({ mode: 'v', volts: CUT, learn: l }), T, { days: LEARN_DAYS }), /no discharge of this pack stopped at or near 46\.0 V \(its lowest reading was 45\.5 V, at 40 %\)/);
+});
+
+test('a cut across UTC midnight (07:00 in Thailand, the pack\'s morning low) is stitched from the two day files and counts once', () => {
+  const rows = history();
+  const mid = D0 + 2 * 86400000;
+  rows.push({ t: mid - 4000, p: 'hut', soc: 13, v: 46.1, i: -20 }, { t: mid - 1000, p: 'hut', soc: 13, v: 45.9, i: -20 }, { t: mid + 2000, p: 'hut', soc: 12, v: 47.7, i: 0 });
+  const l = learnRows(rows);
+  assert.equal(l.ready, true, JSON.stringify(l)); assert.equal(l.n, 1); assert.equal(l.soc, 13);
+});
+
+test('several cuts on one day count each; the median of the latest USE_EVENTS, older ones age out; the note gives the count and spread', () => {
+  const cuts = [20, 22, 30, 33, 29, 31, 34].map((soc) => ({ soc, tail: [46.4, 46.1], gapH: 2 }));
+  const l = learnRows(history({ cuts }));
+  assert.equal(l.ready, true); assert.equal(l.n, USE_EVENTS); assert.equal(l.soc, 31, 'median of 34 31 29 33 30'); assert.equal(l.min, 29); assert.equal(l.max, 34);
+  assert.match(cutNote(effectiveCut({ mode: 'v', volts: CUT, learn: l }), T), /about 31 % on this pack: the middle of the last 5 times a discharge stopped at or near 46\.0 V \(29 to 34 %\)/);
+  const one = learnRows(history({ cuts: [{ soc: 31, tail: [46.2] }] }));
+  assert.match(cutNote(effectiveCut({ mode: 'v', volts: CUT, learn: one }), T), /about 31 % on this pack, learned from the one time a discharge stopped at or near 46\.0 V/);
+});
+
+test('hours are hours of stored readings: gaps over 5 min (a frozen tab, the store off) do not count; under 24 h it is not ready and says so', () => {
+  const rows = [];
+  for (const k of [0, 1]) for (let j = 0; j < 100; j++) rows.push({ t: D0 + k * 86400000 + H + j * 3000, p: 'hut', soc: 50, v: 51, i: -5 }, { t: D0 + k * 86400000 + 14 * H + j * 3000, p: 'hut', soc: 13, v: 45.9, i: -20 });
+  const l = learnRows(rows);
+  assert.ok(l.hours < 1, `${l.hours}`); assert.equal(l.ready, false); assert.equal(l.why, 'hours');
+  assert.match(cutNote(effectiveCut({ mode: 'v', volts: CUT, learn: l }), T), new RegExp(`0 h of stored readings so far, it needs ${MIN_HOURS} h`));
+});
+
+test('not ready: no number, the picture says "learning" while discharging, charging still counts to full', () => {
+  const l = learnRows(history());
+  const cut = effectiveCut({ mode: 'v', volts: CUT, learn: l });
   assert.equal(cut.pct, null);
-  assert.match(cutNote(cut, T), /went down to 47\.5 V \(at 34 %\), not yet to 46\.0 V\. It needs one discharge to 46\.0 V/);
   assert.equal(timeToGo({ remainAh: 120, nominalAh: 230, currentA: -3.5, cutoffPct: cut.pct }).kind, 'unknown');
-  const e = etaModel({ remainAh: 120, nominalAh: 230, currentA: -3.5, cutoffPct: cut.pct, cutoffV: 46 }, T);
+  const e = etaModel({ remainAh: 120, nominalAh: 230, currentA: -3.5, cutoffPct: cut.pct, cutoffV: CUT }, T);
   assert.equal(e.kind, 'learning'); assert.equal(e.hidden, false); assert.match(e.text, /learning where 46\.0 V is/);
-  assert.equal(etaModel({ remainAh: 120, nominalAh: 230, currentA: 8, cutoffPct: null, cutoffV: 46 }, T).kind, 'full', 'charging still counts to full');
+  assert.equal(etaModel({ remainAh: 120, nominalAh: 230, currentA: 8, cutoffPct: null, cutoffV: CUT }, T).kind, 'full');
 });
 
-test('learned: one discharge gives its %, more give the median of the latest USE_EVENTS (older ones age out); the note says how many and the spread', () => {
-  const one = learnCut([stored(0), stored(1, { cutAt: 31 })]);
-  assert.equal(one.ready, true); assert.equal(one.soc, 31); assert.equal(one.n, 1);
-  assert.match(cutNote(effectiveCut({ mode: 'v', volts: 46, learn: one }), T), /about 31 % on this pack, learned from its last discharge to 46\.0 V/);
-  const many = learnCut([stored(0, { cutAt: 20 }), stored(1, { cutAt: 22 }), stored(2, { cutAt: 30 }), stored(3, { cutAt: 33 }), stored(4, { cutAt: 29 }), stored(5, { cutAt: 31 }), stored(6, { cutAt: 34 })]);
-  assert.equal(many.n, USE_EVENTS); assert.equal(many.soc, 31, 'median of 34 31 29 33 30'); assert.equal(many.min, 29); assert.equal(many.max, 34);
-  assert.deepEqual(many.days, [day(6), day(5), day(4), day(3), day(2)]);
-  assert.match(cutNote(effectiveCut({ mode: 'v', volts: 46, learn: many }), T), /about 31 % on this pack: the middle of its last 5 discharges to 46\.0 V \(29 to 34 %\)/);
-  const two = learnCut([stored(0, { cutAt: 30 }), stored(1, { cutAt: 33 })]);
-  assert.equal(two.soc, 31.5); assert.equal(effectiveCut({ mode: 'v', volts: 46, learn: two }).pct, 32);
-});
-
-test('the owner\'s case: at 52 % and 3.5 A the 10 % default said over a day; a learned 31 % cut-off says half that', () => {
-  const l = learnCut([stored(0), stored(1, { cutAt: 31 }), stored(2, { cutAt: 30 }), stored(3, { cutAt: 32 })]);
+test('the owner\'s case: at 52 % and 3.5 A the 10 % default said over a day; cuts learned at ~31 % say about half', () => {
+  const l = learnRows(history({ cuts: [30, 31, 32].map((soc) => ({ soc, tail: [46.2] })) }));
   const now = { remainAh: 230 * 0.52, nominalAh: 230, currentA: -3.5 };
-  const byPct = timeToGo({ ...now, cutoffPct: 10 }).hours, byV = timeToGo({ ...now, cutoffPct: effectiveCut({ mode: 'v', volts: 46, learn: l }).pct }).hours;
+  const byPct = timeToGo({ ...now, cutoffPct: 10 }).hours, byV = timeToGo({ ...now, cutoffPct: effectiveCut({ mode: 'v', volts: CUT, learn: l }).pct }).hours;
   assert.ok(byPct > 27, `${byPct}`); assert.ok(byV > 12 && byV < 15, `${byV}`);
 });
 
-test('in-memory rows give the same day facts as the SQL; other packs, charging and rows without SOC are left out', () => {
-  const rows = [{ p: 'a', t: 1, soc: 31.4, v: 45.9, i: -9 }, { p: 'a', t: 2, soc: 30.6, v: 45.8, i: -9 }, { p: 'a', t: 3, soc: 31, v: 45.0, i: 2 }, { p: 'b', t: 4, soc: 31, v: 40, i: -9 }, { p: 'a', t: 9, soc: null, v: 40, i: -9 }, null];
-  assert.deepEqual(cutDayFromRows(rows, 'a', 46), { first: 1, last: 9, n: 4, below: [{ s: 31, n: 2 }], low: { v: 45.8, soc: 30.6 } });
-  assert.deepEqual(cutDayFromRows([], 'a', 46), { first: null, last: null, n: 0, below: [], low: null });
+for (const lang of ['en', 'th']) test(`(${lang}) the "not ready" note never contradicts itself: a reading under the voltage without a cut is named as the lowest reading, not as "not reached"`, () => {
+  const rows = history();
+  let t = rows[rows.length - 1].t + 60000;
+  for (const [v, i] of [[45.9, -60], [48.9, -9]]) { rows.push({ t, p: 'hut', soc: 40, v, i }); t += 3000; }
+  const txt = cutNote(effectiveCut({ mode: 'v', volts: CUT, learn: learnRows(rows) }), I18N[lang], { days: LEARN_DAYS });
+  assert.ok(!/not yet to|ยังไม่ถึง/.test(txt), txt);
+});
+
+test('in-memory rows and garbage: other packs, rows without SOC, null rows left out; empty input is not ready', () => {
+  const d = cutDayFromRows([{ p: 'a', t: 1000, soc: 31, v: 45.9, i: -9 }, { p: 'a', t: 4000, soc: 31, v: 47, i: 0 }, { p: 'b', t: 2000, soc: 31, v: 40, i: -9 }, { p: 'a', t: 9000, soc: null, v: 40, i: -9 }, null], 'a', 46);
+  assert.deepEqual(d, { n: 3, ms: 8000, ends: [{ t: 1000, soc: 31, v: 45.9 }], first: { t: 1000, i: -9 }, last: { t: 9000, soc: null, v: 40, i: -9 }, low: { v: 45.9, soc: 31 } });
+  assert.deepEqual(cutDayFromRows([], 'a', 46), { n: 0, ms: 0, ends: [], first: null, last: null, low: null });
+  for (const bad of [null, 'x', [null, { day: 5 }, { day: '2026-11-01', ms: 'x', ends: 'nope', low: { v: NaN } }]]) { const l = learnCut(bad, 46); assert.equal(l.ready, false); assert.equal(l.hours, 0); assert.equal(l.low, null); }
 });
 
 test('settings: sane numbers or null; a viewer uses its own for the room, else the reader\'s, else the default', () => {
@@ -87,17 +131,13 @@ test('settings: sane numbers or null; a viewer uses its own for the room, else t
   assert.deepEqual(viewerCut(null, 'junk'), { mode: 'pct', pct: 10, v: null, from: 'default' });
 });
 
-test('effectiveCut: % mode untouched; voltage mode without a voltage, or with nothing learned yet, gives no %; garbage days are skipped', () => {
+test('effectiveCut and the note: % mode untouched; no voltage; loading; no store; the demo', () => {
   assert.deepEqual(effectiveCut({ mode: 'pct', pct: 10 }), { pct: 10, mode: 'pct', v: null, learn: null });
   assert.deepEqual(effectiveCut({ mode: 'pct', pct: NaN }), { pct: 0, mode: 'pct', v: null, learn: null });
   assert.equal(effectiveCut({ mode: 'v', volts: null }).pct, null);
-  assert.equal(effectiveCut({ mode: 'v', volts: 46, learn: null }).pct, null);
   assert.equal(cutNote(effectiveCut({ mode: 'v', volts: null }), T), T.cutNoteNoV);
   assert.equal(cutNote(effectiveCut({ mode: 'v', volts: 46, learn: null }), T, { loading: true }), T.cutNoteLoading);
   assert.equal(cutNote(effectiveCut({ mode: 'v', volts: 46, learn: { ready: false, why: 'store' } }), T), T.cutNoteStore);
   assert.equal(cutNote(effectiveCut({ mode: 'v', volts: 46, learn: { ready: false, why: 'demo' } }), T), T.cutNoteDemo);
   assert.equal(cutNote(effectiveCut({ mode: 'pct', pct: 10 }), T), '');
-  const l = learnCut([null, { day: 5 }, { day: day(0), first: 'x', last: null, below: 'nope', low: { v: NaN } }]);
-  assert.equal(l.ready, false); assert.equal(l.hours, 0); assert.equal(l.low, null);
-  assert.equal(learnCut(null).why, 'hours');
 });
