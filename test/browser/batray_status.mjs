@@ -212,6 +212,32 @@ check('...the card says the reader is online without a link to m-00, with the la
 await sleep(2500);
 check('...the person\'s tap stands: no switch back to s-01 on the next tick', (await vw()).on === 'bt-M00');
 
+// ---- 6c. the cut-off on a viewer (2026-11-27, owner: "viewer can set separate from reader, just default from reader"):
+// the reader's setting arrives in its hello; the viewer's own change is kept for that room only and never touches the
+// reader's keys; "Use the reader's" goes back ----
+await send('Page.navigate', { url: `${BASE}/batray/?view=AbCdEfGhIjKlMnOpQrStUv&test&n=9#k=${KEY}` }); await sleep(2500);
+await evalJs(`localStorage.removeItem('batray_cutoff_view'); localStorage.setItem('batray_cutoff_mode', 'pct'); localStorage.setItem('batray_cutoff_pct', '10'); 1`);
+await evalJs(`(async () => {
+  const L = await import('/batray/live-logic.js');
+  const key = await L.importKey('${KEY}');
+  const sock = window.__wsAll[window.__wsAll.length - 1];
+  const b = await L.encrypt(key, { k: 'hello', p: { id: '*', name: '*' }, t: Date.now(), v: { channel: 'seahut-n11', version: '0.9.99', cut: { mode: 'v', pct: 10, v: 46 } } });
+  let s = ''; for (const x of b) s += String.fromCharCode(x); sock.push({ type: 'status', viewers: 1, live: true }); sock.push({ type: 'd', b: btoa(s), slot: 'hello', ago: 1000 });
+  return 1;
+})()`);
+await sleep(800);
+const cutUi = () => evalJs(`({ v: document.getElementById('cutModeV').checked, volts: document.getElementById('cutoffV').value, pct: document.getElementById('cutoff').value, src: document.getElementById('cutSrc').hidden ? '' : document.getElementById('cutSrc').textContent, use: !document.getElementById('cutUseReader').hidden, from: window.__batrayTest.cutState().from })`);
+let cu = await cutUi();
+check('a viewer starts from the reader\'s cut-off (46 V, from the hello) and says so', cu.v && cu.volts === '46' && cu.from === 'reader' && /reader's cut-off/.test(cu.src) && !cu.use, cu);
+await evalJs(`{ const c = document.getElementById('cutoff'); c.value = '20'; c.dispatchEvent(new Event('change')); } 1`); await sleep(300);
+cu = await cutUi();
+const keys = await evalJs(`({ view: JSON.parse(localStorage.getItem('batray_cutoff_view') || '{}'), mode: localStorage.getItem('batray_cutoff_mode'), pct: localStorage.getItem('batray_cutoff_pct') })`);
+check('the viewer\'s own change: 20 % for this room only, the reader\'s 46 V named, "Use the reader\'s" offered', !cu.v && cu.pct === '20' && cu.from === 'own' && /reader uses 46\.0 V/.test(cu.src) && cu.use && keys.view.AbCdEfGhIjKlMnOpQrStUv && keys.view.AbCdEfGhIjKlMnOpQrStUv.pct === 20, { cu, keys });
+check('...and it never touches this device\'s own reader setting', keys.mode === 'pct' && keys.pct === '10', keys);
+await evalJs(`document.getElementById('cutUseReader').click(); 1`); await sleep(300);
+cu = await cutUi();
+check('"Use the reader\'s" goes back to 46 V', cu.v && cu.volts === '46' && cu.from === 'reader' && !cu.use, cu);
+
 // ---- 7. the reader PHONE's battery (0.9.80, owner: the seahut reader phone died, its charger was not connected) ----
 // viewer side: the reader's statuses, as the room delivers them, say charging, then not, then low, then charging again
 const sendStatus = (bat) => evalJs(`(async () => {

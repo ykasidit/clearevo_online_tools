@@ -119,10 +119,13 @@ export function buckets(db, { p, from, to, stepMs }) {
   return out;
 }
 
-/** Discharge readings of pack p grouped by whole battery %: {s, sv (pack volts summed), n}. The voltage cut-off
- *  estimate (cutoff-logic.js) reads where this pack's voltage sits at each %. */
-export function curveBins(db, p) {
-  return db.selectObjects('SELECT round(soc) AS s, sum(v) AS sv, count(*) AS n FROM readings WHERE p = ? AND i < -0.5 AND soc IS NOT NULL AND v IS NOT NULL GROUP BY round(soc)', [p]);
+/** One day's evidence for the learned voltage cut-off (cutoff-logic.js learnCut): the pack's stored span, its
+ *  discharge rows at or under `volts` (pack volts) by whole battery %, and its lowest discharge reading. */
+export function cutDay(db, p, volts) {
+  const sp = db.selectObject('SELECT min(t) AS first, max(t) AS last, count(*) AS n FROM readings WHERE p = ?', [p]);
+  const below = db.selectObjects('SELECT round(soc) AS s, count(*) AS n FROM readings WHERE p = ? AND i < -0.5 AND v <= ? AND soc IS NOT NULL GROUP BY round(soc)', [p, volts]);
+  const low = db.selectObject('SELECT v, soc FROM readings WHERE p = ? AND i < -0.5 AND v IS NOT NULL AND soc IS NOT NULL ORDER BY v LIMIT 1', [p]);
+  return { first: sp ? sp.first : null, last: sp ? sp.last : null, n: sp ? sp.n : 0, below, low: low || null };
 }
 
 /** Charged / discharged watt-hours of pack p between from and to: each row's power over the time since the row

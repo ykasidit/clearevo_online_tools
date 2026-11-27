@@ -16,7 +16,7 @@ import { castState, onCastStateEvent, castTapDecision, castAfterDiscovery, castR
 import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wakeRefused, wakeRetryDelayMs, wakeVideoWanted, wakeRequestStart } from './wake-logic.js';
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO } from './jkbms.js';
 import { fmtWhen, stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel, cutNote } from './view-logic.js';
-import { chemOf, curveAdd, curveBinsFromRows, curvePoints, effectiveCut } from './cutoff-logic.js';
+import { learnCut, cutSetting, viewerCut, effectiveCut, LEARN_DAYS, MIN_HOURS } from './cutoff-logic.js';
 import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fmtVersion } from './compat-logic.js';
 import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel, phonePowerState, phonePowerEvent, phoneWarn, dropContext } from './status-logic.js';
 import { parseIntent, intentEvent, resumePlan, resumeLine, RESUME_ON_KEY } from './resume-logic.js';
@@ -241,7 +241,7 @@ function logHeaderLines() {
     `net: online=${navigator.onLine} · type ${c.type || c.effectiveType || '?'} · downlink ${c.downlink ?? '?'} Mbps · rtt ${c.rtt ?? '?'} ms · saveData ${c.saveData ?? '?'}`,
     `lang: ui=${langCode} · browser ${navigator.language} · ${(navigator.languages || []).join(',')}`,
     `features: secure=${yn(isSecureContext)} bluetooth=${yn(!!navigator.bluetooth)} adv=${yn(typeof BluetoothDevice !== 'undefined' && 'watchAdvertisements' in BluetoothDevice.prototype)} getDevices=${yn(!!navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function')} availability=${yn(navigator.bluetooth && navigator.bluetooth.getAvailability)} wakeLock=${yn('wakeLock' in navigator)} notifications=${typeof Notification === 'undefined' ? 'none' : Notification.permission} sw=${navigator.serviceWorker && navigator.serviceWorker.controller ? 'controlled' : 'none'} webCodecs=${yn(typeof VideoEncoder !== 'undefined')} hls=${v.canPlayType('application/vnd.apple.mpegurl') || 'no'} remotePlayback=${yn('remote' in v)} storage=${yn(storageOk)} clipboard=${yn(!!navigator.clipboard && typeof navigator.clipboard.writeText === 'function')}`,
-    `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutMode === 'v' ? `${cutoffV}V` : `${cutoffPct}%`} keepAwake=${wakeS.mode} lowPower=${uiS.lowPower} tvRes=${$('tvRes').dataset.value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
+    `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutDesc(cutSet())} keepAwake=${wakeS.mode} lowPower=${uiS.lowPower} tvRes=${$('tvRes').dataset.value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
   ];
 }
 // what the header cannot know synchronously: battery, codec support, adapter state
@@ -304,7 +304,7 @@ class Pack {
     this.offlineThunk = null; this.loadThunk = null; this.countThunk = null; this.dumped = false;
     this.remoteLive = false; this.lastRowAt = null;              // last stored row: readings closer than MIN_ROW_MS apart are shown, not stored
     this.iEma = new Ema(60);                                 // smoothed current for the time-to-go; readings go to the stored history
-    this.curve = new Map(); this.curveAt = 0; this.curveLoading = false; this.cutLogged = null;   // discharge readings by % (the voltage cut-off)
+    this.learn = null; this.learnV = null; this.learnAt = 0; this.learnLoading = false; this.cutLogged = null;   // the learned voltage cut-off
     if (this.bms) this.wire();
   }
   /** Connected = the loop serves the link (a link still being set up is 'connecting', whatever gatt.connected says). */
@@ -666,68 +666,98 @@ const kv = (rows) => rows.map(([k, v]) => `<div class="kv"><span class="k">${k}<
 // ---- time to go, status chips, cell line, session trend (benchmark 2026-09-17:
 // Victron/Enphase/EcoFlow show a runtime, every BMS app shows MOS + alarm state
 // on its first screen, every commercial monitor has a history curve) ----
-// The inverter's cut-off: a % of capacity, or (an inverter that does not talk to the BMS) its own pack voltage, which
-// cutoff-logic.js places on this pack's % scale from its stored discharge readings and its chemistry (2026-11-27).
-let cutoffPct = 10, cutMode = 'pct', cutoffV = null;
+// The inverter's cut-off: a % of capacity, or (an inverter that does not talk to the BMS) its own pack voltage. A
+// voltage is placed on the BMS % scale by what this pack's stored history LEARNED (cutoff-logic.js, 2026-11-27): the %
+// it was at each time it discharged to that voltage. The reader's setting goes to viewers in the hello; a viewer
+// starts from it and may set its own for that room.
+let ownCut = { mode: 'pct', pct: 10, v: null };                  // this device's setting as a reader (global keys)
+let helloCut = null, viewOwn = {};                                 // a viewer: the reader's, and its own per room
 try {
-  const raw = localStorage.getItem('batray_cutoff_pct'), v = +raw; if (raw !== null && Number.isFinite(v)) cutoffPct = Math.max(0, Math.min(95, v));
-  if (localStorage.getItem('batray_cutoff_mode') === 'v') cutMode = 'v';
-  const rv = localStorage.getItem('batray_cutoff_v'), vv = +rv; if (rv !== null && Number.isFinite(vv) && vv > 0) cutoffV = vv;
+  const raw = localStorage.getItem('batray_cutoff_pct'), rv = localStorage.getItem('batray_cutoff_v');
+  ownCut = cutSetting({ mode: localStorage.getItem('batray_cutoff_mode'), pct: raw === null ? 10 : +raw, v: rv === null ? null : +rv });
+  const vo = JSON.parse(localStorage.getItem('batray_cutoff_view') || '{}'); if (vo && typeof vo === 'object') viewOwn = vo;
 } catch {}
-$('cutoff').value = cutoffPct; $('cutoffV').value = cutoffV === null ? '' : cutoffV;
-$(cutMode === 'v' ? 'cutModeV' : 'cutModePct').checked = true;
-/** The cut-off of pack p as { pct (null = not placed yet), mode, v, est }. */
-function cutFor(p) {
-  const d = p ? p.data : null, cells = d && d.cells && d.cells.length ? d.cells.length : (p && p.settings && p.settings.cellCount) || 0;
-  return effectiveCut({ mode: cutMode, pct: cutoffPct, volts: cutoffV, chem: chemOf(d, p ? p.settings : null), points: p ? curvePoints(p.curve, cells) : [], cells });
+/** The setting in force here: { mode, pct, v, from: 'self' | 'own' | 'reader' | 'default' }. */
+function cutSet() { return viewMode ? viewerCut(viewOwn[viewMode.room], helloCut) : { ...ownCut, from: 'self' }; }
+function cutUi() {
+  const c = cutSet();
+  $('cutoff').value = c.pct; $('cutoffV').value = c.v === null ? '' : c.v;
+  $(c.mode === 'v' ? 'cutModeV' : 'cutModePct').checked = true;
+  const src = $('cutSrc'), use = $('cutUseReader'), r = cutSetting(helloCut);
+  $('cutSrcRow').hidden = !viewMode; src.hidden = !viewMode; use.hidden = !(viewMode && c.from === 'own' && r);
+  if (viewMode) src.textContent = c.from === 'own' ? T.cutSrcOwn(r ? cutDesc(r) : null) : c.from === 'reader' ? T.cutSrcReader : T.cutSrcDefault;
 }
-function cutChanged() {
-  try { localStorage.setItem('batray_cutoff_pct', cutoffPct); localStorage.setItem('batray_cutoff_mode', cutMode); if (cutoffV !== null) localStorage.setItem('batray_cutoff_v', cutoffV); } catch {}
-  log(`cutoff: ${cutMode === 'v' ? `${cutoffV === null ? '-' : cutoffV} V` : `${cutoffPct} %`}`);
-  if (cutMode === 'v') for (const p of packs.values()) p.curveAt = 0;   // learn the curve now
+const cutDesc = (c) => (c.mode === 'v' ? `${c.v === null ? '-' : fmt(c.v, 1)} V` : `${c.pct} %`);
+cutUi();
+/** The cut-off of pack p: { pct (null = not learned yet), mode, v, learn }. */
+function cutFor(p) {
+  const c = cutSet();
+  return effectiveCut({ mode: c.mode, pct: c.pct, volts: c.v, learn: p && p.learnV === c.v ? p.learn : null });
+}
+/** The person changed the cut-off here: a reader saves its own (and tells viewers in the next hello), a viewer saves
+ *  its own for this room. */
+function cutChanged(next) {
+  const c = cutSetting(next);
+  try {
+    if (viewMode) { viewOwn[viewMode.room] = c; localStorage.setItem('batray_cutoff_view', JSON.stringify(viewOwn)); }
+    else { ownCut = c; localStorage.setItem('batray_cutoff_pct', c.pct); localStorage.setItem('batray_cutoff_mode', c.mode); if (c.v !== null) localStorage.setItem('batray_cutoff_v', c.v); }
+  } catch {}
+  log(`cutoff: ${cutDesc(c)}${viewMode ? ' (this viewer)' : ''}`);
+  for (const p of packs.values()) p.learnAt = 0;                          // learn again with the setting in force
+  cutRefresh();
+}
+function cutRefresh() {
+  cutUi();
   if (active && active.data) { renderFlow(active.data); render(active.data, true); }   // the cut-off line on the battery and on the chart
   renderCutNote();
 }
-$('cutoff').addEventListener('change', () => {
-  const v = +$('cutoff').value;
-  if (Number.isFinite(v)) cutoffPct = Math.max(0, Math.min(95, Math.round(v)));
-  $('cutoff').value = cutoffPct; cutMode = 'pct'; $('cutModePct').checked = true;
-  cutChanged();
+const uiCut = () => ({ mode: $('cutModeV').checked ? 'v' : 'pct', pct: +$('cutoff').value, v: $('cutoffV').value === '' ? null : +$('cutoffV').value });
+$('cutoff').addEventListener('change', () => { $('cutModePct').checked = true; cutChanged(uiCut()); });
+$('cutoffV').addEventListener('change', () => { $('cutModeV').checked = true; cutChanged(uiCut()); });
+for (const id of ['cutModePct', 'cutModeV']) $(id).addEventListener('change', () => cutChanged(uiCut()));
+$('cutUseReader').addEventListener('click', () => {
+  delete viewOwn[viewMode.room];
+  try { localStorage.setItem('batray_cutoff_view', JSON.stringify(viewOwn)); } catch {}
+  log('cutoff: back to the reader\'s'); cutRefresh();
 });
-$('cutoffV').addEventListener('change', () => {
-  const v = +$('cutoffV').value;
-  cutoffV = $('cutoffV').value !== '' && Number.isFinite(v) && v > 0 ? Math.round(Math.min(1000, v) * 10) / 10 : null;
-  $('cutoffV').value = cutoffV === null ? '' : cutoffV; cutMode = 'v'; $('cutModeV').checked = true;
-  cutChanged();
-});
-for (const id of ['cutModePct', 'cutModeV']) $(id).addEventListener('change', () => { cutMode = $('cutModeV').checked ? 'v' : 'pct'; cutChanged(); });
+/** The reader's setting arrived in a hello (a viewer). */
+function helloCutSeen(v) {
+  const c = cutSetting(v);
+  if (JSON.stringify(c) === JSON.stringify(helloCut)) return;
+  helloCut = c; log(`cutoff: the reader uses ${c ? cutDesc(c) : 'none'}`);
+  cutRefresh();
+}
 function renderCutNote() {
   const p = active, cut = cutFor(p), el = $('cutNote');
-  el.textContent = cutNote(cut, chemOf(p ? p.data : null, p ? p.settings : null), T); el.hidden = !el.textContent;
-  const key = cut.est ? `${cut.v}:${Math.round(cut.est.soc)}:${cut.est.how}:${cut.est.low}` : `${cut.mode}:${cut.v}`;
-  if (p && cut.mode === 'v' && p.cutLogged !== key) { p.cutLogged = key; p.plog(`cutoff: ${cut.v} V = ${cut.pct === null ? '-' : `${cut.pct} %`}${cut.est ? ` (${cut.est.how}, readings down to ${cut.est.low === null ? '-' : `${cut.est.low} %`})` : ''} ${chemOf(p.data, p.settings) || 'unknown chemistry'}`); }
+  el.textContent = cutNote(cut, T, { loading: !!(p && p.learnLoading), days: LEARN_DAYS, minHours: MIN_HOURS }); el.hidden = !el.textContent;
+  const l = cut.learn, key = `${cut.mode}:${cut.v}:${l ? `${l.ready}:${l.why || ''}:${l.ready ? `${l.soc}/${l.n}` : Math.floor(l.hours || 0)}` : '-'}`;
+  if (p && cut.mode === 'v' && l && p.cutLogged !== key) { p.cutLogged = key; p.plog(`cutoff: ${cut.v} V ${l.ready ? `= ${cut.pct} % (median of ${l.n} discharges, ${l.min}..${l.max} %)` : `not learned yet (${l.why}${l.why === 'hours' ? `, ${l.hours.toFixed(1)} h stored` : ''}${l.low ? `, lowest ${l.low.v} V at ${l.low.soc} %` : ''})`}`); }
 }
-/** The pack's discharge readings by %, from its stored days (the last CURVE_DAYS), refreshed every CURVE_MS. */
-const CURVE_DAYS = 30, CURVE_MS = 6 * 3600 * 1000;
-async function loadCurve(p) {
-  if (p.curveLoading || p.demo) return;
-  p.curveLoading = true;
+/** What the pack's stored days say about the cut-off voltage: read again hourly, a minute after a stored reading
+ *  under it, and at once when the voltage changes. */
+const LEARN_MS = 3600 * 1000;
+async function learnFor(p, volts) {
+  if (p.learnLoading) return;
+  p.learnLoading = true;
   try {
-    const now = Date.now(), days = daysInRange(now - CURVE_DAYS * 86400000, now);
-    const bins = await hist.curve(p.label, days);
-    p.curve = curveAdd(new Map(), bins); p.curveAt = Date.now();
-    p.plog(`cutoff: ${bins.reduce((a, b) => a + b.n, 0)} stored discharge readings over ${p.curve.size} % steps`);
-  } catch (e) { p.curveAt = Date.now() - CURVE_MS + 60000; p.plog(`cutoff: reading the stored discharge readings failed (${e.message}) - again in a minute`); }
-  finally { p.curveLoading = false; }
-  if (active === p && p.data) { renderEta(p, p.data); renderFlow(p.data); renderCutNote(); }
+    const now = Date.now();
+    const days = await hist.cutDays(p.label, volts, daysInRange(now - LEARN_DAYS * 86400000, now));
+    p.learn = learnCut(days); p.learnV = volts; p.learnAt = Date.now();
+  } catch (e) { p.learnAt = Date.now() - LEARN_MS + 60000; p.plog(`cutoff: reading the stored history failed (${e.message}) - again in a minute`); }
+  finally { p.learnLoading = false; }
+  if (active === p && p.data) { renderEta(p, p.data); renderFlow(p.data); }
 }
-function curveDue(p) {
-  if (cutMode !== 'v' || !p || p.demo || p.curveLoading || !histMem.ready || histS.backend !== 'opfs') return;
-  if (Date.now() - p.curveAt >= CURVE_MS) void loadCurve(p);
+function learnDue(p) {
+  const c = cutSet();
+  if (c.mode !== 'v' || c.v === null || !p || p.learnLoading) return;
+  if (p.demo) { if (!p.learn || p.learnV !== c.v) { p.learn = { ready: false, why: 'demo', hours: 0, low: null }; p.learnV = c.v; } return; }
+  if (!histMem.ready) return;
+  if (histS.backend !== 'opfs') { if (p.learnV !== c.v || !p.learn || p.learn.why !== 'store') { p.learn = { ready: false, why: 'store', hours: 0, low: null }; p.learnV = c.v; } return; }
+  if (p.learnV !== c.v || Date.now() - p.learnAt >= LEARN_MS) void learnFor(p, c.v);
 }
 
 function renderEta(p, d) {
-  curveDue(p);
+  learnDue(p);
   const cut = cutFor(p);
   const e = etaModel({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: p && p.iEma.v !== null ? p.iEma.v : d.current, cutoffPct: cut.pct, cutoffV: cut.mode === 'v' ? cut.v : null }, T);
   const el = $('fEta');
@@ -806,7 +836,7 @@ function recordRow(p, d, t, remoteRow = null) {
       histS.gap = 'gap';
       if (viewer && histReqDecision(histS, { live: viewer.state.live, now: Date.now(), gap: true }).action === 'request') void requestHistory();
     }
-    if (!rd.dup) { queueRow(row); histS.todayRows = Math.max(histS.todayRows, row.id); if (p.curveAt) curveAdd(p.curve, curveBinsFromRows([row])); }
+    if (!rd.dup) { queueRow(row); histS.todayRows = Math.max(histS.todayRows, row.id); learnSoon(p, row); }
     return row;
   }
   // a JK BMS pushes cell frames 2-3 times a second by itself: the meters show every frame, the store keeps one
@@ -815,8 +845,13 @@ function recordRow(p, d, t, remoteRow = null) {
   p.lastRowAt = t;
   const row = rowFromReading(p.label, d, t); row.id = nextRowId(histS); reserveIds();
   queueRow(row);
-  if (p.curveAt) curveAdd(p.curve, curveBinsFromRows([row]));           // a stored row also counts for the voltage cut-off
+  learnSoon(p, row);
   return row;
+}
+/** A stored discharge reading at or under the cut-off voltage: learn again a minute later (after the flush). */
+function learnSoon(p, row) {
+  const c = cutSet();
+  if (c.mode === 'v' && c.v !== null && typeof row.v === 'number' && row.v <= c.v && typeof row.i === 'number' && row.i < -0.5 && p.learnAt) p.learnAt = Math.min(p.learnAt, Date.now() - LEARN_MS + 60000);
 }
 let histFlush = null;   // the flush in flight: a promise is a handle, never a boolean (house rule; review 2026-11-01)
 /** A full disk: the SQLite pool turns the browser's QuotaExceededError into SQLITE_FULL / SQLITE_IOERR on write
@@ -2153,7 +2188,7 @@ async function histSend(x, pub) {
 }
 function sendSnapshots() {
   if (!publisher) return;
-  void publisher.publish(envelope('hello', { id: '*', name: '*' }, { channel: shareS.name, version: APP_VERSION }));
+  void publisher.publish(envelope('hello', { id: '*', name: '*' }, { channel: shareS.name, version: APP_VERSION, cut: ownCut }));
   const list = [...packs.values()].map((p) => ({ id: p.id, name: p.label, demo: !!p.demo, connected: p.connected }));
   void publisher.publish(envelope('packs', { id: '*', name: '*' }, list));
 }
@@ -2388,6 +2423,7 @@ async function startView() {
     onEnvelope: (env) => {
       if (env.k === 'log-id') { readerLogReply(env.v); return; }
       if (env.k === 'hello') {
+        helloCutSeen(env.v && env.v.cut);
         const h = viewHello(viewS, env);
         if (h) { if (h.name && h.name !== tabChannel) { tabChannel = h.name; writeTabMeta(); } $('viewName').textContent = h.name; $('viewName').hidden = !h.name; document.title = h.name ? `${h.name} · BatRay live` : document.title; log(`live: channel "${h.name}"${h.version ? ` (reader v${h.version})` : ''}`); }
         return;
@@ -2853,7 +2889,7 @@ async function stopTv(why = 'card') {
 if (window.__batrayTest) Object.assign(window.__batrayTest, {
   openSharePanel, beginShare, startTv, stopTv, castToTv, tvState: () => (tv ? tv.state : null), logLines: () => logLines.slice(), logHeaderLines, autoUpload, autoUpState: () => ({ ...autoUp }), logSeq: () => logSeq,
   wakeState: () => ({ lock: wakeS.held, drops: wakeS.drops, refusals: wakeS.refusals, video: wakeS.videoOn, mode: wakeS.mode }), castState: () => ({ ...castS }),
-  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory: freshHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStuckSilent: (ms) => { hist.stuckSilentMs = ms; }, histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, packIds: () => [...packs.keys()], cutState: () => { const c = cutFor(active); return { pct: c.pct, mode: c.mode, v: c.v, how: c.est ? c.est.how : null, curveAt: active ? active.curveAt : 0, loading: active ? active.curveLoading : false }; }, tab: () => ({ id: TAB.id, how: TAB.how, why: TAB.why, role: TAB.role }), tabKey: (name) => tk(name), hasStores: async () => hist.stores(), connState: () => (active && active.cs ? { ...active.cs } : null),
+  shareState: () => ({ ...shareS }), tvUiState: () => ({ ...tvS }), histState: () => ({ ...histS, pending: pendingRows(), plot: !!histMem.plot, series: histMem.series ? histMem.series.s.t.length : 0 }), logState: () => ({ ...logS, pending: logS.pending.length }), logSet: (k, v) => { logS[k] = v; }, logLine: (m) => log(m), flushLog, setLogKeep, logList: () => hist.logList(), logRead: (n) => hist.logRead(n), downloadLogs, clearLogs, backupSettings, restoreSettings, resetSettings, renderStorage, memTick, appState, openBrowse, browseDelete, browseState: () => ({ ...browseS }), histSeed: async (rows) => { const byDay = new Map(); for (const r of rows) { const d = dayKey(r.t); byDay.set(d, (byDay.get(d) || []).concat([r])); } let n = 0; for (const [d, rs] of byDay) { const info = await hist.info(d); let id = info.maxId; const r = await hist.insert(d, rs.map((x) => ({ ...x, id: x.id || ++id }))); n += r.inserted; if (d === histS.day) { histS.nextId = Math.max(histS.nextId, id + 1); histS.todayRows = Math.max(histS.todayRows, id); histS.contig = (await hist.info(d)).contig; } } histS.days = await hist.days(); histMem.series = null; return n; }, remoteTake: (name, d, t, row) => { const p = packs.get(`r-${name}`) || addPack(new Pack(`r-${name}`, name, { remote: true })); p.remoteLive = true; return p.take(d, t, row); }, flushHistory, backupHistory, restoreHistory, histRequest, requestHistory, storeReceived, renderKnown, tarParse, clearHistory: freshHistory, maintainHistory, histList: () => hist.days(), histInfo: (d) => hist.info(d), histRows: (d, after, limit) => hist.rows(d, after, limit), histQuery: (q) => hist.query(q), histSlow: (ms) => hist.slow(ms), castTimeouts: (ms, tvMs) => { if (ms) castFlowMs = ms; if (tvMs) castTvMs = tvMs; }, castFlow: () => ({ busy: castS.busy, phase: castS.phase, requestAt: castS.requestAt }), renderTv: () => { if (tv) renderTv(tv.state); }, histSpin: (ms) => hist.spin(ms), histCorrupt: (day) => hist.corrupt(day), histRestart: () => hist.b.restart(), histStats: () => hist.statsLine(), histInsert: (d, rows) => hist.insert(d, rows), histTimeouts: (t) => Object.assign(hist.timeouts, t), histStuckSilent: (ms) => { hist.stuckSilentMs = ms; }, histStatsRaw: () => JSON.parse(JSON.stringify(hist.stats)), histExport: (d) => hist.exportDay(d), gzipBytes, packIds: () => [...packs.keys()], cutState: () => { const c = cutFor(active); return { pct: c.pct, mode: c.mode, v: c.v, learn: c.learn, from: cutSet().from, loading: active ? active.learnLoading : false }; }, helloCut: (v) => helloCutSeen(v), tab: () => ({ id: TAB.id, how: TAB.how, why: TAB.why, role: TAB.role }), tabKey: (name) => tk(name), hasStores: async () => hist.stores(), connState: () => (active && active.cs ? { ...active.cs } : null),
   uiState: () => ({ ...uiS }), openSheet, closeSheet, setKeepAwake, rxHistFile, compatState: () => compatS, browserInfo: () => browserInfo, histLockOut: () => hist.lockOut(1000, new Error('test')), histOffState: () => ({ off: histOff(), text: $('histOff').textContent, grey: $('trendCard').classList.contains('histoff'), cardShown: !$('trendCard').hidden }), statusState: () => ({ ...statusS }), statusTick, pubLink: () => (publisher ? publisher.link : null), readerState: () => ({ ...readerS, gone: viewer ? viewer.state.gone : null, reader: viewer ? viewer.state.reader : null }), packData: () => (active ? active.data : null),
   tvFrame: (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; drawTvFrame(c.getContext('2d'), w, h, { tick: 3, ...tvModel() }); return c.toDataURL('image/png'); },
 });

@@ -141,26 +141,27 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
-## 0.9.99 (2026-11-27): the inverter cut-off as a pack voltage
+## 0.9.99 (2026-11-27): the inverter cut-off as a pack voltage, learned from the pack
 
-Owner: "my inverter doesn't talk to the BMS ... cuts at 46 volts for the sea hut, not the 10 % default". Notes
-now offers the cut-off as a battery % or as a pack voltage (radio; `batray_cutoff_mode` pct|v,
-`batray_cutoff_v`). Time to go still counts battery % from the BMS, so a voltage has to be placed on that
-scale: `cutoff-logic.js` `cutSoc()` reads where this pack's own voltage sits at each % from its stored
-discharge rows (`hist.curve()`, worker op `curve` over the last 30 days, `curveBins()` = rows with i < -0.5
-grouped by whole %; live rows are added as they are stored) and
+Owner: "my inverter doesn't talk to the BMS ... cuts at 46 volts for the sea hut, not the 10 % default"; then "I would
+not want to guess that all LFP manufacturers are the same, so better learn from existing history ... if data is less
+than 24 hours or a complete cycle, just say estimate not ready" and "viewer can set separate from reader, default from
+reader". Notes offers the cut-off as a battery % or as a pack voltage (radio; reader keys `batray_cutoff_mode` pct|v,
+`batray_cutoff_pct`, `batray_cutoff_v`). Time to go counts the BMS's battery %, so a voltage is placed on that scale by
+what the pack's own stored history shows, nothing else - no chemistry curve:
 
-- **seen**: a stored reading at or below the cut-off cell voltage - read off directly;
-- **fit**: the lowest readings mapped onto a chemistry curve (`CHEM` lfp / nmc / lto), a straight line from
-  BMS % to curve % fitted, the cut-off mapped back - the pack's own level, the curve's knee below it;
-- **offset**: one or two low readings - the offset between the two scales;
-- **curve**: no usable readings, or only on a flat stretch (the LFP plateau) - the curve alone.
-
-`chemOf()` trusts the BMS's cell over-voltage setting first, then a cell above 3.7 V, then the battery-type
-byte (the owner's 14S Li-ion pack reports type 0 = LFP). On that pack's numbers (3.57 V/cell at 52 %, 3.39 V
-at 34 %) 46 V lands near 31 %, where a textbook Li-ion curve alone says 3 % and the default said 10 %. The
-line under the choice (`cutNote()`) says which method and how low the readings go; the red line on the battery
-and the chart follow the estimate; `etaEmptyV` says "to 46.0 V cut-off". The sag under load is not modelled.
+- `hist.cutDays(p, volts, days)` (worker op `cutDays`, SQL `cutDay()`; the in-memory store `cutDayFromRows()`): per
+  stored day of the last `LEARN_DAYS` 30, the pack's time span, its discharge rows (i < -0.5) at or under the cut-off
+  pack voltage by whole %, and its lowest discharge reading.
+- `cutoff-logic.js` `learnCut()`: a day's cut-off % = the highest % with `BELOW_ROWS` 2 rows (3-6 s at a row per 3 s) at
+  or under the voltage, counted from the top (a single surge is not a cut; an inverter that cuts within seconds still
+  leaves two rows); the estimate = the median of the latest
+  `USE_EVENTS` 5 such discharges. Not ready under `MIN_HOURS` 24 h of stored readings ('hours'), or without a discharge
+  that reached the voltage ('never': the note names the lowest voltage the pack reached and its %), or without a
+  history store ('store'). Not ready = no number: the picture says "learning", no red line.
+- Learned again hourly, a minute after a stored reading under the voltage, and at once on any setting change.
+- The reader sends its setting in the hello (`cut`); a viewer uses it until it sets its own for that room
+  (`batray_cutoff_view` = {room: setting}, never the reader keys), shown by `#cutSrc`, with "Use the reader's".
 
 ## 0.9.98 (2026-11-27): fixes from a second, independent read of every 0.9.95+ log
 

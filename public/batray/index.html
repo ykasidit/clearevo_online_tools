@@ -448,6 +448,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
             <div class="cutopt"><label><input type="radio" name="cutMode" id="cutModePct" value="pct" checked> <span data-i18n="cutByPct">at</span></label> <input id="cutoff" type="number" min="0" max="95" step="1" value="10" size="3" aria-label="inverter cut-off, percent of capacity"> <span data-i18n="cutPctPost">% of capacity (default 10 %)</span></div>
             <div class="cutopt"><label><input type="radio" name="cutMode" id="cutModeV" value="v"> <span data-i18n="cutByV">at a pack voltage of</span></label> <input id="cutoffV" type="number" min="1" max="1000" step="0.1" size="5" aria-label="inverter cut-off, pack voltage"> <span data-i18n="cutVPost">V</span></div>
             <div class="cutnote" data-i18n="cutVHelp">Pick the voltage when the inverter does not talk to the BMS and cuts at its own low-voltage setting.</div>
+            <div class="cutnote" id="cutSrcRow"><span id="cutSrc" hidden></span> <button type="button" id="cutUseReader" class="linkbtn" data-i18n="cutUseReader" hidden>Use the reader's</button></div>
             <div class="cutnote" id="cutNote" hidden></div>
             <span id="cutoffPost" data-i18n="cutoffPost">Straight-line from the smoothed current; charging slows near full, so time to full is optimistic.</span></div>
           <div class="check"><span id="layout"></span></div>

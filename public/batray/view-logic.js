@@ -75,10 +75,12 @@ export function flowModel(d, settings, T) {
 /** The time-to-go line: to the inverter cut-off while discharging, to full while charging. */
 export function etaModel({ remainAh, nominalAh, currentA, cutoffPct, cutoffV = null }, T) {
   const r = timeToGo({ remainAh, nominalAh, currentA, cutoffPct });
+  // a voltage cut-off this pack has not learned yet, while discharging: say so rather than show nothing
+  const learning = r.kind === 'unknown' && cutoffPct === null && cutoffV !== null && typeof currentA === 'number' && currentA < -0.05 && typeof remainAh === 'number';
   return {
-    kind: r.kind,
-    text: r.kind === 'empty' ? (cutoffV !== null ? T.etaEmptyV(fmtSpan(r.hours, T), fmt(cutoffV, 1)) : T.etaEmpty(fmtSpan(r.hours, T), cutoffPct)) : r.kind === 'full' ? T.etaFull(fmtSpan(r.hours, T)) : r.kind === 'atCutoff' ? T.etaAtCutoff : '',
-    bad: r.kind === 'atCutoff', hidden: r.kind === 'unknown',
+    kind: learning ? 'learning' : r.kind,
+    text: r.kind === 'empty' ? (cutoffV !== null ? T.etaEmptyV(fmtSpan(r.hours, T), fmt(cutoffV, 1)) : T.etaEmpty(fmtSpan(r.hours, T), cutoffPct)) : learning ? T.etaLearning(fmt(cutoffV, 1)) : r.kind === 'full' ? T.etaFull(fmtSpan(r.hours, T)) : r.kind === 'atCutoff' ? T.etaAtCutoff : '',
+    bad: r.kind === 'atCutoff', hidden: r.kind === 'unknown' && !learning,
   };
 }
 
@@ -160,17 +162,18 @@ export function trendProgress(spanMs, hasData) {
   return { ready: s >= TREND_MIN_MS, pct: Math.min(100, Math.round((s / TREND_MIN_MS) * 100)), haveS: Math.min(TREND_MIN_MS / 1000, Math.round(s / 1000)), needS: TREND_MIN_MS / 1000, waiting: false };
 }
 
-/** The line under the cut-off choice: what a voltage cut-off is on this pack's % scale, and where that comes from.
- *  cut = effectiveCut() of cutoff-logic.js, chem = its chemistry key. */
-export function cutNote(cut, chem, T) {
+/** The line under the cut-off choice: what a voltage cut-off is on this pack's % scale, learned from its own stored
+ *  discharges, or what the learning still needs. cut = effectiveCut() of cutoff-logic.js. */
+export function cutNote(cut, T, { loading = false, days = 30, minHours = 24 } = {}) {
   if (!cut || cut.mode !== 'v') return '';
   if (cut.v === null) return T.cutNoteNoV;
-  if (!chem) return T.cutNoteNoChem;
-  if (!cut.est) return T.cutNoteWait;
-  const v = fmt(cut.v, 1), pct = Math.round(cut.est.soc), name = T.chemName[chem] || chem;
-  if (cut.est.how === 'seen') return T.cutNoteSeen(v, pct);
-  if (cut.est.how === 'curve') return T.cutNoteCurve(v, pct, name);
-  return T.cutNoteFit(v, pct, cut.est.low, name);
+  const v = fmt(cut.v, 1), l = cut.learn;
+  if (!l) return loading ? T.cutNoteLoading : T.cutNoteWait;
+  if (l.why === 'store') return T.cutNoteStore;
+  if (l.why === 'demo') return T.cutNoteDemo;
+  if (l.why === 'hours') return T.cutNoteHours(v, Math.floor(l.hours || 0), minHours);
+  if (l.why === 'never') return l.low ? T.cutNoteNever(v, fmt(l.low.v, 1), Math.round(l.low.soc), days) : T.cutNoteNeverNone(v, days);
+  return l.n === 1 ? T.cutNoteOne(v, Math.round(l.soc)) : T.cutNoteReady(v, Math.round(l.soc), l.n, l.min, l.max);
 }
 
 /** The model tv-draw paints: the picture's numbers laid out for a TV. */
