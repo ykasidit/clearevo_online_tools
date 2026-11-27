@@ -241,7 +241,7 @@ function logHeaderLines() {
     `net: online=${navigator.onLine} · type ${c.type || c.effectiveType || '?'} · downlink ${c.downlink ?? '?'} Mbps · rtt ${c.rtt ?? '?'} ms · saveData ${c.saveData ?? '?'}`,
     `lang: ui=${langCode} · browser ${navigator.language} · ${(navigator.languages || []).join(',')}`,
     `features: secure=${yn(isSecureContext)} bluetooth=${yn(!!navigator.bluetooth)} adv=${yn(typeof BluetoothDevice !== 'undefined' && 'watchAdvertisements' in BluetoothDevice.prototype)} getDevices=${yn(!!navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function')} availability=${yn(navigator.bluetooth && navigator.bluetooth.getAvailability)} wakeLock=${yn('wakeLock' in navigator)} notifications=${typeof Notification === 'undefined' ? 'none' : Notification.permission} sw=${navigator.serviceWorker && navigator.serviceWorker.controller ? 'controlled' : 'none'} webCodecs=${yn(typeof VideoEncoder !== 'undefined')} hls=${v.canPlayType('application/vnd.apple.mpegurl') || 'no'} remotePlayback=${yn('remote' in v)} storage=${yn(storageOk)} clipboard=${yn(!!navigator.clipboard && typeof navigator.clipboard.writeText === 'function')}`,
-    `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutDesc(cutSet())} keepAwake=${wakeS.mode} lowPower=${uiS.lowPower} tvRes=${$('tvRes').dataset.value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
+    `settings: autoReconnect=${$('autoRe').checked} cutoff=${cutDesc(cutSet()).replace(" ", "")} keepAwake=${wakeS.mode} lowPower=${uiS.lowPower} tvRes=${$('tvRes').dataset.value} zoom=${document.body.style.zoom || '100%'} localStorage=[${lsKeys}]`,
   ];
 }
 // what the header cannot know synchronously: battery, codec support, adapter state
