@@ -20,7 +20,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openSqlite } from './sqlite_node.mjs';
-import { ensureSchema, insertRows, maxId, rowCount, contigId, rowsAfter, lastRows, buckets, energyWh, span, dayInfo, dbBytes, mergeFrom, looksLikeDayDb, cellsToBlob, blobToCells, COLS } from '../public/batray/history-sql.js';
+import { ensureSchema, insertRows, maxId, rowCount, contigId, rowsAfter, lastRows, buckets, energyWh, curveBins, span, dayInfo, dbBytes, mergeFrom, looksLikeDayDb, cellsToBlob, blobToCells, COLS } from '../public/batray/history-sql.js';
 import { rowFromReading, isCorruptError } from '../public/batray/history-logic.js';
 import { decodeCellInfo } from '../public/batray/jkbms.js';
 import * as F from './batray_frames.js';
@@ -199,4 +199,20 @@ test('a corrupt day file: a write raises SQLITE_CORRUPT too (nothing is silently
   assert.ok(e2 && !isCorruptError(e2), 'a bad statement is not corruption: ' + (e2 && e2.message));
   assert.equal(isCorruptError(new Error('database or disk is full')), false, 'a full disk is not corruption');
   ok.close();
+});
+
+test('curveBins: discharge rows of one pack by whole %, pack volts summed; charging, idle, other packs and rows without SOC or volts left out - the same as the in-memory store', async () => {
+  const { curveBinsFromRows } = await import('../public/batray/cutoff-logic.js');
+  const db = mem();
+  const rows = [
+    { id: 1, t: T0, p: 'n11', soc: 34.4, v: 47.5, i: -6 }, { id: 2, t: T0 + 1, p: 'n11', soc: 33.6, v: 47.4, i: -6.5 },
+    { id: 3, t: T0 + 2, p: 'n11', soc: 34, v: 49, i: 5 }, { id: 4, t: T0 + 3, p: 'n11', soc: 34, v: 48, i: -0.2 },
+    { id: 5, t: T0 + 4, p: 'm-00', soc: 34, v: 52, i: -3 }, { id: 6, t: T0 + 5, p: 'n11', soc: null, v: 47, i: -3 }, { id: 7, t: T0 + 6, p: 'n11', soc: 40, v: null, i: -3 },
+  ];
+  insertRows(db, rows);
+  const got = curveBins(db, 'n11').map((b) => ({ s: b.s, sv: Math.round(b.sv * 100) / 100, n: b.n }));
+  assert.deepEqual(got, [{ s: 34, sv: 94.9, n: 2 }]);
+  assert.deepEqual(curveBinsFromRows(rows, 'n11').map((b) => ({ s: b.s, sv: Math.round(b.sv * 100) / 100, n: b.n })), got);
+  assert.deepEqual(curveBins(db, 'none'), []);
+  db.close();
 });

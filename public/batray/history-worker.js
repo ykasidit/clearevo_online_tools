@@ -31,7 +31,7 @@
 // year-long cached copy that had no header.
 import sqlite3InitModule from './sqlite3.js';
 import { isCorruptError } from './history-logic.js';
-import { ensureSchema, insertRows, rowsAfter, lastRows, buckets, energyWh, span, dayInfo, dayCount, dbBytes, mergeFrom, looksLikeDayDb } from './history-sql.js';
+import { ensureSchema, insertRows, rowsAfter, lastRows, buckets, energyWh, curveBins, span, dayInfo, dayCount, dbBytes, mergeFrom, looksLikeDayDb } from './history-sql.js';
 import { storeDirs, storeOfDir, storeOfLogDir, validTabId } from './tab-logic.js';
 import { sleep } from './sync.js';
 
@@ -254,6 +254,13 @@ const ops = {
     }
     closeIdle(todayKey());
     return { parts, energy, first, last };
+  },
+  /** Discharge readings by battery % over the named days (the voltage cut-off estimate). */
+  async curve({ p, days }) {
+    await init(); const bins = [];
+    for (const day of (days || [])) await visit(day, (db) => { for (const b of curveBins(db, p)) bins.push(b); });
+    closeIdle(todayKey());
+    return { bins };
   },
   async span({ p, since = 0, days }) {
     await init(); let first = null, last = null, n = 0;

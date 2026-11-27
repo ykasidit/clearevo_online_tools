@@ -141,6 +141,27 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.99 (2026-11-27): the inverter cut-off as a pack voltage
+
+Owner: "my inverter doesn't talk to the BMS ... cuts at 46 volts for the sea hut, not the 10 % default". Notes
+now offers the cut-off as a battery % or as a pack voltage (radio; `batray_cutoff_mode` pct|v,
+`batray_cutoff_v`). Time to go still counts battery % from the BMS, so a voltage has to be placed on that
+scale: `cutoff-logic.js` `cutSoc()` reads where this pack's own voltage sits at each % from its stored
+discharge rows (`hist.curve()`, worker op `curve` over the last 30 days, `curveBins()` = rows with i < -0.5
+grouped by whole %; live rows are added as they are stored) and
+
+- **seen**: a stored reading at or below the cut-off cell voltage - read off directly;
+- **fit**: the lowest readings mapped onto a chemistry curve (`CHEM` lfp / nmc / lto), a straight line from
+  BMS % to curve % fitted, the cut-off mapped back - the pack's own level, the curve's knee below it;
+- **offset**: one or two low readings - the offset between the two scales;
+- **curve**: no usable readings, or only on a flat stretch (the LFP plateau) - the curve alone.
+
+`chemOf()` trusts the BMS's cell over-voltage setting first, then a cell above 3.7 V, then the battery-type
+byte (the owner's 14S Li-ion pack reports type 0 = LFP). On that pack's numbers (3.57 V/cell at 52 %, 3.39 V
+at 34 %) 46 V lands near 31 %, where a textbook Li-ion curve alone says 3 % and the default said 10 %. The
+line under the choice (`cutNote()`) says which method and how low the readings go; the red line on the battery
+and the chart follow the estimate; `etaEmptyV` says "to 46.0 V cut-off". The sag under load is not modelled.
+
 ## 0.9.98 (2026-11-27): fixes from a second, independent read of every 0.9.95+ log
 
 All 611 auto-uploaded logs since 0.9.95 (9 sessions, 3 readers) were read again

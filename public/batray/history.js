@@ -21,6 +21,7 @@
 // card says "not stored".
 
 import { opTimeoutMs, statsState, statsAdd, stuckDecision, statsLine, statsReset, bucketsFromRows, energyFromRows, daysInRange } from './history-logic.js';
+import { curveBinsFromRows } from './cutoff-logic.js';
 import { sleep, select, Flag, TIMEOUT } from './sync.js';
 
 const WORKER_URL = 'history-worker.js';
@@ -55,6 +56,7 @@ class MemoryBackend {
     }
     return { parts, energy, first, last };
   }
+  async curve({ p, days }) { const bins = []; for (const day of (days || [])) bins.push(...curveBinsFromRows(this.rowsOf(day), p)); return { bins }; }
   async span({ p, since = 0, days }) { let first = null, last = null, n = 0; for (const day of (days || [...this.store.keys()])) for (const r of this.rowsOf(day)) if (r.p === p && r.t >= since) { n++; if (first === null || r.t < first) first = r.t; if (last === null || r.t > last) last = r.t; } return { first, last, n }; }
   async remove({ day }) { return { removed: this.store.delete(day) }; }
   async clear() { const n = this.store.size; this.store.clear(); return { removed: n }; }
@@ -113,7 +115,7 @@ class WorkerBackend {
 const GONE_RX = /could not be found at the time an operation was processed/;   // a NotFoundError whose name was lost on the way
 export const STUCK_SILENT_MS = 20000, RETRY_MS = 120000, RETRY_TRIES = 30, PERSIST_MS = 10000;
 const POOL_LOCKED_RX = /Access Handles? cannot be created|pool not taken/i;
-const KIND = { ping: 'ping', pause: 'other', resume: 'other', insert: 'insert', days: 'days', info: 'days', rows: 'rows', last: 'rows', query: 'query', span: 'query', remove: 'remove', clear: 'clear', export: 'export', import: 'import', oldFiles: 'days', slow: 'other', spin: 'other', corrupt: 'other', note: 'log', logAppend: 'log', logList: 'log', logRead: 'log', logRemove: 'log', logClear: 'log', logAllGz: 'export', estimate: 'days', config: 'other', stores: 'days', dropStore: 'remove' };
+const KIND = { ping: 'ping', pause: 'other', resume: 'other', insert: 'insert', days: 'days', info: 'days', rows: 'rows', last: 'rows', query: 'query', span: 'query', curve: 'query', remove: 'remove', clear: 'clear', export: 'export', import: 'import', oldFiles: 'days', slow: 'other', spin: 'other', corrupt: 'other', note: 'log', logAppend: 'log', logList: 'log', logRead: 'log', logRemove: 'log', logClear: 'log', logAllGz: 'export', estimate: 'days', config: 'other', stores: 'days', dropStore: 'remove' };
 
 export class HistoryStore {
   /** opts: { log(msg), store (this tab's store id, or a promise of it: 0.9.77), forceMemory, backend (tests), makeWorker (tests), timeouts (tests: {op: ms}), stuckSilentMs / retryMs / retryTries (tests) } */
@@ -254,6 +256,7 @@ export class HistoryStore {
   async last(day, p, n = 1) { return (await this.call('last', { day, p, n })).rows; }
   query({ p, from, to, stepMs, days }) { return this.call('query', { p, from, to, stepMs, days: days || daysInRange(from, to) }); }
   span(p, since = 0, days) { return this.call('span', { p, since, days }); }
+  async curve(p, days) { return (await this.call('curve', { p, days })).bins; }
   remove(day) { return this.call('remove', { day }); }
   clear() { return this.call('clear'); }
   async exportDay(day) { const r = await this.call('export', { day }); if (r.bytes) this.stats.ops.export.rows += r.bytes.length; return r.bytes; }

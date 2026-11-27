@@ -89,7 +89,8 @@ body.offline #fDash{animation:none}
 .chip{border:1px solid #1c3550;border-radius:12px;padding:2px 9px;color:#a7bccf;background:#0a1626;white-space:nowrap}
 .chip.ok{color:#5fd39a;border-color:#2b5a45}.chip.bad{color:#ff8a80;border-color:#7a2f2a;font-weight:700}.chip.warn{color:#ffd24a;border-color:#6b5a1a}
 #etaLine{display:block;line-height:1.8}
-#etaLine input{width:52px;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:4px;padding:1px 4px;font:inherit}
+#etaLine input[type=number]{width:52px;background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:4px;padding:1px 4px;font:inherit}#etaLine #cutoffV{width:64px}
+.cutopt{display:block}.cutopt label{cursor:pointer}.cutopt input[type=radio]{accent-color:#4ec4e0;vertical-align:middle}.cutnote{color:#a7bccf;margin:2px 0 4px}#cutNote{color:#cdd9e5}
 .ranges{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.ranges button{background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:8px;padding:4px 12px;font:inherit;cursor:pointer}.ranges button.on{background:#1c5680;border-color:#2aa9e0;color:#fff}#trend{width:100%;min-height:200px}.params button{--line:#cdd9e5;display:inline-flex;align-items:center;gap:6px;padding:4px 10px}.params button .dot{width:9px;height:9px;border-radius:50%;background:#3a5878;flex:none}.params button.on{background:#12283f;border-color:var(--line);color:#fff}.params button.on .dot{background:var(--line)}.params button .val{color:#9fb3c8;font-variant-numeric:tabular-nums}.params button.on .val{color:var(--line)}.params button .val:empty{display:none}#trend .uplot{font-family:'Segoe UI',Tahoma,sans-serif}#trend .u-select{background:rgba(74,169,224,.25)}
 .serverNote{color:#8fa6bd;font-size:12px;line-height:1.5;padding:2px 12px 6px}.serverNote a{color:#4aa9e0}.tvpanel .serverNote{padding:0}
 .storage{margin:10px 0 6px;border:1px solid #1c3550;border-radius:8px;background:#0d1f33;overflow:hidden}.stHead{display:flex;justify-content:space-between;gap:10px;padding:8px 12px;background:#12283f;font-weight:600;color:#eaf4ff}.stHead span:last-child{color:#4aa9e0;font-weight:400}.stRow{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;border-top:1px solid #1c3550}.stName{display:flex;flex-direction:column;min-width:0}.stSize{color:#8fa6bd;font-size:12px}.stBtns{display:flex;gap:6px;flex-wrap:wrap}.stBtn{background:#12283f;color:#cdd9e5;border:1px solid #26476a;border-radius:8px;padding:4px 10px;font:inherit;font-size:13px;cursor:pointer}.stBtn.danger{border-color:#7a3a3a;color:#ff8a80}.stBtn[hidden]{display:none}
@@ -222,7 +223,8 @@ body.view #empty,body.view #oneApp{display:none}
 
 /* ---- UI_GUIDELINES.md: touch targets, bottom sheet, viewer tab bar, low power ---- */
 @media (max-width:700px),(pointer:coarse){
-  .tbtn,.linkbtn,.pchip,.demobtn,#stopDemo,.tabbar button,.sheetBox .opts button,.sheetBox .item .stBtn,.optbtn,.ranges button,.stBtn,#flowFull,details.card>summary,#etaLine input,.toolbar label.chk{min-height:48px}
+  .tbtn,.linkbtn,.pchip,.demobtn,#stopDemo,.tabbar button,.sheetBox .opts button,.sheetBox .item .stBtn,.optbtn,.ranges button,.stBtn,#flowFull,details.card>summary,#etaLine input[type=number],.cutopt label,.toolbar label.chk{min-height:48px}
+  .cutopt label{display:inline-flex;align-items:center;gap:6px}
   .tbtn{min-width:48px}.fontbtn{min-height:40px;min-width:40px}.linkbtn{padding:10px 8px}.pchip{padding:6px 14px}
   #demoBadge button{min-height:48px;padding:4px 14px}
 }
@@ -442,7 +444,12 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
         </div>
         <div class="card" id="notesCard" data-tab="more">
           <h2><span data-i18n="notesH">Notes</span></h2>
-          <div class="check" id="etaLine"><span id="cutoffPre" data-i18n="cutoffPre">Time to empty counts down to your inverter's low-battery cut-off at</span> <input id="cutoff" type="number" min="0" max="95" step="1" value="10" size="3" aria-label="inverter cut-off, percent of capacity"> % <span id="cutoffPost" data-i18n="cutoffPost">of capacity (default 10 %, set your inverter's value). Straight-line from the smoothed current; charging slows near full, so time to full is optimistic.</span></div>
+          <div class="check" id="etaLine"><span id="cutoffPre" data-i18n="cutoffPre">Time to empty counts down to your inverter's low-battery cut-off:</span>
+            <div class="cutopt"><label><input type="radio" name="cutMode" id="cutModePct" value="pct" checked> <span data-i18n="cutByPct">at</span></label> <input id="cutoff" type="number" min="0" max="95" step="1" value="10" size="3" aria-label="inverter cut-off, percent of capacity"> <span data-i18n="cutPctPost">% of capacity (default 10 %)</span></div>
+            <div class="cutopt"><label><input type="radio" name="cutMode" id="cutModeV" value="v"> <span data-i18n="cutByV">at a pack voltage of</span></label> <input id="cutoffV" type="number" min="1" max="1000" step="0.1" size="5" aria-label="inverter cut-off, pack voltage"> <span data-i18n="cutVPost">V</span></div>
+            <div class="cutnote" data-i18n="cutVHelp">Pick the voltage when the inverter does not talk to the BMS and cuts at its own low-voltage setting.</div>
+            <div class="cutnote" id="cutNote" hidden></div>
+            <span id="cutoffPost" data-i18n="cutoffPost">Straight-line from the smoothed current; charging slows near full, so time to full is optimistic.</span></div>
           <div class="check"><span id="layout"></span></div>
           <div class="check" id="device" hidden></div>
           <div class="check" id="oneApp" hidden data-i18n-html="oneApp">A JK BMS accepts one app at a time - to use the JK app again, press <b>Disconnect</b> here first.</div>

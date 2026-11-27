@@ -119,6 +119,12 @@ export function buckets(db, { p, from, to, stepMs }) {
   return out;
 }
 
+/** Discharge readings of pack p grouped by whole battery %: {s, sv (pack volts summed), n}. The voltage cut-off
+ *  estimate (cutoff-logic.js) reads where this pack's voltage sits at each %. */
+export function curveBins(db, p) {
+  return db.selectObjects('SELECT round(soc) AS s, sum(v) AS sv, count(*) AS n FROM readings WHERE p = ? AND i < -0.5 AND soc IS NOT NULL AND v IS NOT NULL GROUP BY round(soc)', [p]);
+}
+
 /** Charged / discharged watt-hours of pack p between from and to: each row's power over the time since the row
  *  before it, capped at maxGapMs (a gap in the log is not energy). */
 export function energyWh(db, { p, from, to, maxGapMs = 60000 }) {

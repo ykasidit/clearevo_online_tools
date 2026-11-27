@@ -24,7 +24,7 @@
 export const IDLE_A = 0.05;
 
 /**
- * @param {{remainAh:number|null, nominalAh:number|null, currentA:number|null, cutoffPct:number}} x
+ * @param {{remainAh:number|null, nominalAh:number|null, currentA:number|null, cutoffPct:number|null}} x
  * @returns {{kind:'empty'|'full'|'idle'|'atCutoff'|'unknown', hours:number|null}}
  */
 export function timeToGo({ remainAh, nominalAh, currentA, cutoffPct }) {
@@ -32,6 +32,7 @@ export function timeToGo({ remainAh, nominalAh, currentA, cutoffPct }) {
   if (n(remainAh) || n(nominalAh) || n(currentA) || nominalAh <= 0) return { kind: 'unknown', hours: null };
   const cut = Math.max(0, Math.min(95, Number.isFinite(cutoffPct) ? cutoffPct : 0));
   if (Math.abs(currentA) < IDLE_A) return { kind: 'idle', hours: null };
+  if (currentA < 0 && cutoffPct === null) return { kind: 'unknown', hours: null };   // a voltage cut-off not yet placed on the % scale
   if (currentA < 0) {
     const usable = remainAh - nominalAh * cut / 100;
     if (usable <= 0) return { kind: 'atCutoff', hours: 0 };

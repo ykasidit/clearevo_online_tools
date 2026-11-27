@@ -64,12 +64,12 @@ export function sheetModel(kind, ctx, T) {
     case 'soc': {
       m.title = T.sheetSocTitle;
       if (!d) { m.lead = T.noData; break; }
-      const e = etaModel({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: ctx.iEmaV !== null && ctx.iEmaV !== undefined ? ctx.iEmaV : d.current, cutoffPct: ctx.cutoffPct }, T);
+      const e = etaModel({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: ctx.iEmaV !== null && ctx.iEmaV !== undefined ? ctx.iEmaV : d.current, cutoffPct: ctx.cutoffPct, cutoffV: ctx.cutoffV === undefined ? null : ctx.cutoffV }, T);
       m.lead = (d.soc === null || d.soc === undefined ? T.noData : T.sheetSocLead(d.soc)) + (e.text ? ' ' + e.text : '');
       const cls = socClass(d.soc); m.tone = cls.includes('crit') ? 'act' : cls.includes('low') ? 'watch' : cls ? 'ok' : '';
       m.rows.push([T.shPackV, fmt(d.packV, 2, ' V')], [T.shSoh, d.soh === undefined || d.soh === null ? '-' : `${d.soh} %`]);
       if (d.remainAh !== undefined && d.remainAh !== null) m.rows.push([T.shRemain, `${fmt(d.remainAh, 1)} / ${fmt(d.nominalAh, 0)} Ah`]);
-      m.rows.push([T.shCutoff, `${ctx.cutoffPct} %`]);
+      m.rows.push([T.shCutoff, ctx.cutoffV !== undefined && ctx.cutoffV !== null ? (ctx.cutoffPct === null ? `${fmt(ctx.cutoffV, 1)} V` : T.shCutoffV(fmt(ctx.cutoffV, 1), ctx.cutoffPct)) : `${ctx.cutoffPct} %`]);
       break;
     }
     case 'flow': {

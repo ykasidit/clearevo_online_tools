@@ -73,11 +73,11 @@ export function flowModel(d, settings, T) {
 }
 
 /** The time-to-go line: to the inverter cut-off while discharging, to full while charging. */
-export function etaModel({ remainAh, nominalAh, currentA, cutoffPct }, T) {
+export function etaModel({ remainAh, nominalAh, currentA, cutoffPct, cutoffV = null }, T) {
   const r = timeToGo({ remainAh, nominalAh, currentA, cutoffPct });
   return {
     kind: r.kind,
-    text: r.kind === 'empty' ? T.etaEmpty(fmtSpan(r.hours, T), cutoffPct) : r.kind === 'full' ? T.etaFull(fmtSpan(r.hours, T)) : r.kind === 'atCutoff' ? T.etaAtCutoff : '',
+    text: r.kind === 'empty' ? (cutoffV !== null ? T.etaEmptyV(fmtSpan(r.hours, T), fmt(cutoffV, 1)) : T.etaEmpty(fmtSpan(r.hours, T), cutoffPct)) : r.kind === 'full' ? T.etaFull(fmtSpan(r.hours, T)) : r.kind === 'atCutoff' ? T.etaAtCutoff : '',
     bad: r.kind === 'atCutoff', hidden: r.kind === 'unknown',
   };
 }
@@ -160,14 +160,27 @@ export function trendProgress(spanMs, hasData) {
   return { ready: s >= TREND_MIN_MS, pct: Math.min(100, Math.round((s / TREND_MIN_MS) * 100)), haveS: Math.min(TREND_MIN_MS / 1000, Math.round(s / 1000)), needS: TREND_MIN_MS / 1000, waiting: false };
 }
 
+/** The line under the cut-off choice: what a voltage cut-off is on this pack's % scale, and where that comes from.
+ *  cut = effectiveCut() of cutoff-logic.js, chem = its chemistry key. */
+export function cutNote(cut, chem, T) {
+  if (!cut || cut.mode !== 'v') return '';
+  if (cut.v === null) return T.cutNoteNoV;
+  if (!chem) return T.cutNoteNoChem;
+  if (!cut.est) return T.cutNoteWait;
+  const v = fmt(cut.v, 1), pct = Math.round(cut.est.soc), name = T.chemName[chem] || chem;
+  if (cut.est.how === 'seen') return T.cutNoteSeen(v, pct);
+  if (cut.est.how === 'curve') return T.cutNoteCurve(v, pct, name);
+  return T.cutNoteFit(v, pct, cut.est.low, name);
+}
+
 /** The model tv-draw paints: the picture's numbers laid out for a TV. */
-export function buildTvModel({ label, demo, data: d, settings, iEmaV, lastFrameAt, now, cutoffPct, T }) {
+export function buildTvModel({ label, demo, data: d, settings, iEmaV, lastFrameAt, now, cutoffPct, cutoffV = null, T }) {
   const clock = new Date(now).toTimeString().slice(0, 8);
   const base = { label: label || '', clock, brand: 'BatRay by ClearEvo.com', footer: demo ? T.demoBadge : '' };
   if (!d) return { ...base, waiting: true, waitingTxt: T.tvWaiting, updatedTxt: T.noData };
   const age = lastFrameAt ? Math.round((now - lastFrameAt) / 1000) : null;
   const f = flowModel(d, settings, T);
-  const e = etaModel({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: iEmaV !== null && iEmaV !== undefined ? iEmaV : d.current, cutoffPct }, T);
+  const e = etaModel({ remainAh: d.remainAh, nominalAh: d.nominalAh, currentA: iEmaV !== null && iEmaV !== undefined ? iEmaV : d.current, cutoffPct, cutoffV }, T);
   const a = ageLabel(age, T);
   return {
     ...base, soc: d.soc === undefined ? null : d.soc, cutoffPct, battLine: f.battLine, dir: f.dir,
