@@ -31,7 +31,7 @@ export const RULES = [
 export const REPEAT_S = 1800;
 export const DAYLIGHT = { fromH: 9, toH: 15 }; // local hours during which "no charge" is suspicious
 export const FULL_SOC = 95;                      // a pack this full has nothing to charge (2026-11-27 log: "not charging" at 100 %)
-export const FRESH_S = 120;                      // a reading older than this is not judged (the silent rule judges its age); not tighter: a viewer's age is by the reader's clock
+export const FRESH_S = 120;                      // a reading older than this is not judged (the silent rule judges its age)
 
 export function defaultSettings() {
   return {
@@ -90,7 +90,9 @@ export function conditionHolds(rule, cfg, sample, at) {
 // A gap between ticks longer than this means the page itself was frozen or asleep (Android freezes a hidden tab
 // for hours): the silence was ours, not the BMS's. The viewer log of 2026-09-30 fired "no data for over 5 min" and
 // "recovered" 4 s apart on every resume. Silence counts only while this page has been awake and its link up.
-export const TICK_GAP_S = 30;
+// 150 s, not less: Chrome wakes a timer in a tab hidden for 5 min only about once a minute (intensive throttling),
+// and such a tab still receives readings; the freezes in the logs were 15 min and longer (Fable review 2026-11-27).
+export const TICK_GAP_S = 150;
 export class Evaluator {
   constructor(settings) { this.settings = settings; this.state = new Map(); this.lastAbleAt = null; this.awakeSince = null; this.lastTick = new Map(); }
   /** Seconds this page has been able to receive: ticking without a gap, and (a viewer) with its link up. */
@@ -118,7 +120,10 @@ export class Evaluator {
       const st = this.state.get(k) || { since: null, firedAt: null, lastAt: null };
       if (woke) { if (st.since !== null) st.since = now; if (st.lastAt !== null) st.lastAt = now; this.state.set(k, st); }
       if (rule.kind === 'silent' && !able) continue;                        // our own link is down: the BMS's silence cannot be judged, keep the state as is
-      if (rule.kind !== 'silent' && !fresh) continue;
+      if (rule.kind !== 'silent' && !fresh) {                              // not judged: a hold not yet fired starts again with the next fresh reading
+        if (st.firedAt === null && st.since !== null) { st.since = null; this.state.set(k, st); }
+        continue;
+      }
       const holds = !!cfg.on && conditionHolds(rule, cfg, sample, at) && (rule.kind !== 'silent' || this.watchedS(now) > cfg.value);
       if (holds) {
         if (st.since === null) st.since = now;

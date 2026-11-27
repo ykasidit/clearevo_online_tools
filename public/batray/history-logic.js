@@ -263,7 +263,9 @@ export function histReqDecision(hs, { live, now, gap = false }) {
     if (now - hs.reqAt < GAP_REQ_MS) return { action: 'noop' };
     // an answer is still arriving (a file in the assembly, or the last chunk this recently): its later files may
     // fill the hole, and asking now makes the reader send them again (2026-11-26: 3268 and 19663 rows sent twice)
-    if (hs.rx || (typeof hs.rxAt === 'number' && now - hs.rxAt < GAP_REQ_MS)) return { action: 'noop' };
+    // (a half file counts for 3 x GAP_REQ_MS: an answer that stopped mid-file must not block the ask until the 10 min one)
+    const quietMs = typeof hs.rxAt === 'number' ? now - hs.rxAt : null;   // null: a chunk came without a time - still arriving
+    if (hs.rx ? quietMs === null || quietMs < 3 * GAP_REQ_MS : quietMs !== null && quietMs < GAP_REQ_MS) return { action: 'noop' };
     hs.gapAsks++; hs.reqAt = now; return { action: 'request', why: 'gap' };
   }
   if (now - hs.reqAt < HIST_REQ_MS) return { action: 'noop' };

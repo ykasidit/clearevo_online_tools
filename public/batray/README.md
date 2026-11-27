@@ -155,7 +155,9 @@ by a second reviewer. Fixed, each with a test:
   the reading it had before the freeze. A gap between ticks longer than
   `TICK_GAP_S` restarts every hold and repeat clock, and a rule about the
   reading is judged only on a reading at most `FRESH_S` (120 s) old; an old one
-  keeps the rule's state (no fire, repeat or recover).
+  keeps a fired rule's state (no repeat or recover) and restarts a hold not yet
+  fired. `TICK_GAP_S` is 150 s (was 30): Chrome wakes a timer in a tab hidden
+  for 5 min only about once a minute, and that tab must still alert.
 - "Not charging in daylight" is not raised at or above `FULL_SOC` (95 %).
 - "Server unreachable" / "Back online" alerts wait `REACH_HOLD_MS` 60 s (was
   10 s; 64 of 71 such alerts on one reader in two days cleared within 60 s).

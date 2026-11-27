@@ -109,7 +109,7 @@ test('2026-09-30 viewer log replay: a frozen tab resuming after 6.7 h must not f
   // the link down for a long stretch, then back with an old frame: the silence is counted from the link's return
   t += 3600 * 1000; assert.deepEqual(ev.tick('s-01', 'n', { ...ok, ageS: 3600, ownLinkDown: true }, t), []);
   assert.deepEqual(ev.tick('s-01', 'n', { ...ok, ageS: 3605, connected: false }, t += 5000), [], 'link just returned: not yet');
-  assert.equal(TICK_GAP_S, 30);
+  assert.equal(TICK_GAP_S, 150, 'a throttled hidden tab ticks about once a minute: not a freeze');
 });
 
 test('silent: stale frames, whether or not Bluetooth says connected', () => {
@@ -177,7 +177,8 @@ test('0.9.98 (2026-11-23..26 viewer logs): after a frozen page no alert fires fr
   assert.deepEqual(ev.tick('p', 'n', { ...crit, ageS: 4 * 3600 }, noon), [], 'the wake, the reading 4 h old');
   assert.deepEqual(ev.tick('p', 'n', { ...crit, ageS: 4 * 3600 + 5 }, noon + 5000), []);
   assert.deepEqual(ev.tick('p', 'n', crit, noon + 10e3), [], 'fresh again: the holds start from the wake');
-  assert.deepEqual(walk(ev, 'p', 'n', crit, noon + 10e3, noon + 125e3).map((e) => e.rule), ['socCritical'], '120 s of awake, fresh time');
+  assert.deepEqual(walk(ev, 'p', 'n', crit, noon + 10e3, noon + 125e3), [], 'the hold started again at the first fresh reading (noon + 10 s)');
+  assert.deepEqual(walk(ev, 'p', 'n', crit, noon + 120e3, noon + 135e3).map((e) => e.rule), ['socCritical'], '120 s of awake, fresh time');
   const ev2 = new Evaluator(defaultSettings());
   walk(ev2, 'p', 'n', crit, noon - 5000, noon + 400e3);
   assert.deepEqual(ev2.tick('p', 'n', { ...crit, ageS: 7200 }, noon + 400e3 + 7200e3), [], 'no repeat after the freeze');
