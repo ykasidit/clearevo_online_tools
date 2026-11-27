@@ -137,6 +137,26 @@ await evalJs(`document.querySelector('[data-tab-btn=history]').click(); 1`); awa
 const hw = await evalJs(`({ waitShown: getComputedStyle(document.getElementById('trendWait')).display !== 'none', txt: document.getElementById('trendWaitTxt').textContent, cardHidden: document.getElementById('trendCard').hidden })`);
 check('History never shows blank: without readings it says the trend starts once they arrive', hw.waitShown && /once readings arrive/.test(hw.txt) && hw.cardHidden, hw);
 
+// ---- Desktop viewer: History is hidden while the viewer is on Now, so the chart drawn then measured 0 px and kept the
+// 200 px minimum in a ~1000 px card (seen recording the how-to carousel, 2026-11-27); opening the tab sizes it ----
+await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+await send('Page.navigate', { url: `${BASE}/batray/?view=AbCdEfGhIjKlMnOpQrStUv&test&wide#k=AbCdEfGhIjKlMnOpQrStUv` }); await sleep(3000);
+const wide = await evalJs(`(async () => {
+  const T = window.__batrayTest; const now = Date.now(); const day = new Date(now).toISOString().slice(0, 10);
+  const rows = Array.from({ length: 200 }, (_, k) => ({ id: k + 1, t: now - 3600000 + k * 18000, p: 'rem', soc: 40 + k / 10, v: 52, i: -5, w: -260 }));
+  T.remoteTake('rem', { soc: 60, v: 52, i: -5, w: -260 }, now);
+  const gz = await T.gzipBytes(new TextEncoder().encode(JSON.stringify(rows)));
+  let bs = ''; for (const x of gz) bs += String.fromCharCode(x);
+  await T.storeReceived({ day, after: 0, b64: btoa(bs) });
+  await new Promise((r) => { setTimeout(r, 6500); });                   // the stored span is re-read at most every 5 s
+  await T.storeReceived({ day, after: 0, b64: btoa(bs) });               // a second delivery draws with that span known
+  await new Promise((r) => { setTimeout(r, 2500); });
+  return { tab: document.body.dataset.tab, drawn: window.__batrayTest.histState().series };
+})()`);
+await evalJs(`document.querySelector('[data-tab-btn=history]').click(); 1`); await sleep(800);
+const cw = await evalJs(`({ canvas: (document.querySelector('#trend canvas') || {}).clientWidth || 0, box: document.getElementById('trend').clientWidth, shown: !document.getElementById('trendCard').hidden })`);
+check('a desktop viewer: the chart drawn while on Now fills its card once History opens', wide.tab === 'now' && wide.drawn > 0 && cw.shown && cw.box > 900 && Math.abs(cw.canvas - cw.box) <= 2, { wide, cw });
+
 const thrown = events.filter((e) => e.method === 'Runtime.exceptionThrown').map((e) => e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text);
 check('no page exceptions', thrown.length === 0, thrown);
 ws.close();

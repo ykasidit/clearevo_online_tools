@@ -141,6 +141,13 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.100 (2026-11-27): the History chart fills its card on a desktop viewer
+
+A viewer opens on Now, where the History card is hidden; a chart drawn then measured 0 px and kept the 200 px
+minimum, so on a wide screen History showed a narrow chart in a wide card until the window was resized. Opening the
+History tab now draws the chart again at the card's width (`renderTabs`). Browser check in `batray_ui.mjs` (fails on
+0.9.99 with canvas 200 px in a 1074 px card).
+
 ## 0.9.99 (2026-11-27): the inverter cut-off as a pack voltage, learned from the pack
 
 Owner: "my inverter doesn't talk to the BMS ... cuts at 46 volts for the sea hut, not the 10 % default"; then "I would
