@@ -140,3 +140,25 @@ export function phonePowerEvent(ps, bat) {
 }
 /** The warning line on a viewer: shown while the reader phone is not charging; null when it charges or nobody knows. */
 export function phoneWarn(bat) { return bat && typeof bat.pct === 'number' && !bat.chg ? { pct: bat.pct, low: bat.pct <= PHONE_LOW_PCT } : null; }
+
+// A Bluetooth link that fell: how long it was up and what the pack was doing at its last reading, in one log line,
+// so the uploaded logs can tell a pattern (charging current, heat) from chance (2026-11-27: n11 dropped 74 times
+// in two days, mostly in the solar-charging hours; the logs had no reading next to the drop).
+const DROP_WHY = new Map([['down', 'link fell'], ['stalled', 'went quiet'], ['gap', 'time gap']]);
+function num(x, dec) { return typeof x === 'number' && Number.isFinite(x) ? x.toFixed(dec) : '-'; }
+function span(s) { return s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} m` : s >= 60 ? `${Math.floor(s / 60)} m ${s % 60} s` : `${s} s`; }
+/** The drop line, or null for an end that is not a drop (a disconnect the person asked for, a new pick). */
+export function dropContext({ how, now, connectedAt = null, frames = 0, lastFrameAt = null, lastRxAt = null, data = null }) {
+  const why = DROP_WHY.get(how);
+  if (!why) return null;
+  const parts = [`up ${typeof connectedAt === 'number' && connectedAt <= now ? span(Math.round((now - connectedAt) / 1000)) : '-'}`, `${frames > 0 ? Math.floor(frames) : 0} frames`];
+  const up = typeof connectedAt === 'number' ? connectedAt : -Infinity;
+  const mine = typeof lastFrameAt === 'number' && lastFrameAt >= up;    // the Pack keeps the previous link's reading
+  parts.push(mine ? `last reading ${num((now - lastFrameAt) / 1000, 1)} s before` : 'no reading on this link');
+  if (typeof lastRxAt === 'number' && lastRxAt >= up) parts.push(`last notification ${num((now - lastRxAt) / 1000, 1)} s before`);
+  if (mine && data && typeof data === 'object') {
+    const mv = typeof data.cellDelta === 'number' && Number.isFinite(data.cellDelta) ? Math.round(data.cellDelta * 1000) : null;
+    parts.push(`soc ${num(data.soc, 0)}% ${num(data.packV, 2)} V ${num(data.current, 2)} A`, `MOS ${num(data.tempMos, 1)} T1 ${num(data.temp1, 1)} T2 ${num(data.temp2, 1)} C`, `cell delta ${mv === null ? '-' : mv} mV`);
+  }
+  return `drop (${why}): ${parts.join(', ')}`;
+}

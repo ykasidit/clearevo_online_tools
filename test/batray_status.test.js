@@ -13,7 +13,9 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { statusSnapshot, statusChanged, statusDue, endReason, offlineModel, statusLine, STATUS_EVERY_MS, phonePowerState, phonePowerEvent, phoneWarn, PHONE_LOW_PCT } from '../public/batray/status-logic.js';
+import { statusSnapshot, statusChanged, statusDue, endReason, offlineModel, statusLine, STATUS_EVERY_MS, phonePowerState, phonePowerEvent, phoneWarn, PHONE_LOW_PCT, dropContext } from '../public/batray/status-logic.js';
+import { decodeCellInfo } from '../public/batray/jkbms.js';
+import * as F from './batray_frames.js';
 import { fmtAgo, fmtWhen, offlineLines } from '../public/batray/view-logic.js';
 import { bootReport, lastRunRecord, lastRunReport, uploadBody } from '../public/batray/log-logic.js';
 import { sheetModel } from '../public/batray/ui-logic.js';
@@ -155,4 +157,28 @@ test('statusLine never throws on a status from a reader of another version (fiel
     assert.doesNotThrow(() => statusLine(s), JSON.stringify(s));
   }
   assert.match(statusLine({ bat: { pct: 5, chg: false } }), /phone=5% not charging .*storage=\?\/\?MB/);
+});
+
+test('dropContext: a fallen link names how long it was up and the last reading (owner frame, 32S)', () => {
+  const d = decodeCellInfo(F.OWNER_32S_CELL), now = 1795000000000;
+  const l = dropContext({ how: 'down', now, connectedAt: now - (23 * 60 + 12) * 1000, frames: 2810, lastFrameAt: now - 6400, lastRxAt: now - 6100, data: d });
+  assert.equal(l, 'drop (link fell): up 23 m 12 s, 2810 frames, last reading 6.4 s before, last notification 6.1 s before, soc 53% 50.67 V 4.20 A, MOS 30.0 T1 30.4 T2 29.2 C, cell delta 2 mV');
+  assert.match(dropContext({ how: 'stalled', now, connectedAt: now - 7300 * 1000, frames: 1, lastFrameAt: now - 12000, data: d }), /^drop \(went quiet\): up 2 h 1 m, 1 frames, last reading 12.0 s before, soc 53%/);
+  assert.match(dropContext({ how: 'gap', now, connectedAt: now - 5000 }), /^drop \(time gap\): up 5 s, 0 frames, no reading on this link$/);
+});
+
+test('dropContext: not a drop, or nothing known - no line, or dashes, never a throw or a NaN', () => {
+  const now = 1795000000000;
+  for (const how of ['stop', 'choose', undefined, null, 'toString', '__proto__']) assert.equal(dropContext({ how, now }), null, String(how));
+  const l = dropContext({ how: 'down', now, connectedAt: null, frames: NaN, lastFrameAt: now - 1000, data: { soc: null, packV: NaN, current: undefined, tempMos: Infinity, cellDelta: 'x' } });
+  assert.equal(l, 'drop (link fell): up -, 0 frames, last reading 1.0 s before, soc -% - V - A, MOS - T1 - T2 - C, cell delta - mV');
+  assert.equal(dropContext({ how: 'down', now, connectedAt: now + 5000, data: 'garbage' }), 'drop (link fell): up -, 0 frames, no reading on this link');
+  assert.doesNotMatch(dropContext({ how: 'down', now, lastFrameAt: now - 500, data: decodeCellInfo(F.ESPHOME_JK04_CELL) }), /NaN|undefined|null/);
+});
+
+test('dropContext: a link that gave no reading does not report the previous link\'s reading or notification as its own (Fable review 0.9.97)', () => {
+  const now = 1795000000000, d = decodeCellInfo(F.OWNER_32S_CELL);
+  const l = dropContext({ how: 'stalled', now, connectedAt: now - 25000, frames: 0, lastFrameAt: now - 3600000, lastRxAt: now - 3600000, data: d });
+  assert.equal(l, 'drop (went quiet): up 25 s, 0 frames, no reading on this link');
+  assert.match(dropContext({ how: 'down', now, connectedAt: now - 25000, lastFrameAt: now - 3600000, lastRxAt: now - 4000, data: d }), /no reading on this link, last notification 4.0 s before$/);
 });

@@ -141,6 +141,22 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.97 (2026-11-27): one log line per Bluetooth drop
+
+The auto-uploaded logs of two readers (2026-11-24 to 11-27) showed the BMS
+side ending the link (Chrome's "gatt disconnected" after a few seconds of
+quiet, before BatRay's own 12 s stall rule), most often in the solar
+charging hours on one of them, and nothing in the log said what the pack
+was doing at that moment. Each end of a link that BatRay did not ask for
+now logs one line, `drop (link fell|went quiet|time gap): up <time>, <n>
+frames, last reading <s> s before, last notification <s> s before, soc,
+V, A, MOS / T1 / T2 C, cell delta mV` (`dropContext()` in
+status-logic.js), so later logs can show whether drops follow current or
+heat. A link that gave no reading says "no reading on this link" (the
+pack still holds the previous link's reading, which is left out). The
+person's Disconnect and a new pick log no such line. The reconnect timing
+is unchanged.
+
 ## 0.9.96 (2026-11-24): the JK parser is Rust, shared with the server side
 
 Owner ask: one JK parser for BatRay and its server side (MantaRay, the SleeperRay ESP32 readers'

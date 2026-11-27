@@ -17,7 +17,7 @@ import { wakeState, wakeMode, wakeShouldRequest, wakeAcquired, wakeReleased, wak
 import { JkBms, decodeCellInfo, errorLabels, hex, FRAME_CELL_INFO } from './jkbms.js';
 import { fmtWhen, stampLines, offlineLines, trendProgress, fmt, fmtWh, fmtSpan as fmtSpanT, fmtRuntime as fmtRuntimeT, socLevel, flowModel, etaModel, chipList as chipListT, cellsStat, ageLabel, buildTvModel } from './view-logic.js';
 import { detectBrowser, compatCheck, updateHelp, compatLogLine, canTryAnyway, fmtVersion } from './compat-logic.js';
-import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel, phonePowerState, phonePowerEvent, phoneWarn } from './status-logic.js';
+import { statusSnapshot, statusChanged, statusDue, statusLine, offlineModel, phonePowerState, phonePowerEvent, phoneWarn, dropContext } from './status-logic.js';
 import { parseIntent, intentEvent, resumePlan, resumeLine, RESUME_ON_KEY } from './resume-logic.js';
 import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggleDone, SETUP_DONE_KEY } from './setup-logic.js';
 import { pushDecision, pushState, b64uBytes } from './push-logic.js';
@@ -43,7 +43,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.96';
+export const APP_VERSION = '0.9.97';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -1503,7 +1503,7 @@ function connHooks(p) {
     connected: (dev) => onConnected(p, dev),
     failed: (msg, origin) => onConnFailed(p, msg, origin),
     stalled: (ageS) => onStalled(p, ageS),
-    down: (stalled, ageS) => onLinkDown(p, stalled, ageS),
+    down: (stalled, ageS, how, rxAt) => onLinkDown(p, stalled, ageS, how, rxAt),
     stuck: () => onStuck(p),
   };
 }
@@ -1548,7 +1548,9 @@ function onStalled(p, ageS) {
   p.plog(`no data for ${ageS} s (watchdog) - dropping the link and reconnecting`);
   if (p.isActive) setStatus(() => T.stalled(p.label, ageS), 'bad');
 }
-function onLinkDown(p, stalled, ageS) {
+function onLinkDown(p, stalled, ageS, how, rxAt) {
+  const ctx = dropContext({ how, now: Date.now(), connectedAt: p.cs.connectedAt, frames: p.frames, lastFrameAt: p.lastFrameAt, lastRxAt: rxAt ?? null, data: p.data });
+  if (ctx) p.plog(ctx);
   p.offlineThunk = () => T.offlineDrop(p.label);
   // a link that went quiet says so, instead of a bare "disconnected"
   if (p.isActive) { setStatus(() => (stalled ? T.stalled(p.label, ageS) : T.disconnectedFrom(p.label)), 'bad'); $('oneApp').hidden = true; $('btNote').hidden = true; }

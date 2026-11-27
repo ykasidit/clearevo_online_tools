@@ -51,7 +51,7 @@ async function settle(p) { try { return { ok: true, v: await p }; } catch (e) { 
 
 export class BleConn {
   /** bms: the JkBms port. h: the app's side - log(msg), autoRe(), device(), changed(), choose(signal) -> device | null,
-   *  fresh(device) -> device, attempt(n), connected(device), failed(msg, origin), stalled(ageS), down(stalled, ageS),
+   *  fresh(device) -> device, attempt(n), connected(device), failed(msg, origin), stalled(ageS), down(stalled, ageS, how, rxAt),
    *  stuck(). o: the clock for tests - secMs (one countdown / attempt second), tickMs, gapMs, connectS, stuckMs,
    *  downWaitMs, writeMs, link (linkStep limits). */
   constructor(bms, h, o = {}) {
@@ -222,13 +222,13 @@ export class BleConn {
     this.h.connected(b.device);                                          // the app takes the device first, so the repaint below shows it
     this.enter('connected');
     const l = { askedAt: null, asks: 0, cellLogged: false };
-    const end = (e, ageS = 0) => { this.h.down(e === 'stalled', ageS); return { end: e, ageS, data: b.firstCellAt !== null }; };   // data: this link gave a reading
+    const end = (e, ageS = 0, rxAt = b.lastRxAt) => { this.h.down(e === 'stalled', ageS, e, rxAt); return { end: e, ageS, data: b.firstCellAt !== null }; };   // data: this link gave a reading
     for (;;) {
       const arms = { down: (s) => b.down.wait(true, { signal: s }), voided: (s) => b.voided.wait(true, { signal: s }), cmd: (s) => this.cmdArm(s), tick: (s) => sleep(this.o.tickMs, s) };
       if (l.askedAt === null) arms.info = (s) => b.infoSeen.wait(true, { signal: s });
       const r = await select(signal, arms);
       if (r.key === 'down') { this.h.log('gatt disconnected'); return end('down'); }
-      if (r.key === 'voided') { b.drop(`${b.voidGapS} s without data - queued readings dropped`); await this.downWait(signal); return end('gap'); }
+      if (r.key === 'voided') { const rxAt = b.lastRxAt; b.drop(`${b.voidGapS} s without data - queued readings dropped`); await this.downWait(signal); return end('gap', 0, rxAt); }
       if (r.key === 'cmd') {
         const cmd = this.take(), c = cmdIn('connected', cmd, cs);
         if (c === 'stop') { this.h.log(`conn: ${cmd} - closing the link`); b.close(); await this.downWait(signal); return end('stop'); }
@@ -242,9 +242,10 @@ export class BleConn {
       if (st.act === 'stall') {
         cs.stalled = true; cs.stalledAge = st.ageS;
         this.h.stalled(st.ageS);
+        const rxAt = b.lastRxAt;                                         // drop() forgets it; the drop line needs it
         b.drop(`no data for ${st.ageS} s`);
         await this.downWait(signal);
-        return end('stalled', st.ageS);
+        return end('stalled', st.ageS, rxAt);
       }
       if (st.act === 'handshake') {
         const hsMs = this.o.link.handshakeMs || HANDSHAKE_WAIT_MS;

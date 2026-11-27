@@ -306,6 +306,24 @@ test('queued readings of a frozen tab void the link (the boundary sets the Flag)
   t.end();
 });
 
+test('every end of a link tells the app how it ended (0.9.97 drop line): a fall, a stall, a time gap, a new pick, the person\'s Disconnect', async () => {
+  const hows = [], rx = [];
+  const dev = new FakeDev(), t = harness(dev, { hooks: { down: (st, ageS, how, rxAt) => { hows.push(`${how}${st ? ' (stalled)' : ''}`); rx.push(typeof rxAt); } } });
+  const link = async (n) => { await t.until(() => hows.length === n && t.c.cs.phase === 'connected' && t.bms.firstCellAt !== null, `link ${n + 1}`, 6000); };
+  t.c.tell('connect'); await link(0);
+  dev.fall(); await t.until(() => hows.length === 1, 'fall');
+  t.c.tell('now'); await link(1);
+  dev.stream = false; dev.stopStream(); await t.until(() => hows.length === 2, 'stall');
+  dev.stream = true; await link(2);
+  t.bms.voidGapS = 3600; t.bms.voided.set(true); await t.until(() => hows.length === 3, 'gap');
+  t.c.tell('now'); await link(3);
+  t.c.tell('connect'); await link(4);
+  t.c.tell('disconnect'); await t.until(() => hows.length === 5, 'disconnect');
+  assert.deepEqual(hows, ['down', 'stalled (stalled)', 'gap', 'choose', 'stop']);
+  assert.deepEqual(rx.slice(0, 3), ['number', 'number', 'number'], 'the time of the last notification survives drop() for a stall and a gap (Fable review 0.9.97)');
+  t.end();
+});
+
 test('2026-10-07 crash: a connect that ran with Bluetooth off is never cancelled - past stuckMs no retries, no countdown, a tap explains it again; settled -> on we go', async () => {
   const dev = new FakeDev({ hang: 99 }), t = harness(dev, { o: { stuckMs: 700 } });
   t.c.tell('connect');
