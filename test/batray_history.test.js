@@ -214,3 +214,14 @@ test('transferPlan: a past day numbered from above 1 that the viewer already hol
   assert.deepEqual(transferPlan(reader, [{ day: '2026-10-01', maxId: 53000, contig: 0, rows: 21581 }]).map((x) => x.day), ['2026-11-21', '2026-10-01'], 'a different highest id is never taken for the same rows');
   assert.deepEqual(transferPlan(reader, [{ day: '2026-10-01', maxId: 53541, contig: 0, rows: '21581' }]).map((x) => x.day), ['2026-11-21', '2026-10-01'], 'garbage rows: as before, never a skip');
 });
+
+test('0.9.98 (2026-11-26 logs): no gap ask while the reader\'s answer is still arriving - a file in the assembly, or a chunk within GAP_REQ_MS; after that the gap ask goes out', () => {
+  const hs = historyState(), t0 = 1e6;
+  assert.equal(histReqDecision(hs, { live: true, now: t0 }).action, 'request');
+  rxChunk(hs, { day: '2026-11-26', after: 8085, n: 0, of: 2, b64: 'AAAA' }, t0 + 1000);
+  assert.equal(histReqDecision(hs, { live: true, now: t0 + GAP_REQ_MS + 500, gap: true }).action, 'noop', 'a file half received');
+  assert.equal(rxChunk(hs, { day: '2026-11-26', after: 8085, n: 1, of: 2, b64: 'AAAA' }, t0 + GAP_REQ_MS + 1000).action, 'file');
+  assert.equal(histReqDecision(hs, { live: true, now: t0 + GAP_REQ_MS + 2000, gap: true }).action, 'noop', 'the next file of the answer may be on its way');
+  const d = histReqDecision(hs, { live: true, now: t0 + 2 * GAP_REQ_MS + 1001, gap: true });
+  assert.deepEqual(d, { action: 'request', why: 'gap' }, 'quiet for GAP_REQ_MS: the hole is real');
+});

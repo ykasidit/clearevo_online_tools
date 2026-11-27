@@ -324,6 +324,34 @@ test('every end of a link tells the app how it ended (0.9.97 drop line): a fall,
   t.end();
 });
 
+test('2026-11-26 reader log: a remembered BMS refused as "no longer in range" after a reload is watched for (watchAdvertisements), then connected in the same attempt; no advertisement -> the attempt fails with a plain reason', async () => {
+  const OUT = 'Bluetooth Device is no longer in range.';
+  const dev = new FakeDev(), t = harness(dev, { device: dev });
+  t.bms.advWaitMs = 200;
+  const connect = dev.gatt.connect;
+  let seen = false, watched = 0;
+  dev.gatt.connect = () => { dev.connects++; if (!seen) return Promise.reject(Object.assign(new Error(OUT), { name: 'NetworkError' })); dev.connects--; return connect(); };
+  dev.watchAdvertisements = ({ signal }) => { watched++; setTimeout(() => { if (!signal.aborted) { seen = true; dev.dispatchEvent(new Event('advertisementreceived')); } }, 20); return Promise.resolve(); };
+  t.c.tell('known');
+  await t.until(() => t.c.cs.gotData, 'data');
+  assert.equal(watched, 1); assert.deepEqual(t.ev.filter((e) => e.startsWith('attempt')), ['attempt 1'], 'one attempt, no chooser');
+  assert.ok(t.log.some((l) => /^gatt: advertisement in \d+ ms, connecting again$/.test(l)), t.log.join('\n'));
+  t.end();
+  const dev2 = new FakeDev({ name: 'far' }), t2 = harness(dev2, { device: dev2, autoRe: false });
+  t2.bms.advWaitMs = 60;
+  dev2.gatt.connect = () => { dev2.connects++; return Promise.reject(new Error(OUT)); };
+  dev2.watchAdvertisements = () => Promise.resolve();                 // never advertises
+  t2.c.tell('known');
+  await t2.until(() => t2.ev.some((e) => e.startsWith('failed')), 'the failure');
+  assert.ok(t2.log.some((l) => /no advertisement from far in 0 s - out of range or switched off$/.test(l)), t2.log.join('\n'));
+  const dev3 = new FakeDev({ name: 'old' }), t3 = harness(dev3, { device: dev3, autoRe: false });
+  dev3.gatt.connect = () => { dev3.connects++; return Promise.reject(new Error(OUT)); };   // no watchAdvertisements: the error as before
+  t3.c.tell('known');
+  await t3.until(() => t3.ev.some((e) => e.startsWith('failed')), 'the failure');
+  assert.ok(t3.ev.some((e) => e.includes(OUT)), t3.ev.join(' | '));
+  t2.end(); t3.end();
+});
+
 test('2026-10-07 crash: a connect that ran with Bluetooth off is never cancelled - past stuckMs no retries, no countdown, a tap explains it again; settled -> on we go', async () => {
   const dev = new FakeDev({ hang: 99 }), t = harness(dev, { o: { stuckMs: 700 } });
   t.c.tell('connect');

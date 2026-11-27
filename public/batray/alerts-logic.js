@@ -30,6 +30,8 @@ export const RULES = [
 ];
 export const REPEAT_S = 1800;
 export const DAYLIGHT = { fromH: 9, toH: 15 }; // local hours during which "no charge" is suspicious
+export const FULL_SOC = 95;                      // a pack this full has nothing to charge (2026-11-27 log: "not charging" at 100 %)
+export const FRESH_S = 120;                      // a reading older than this is not judged (the silent rule judges its age); not tighter: a viewer's age is by the reader's clock
 
 export function defaultSettings() {
   return {
@@ -69,6 +71,7 @@ export function conditionHolds(rule, cfg, sample, at) {
     case 'noChargeDaylight': {
       const h = at.getHours() + at.getMinutes() / 60;
       if (h < DAYLIGHT.fromH || h >= DAYLIGHT.toH) return false;
+      if (typeof sample.soc === 'number' && sample.soc >= FULL_SOC) return false;
       return sample.current !== null && sample.current !== undefined && sample.current < cfg.value;
     }
     // Age of the last frame only: a Bluetooth drop that reconnects within the
@@ -89,23 +92,33 @@ export function conditionHolds(rule, cfg, sample, at) {
 // "recovered" 4 s apart on every resume. Silence counts only while this page has been awake and its link up.
 export const TICK_GAP_S = 30;
 export class Evaluator {
-  constructor(settings) { this.settings = settings; this.state = new Map(); this.lastAbleAt = null; this.awakeSince = null; }
+  constructor(settings) { this.settings = settings; this.state = new Map(); this.lastAbleAt = null; this.awakeSince = null; this.lastTick = new Map(); }
   /** Seconds this page has been able to receive: ticking without a gap, and (a viewer) with its link up. */
   watchedS(now) { return this.awakeSince === null ? 0 : (now - this.awakeSince) / 1000; }
   setSettings(s) { this.settings = s; }
   key(packId, ruleId) { return `${packId}|${ruleId}`; }
-  forget(packId) { for (const k of [...this.state.keys()]) if (k.startsWith(packId + '|')) this.state.delete(k); }
+  forget(packId) { for (const k of [...this.state.keys()]) if (k.startsWith(packId + '|')) this.state.delete(k); this.lastTick.delete(packId); }
 
   tick(packId, packName, sample, now = Date.now()) {
     const out = [];
     const at = new Date(now);
     const able = !sample.ownLinkDown;
     if (able) { if (this.lastAbleAt === null || now - this.lastAbleAt > TICK_GAP_S * 1000) this.awakeSince = now; this.lastAbleAt = now; }
+    // frozen time is nobody's: after a gap every hold and repeat clock of this pack starts again from the wake
+    // (2026-11-23..26 viewer logs: 4-8 alerts from the pre-freeze reading within 100 ms of every wake)
+    const prev = this.lastTick.get(packId);
+    this.lastTick.set(packId, now);
+    const woke = prev !== undefined && now - prev > TICK_GAP_S * 1000;
+    // a rule about the reading is judged only on a fresh one: a viewer's old reading, or a reader's last one before
+    // a drop, holds its state (no fire, no repeat, no recover) - the silent rule speaks for the gap
+    const fresh = able && typeof sample.ageS === 'number' && sample.ageS <= FRESH_S;
     for (const rule of RULES) {
       const cfg = this.settings.rules[rule.id];
       const k = this.key(packId, rule.id);
       const st = this.state.get(k) || { since: null, firedAt: null, lastAt: null };
+      if (woke) { if (st.since !== null) st.since = now; if (st.lastAt !== null) st.lastAt = now; this.state.set(k, st); }
       if (rule.kind === 'silent' && !able) continue;                        // our own link is down: the BMS's silence cannot be judged, keep the state as is
+      if (rule.kind !== 'silent' && !fresh) continue;
       const holds = !!cfg.on && conditionHolds(rule, cfg, sample, at) && (rule.kind !== 'silent' || this.watchedS(now) > cfg.value);
       if (holds) {
         if (st.since === null) st.since = now;

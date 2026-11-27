@@ -21,6 +21,9 @@ const A = { title: (p) => `BatRay: ${p}`, recoveredTitle: (p) => `BatRay: ${p} r
 const noon = new Date(2026, 8, 14, 12, 0, 0).getTime();   // local noon
 const night = new Date(2026, 8, 14, 22, 0, 0).getTime();
 const ok = { soc: 80, current: 5, cellDelta: 0.01, ageS: 1, connected: true };
+/** The app ticks every 5 s (alerts.js TICK_MS); a longer gap is a frozen page (0.9.98). Ticks (from, to] with the
+ *  same sample and returns what came out; `ev.tick` at `to` itself is the caller's. */
+const walk = (ev, id, name, sample, from, to) => { const out = []; for (let t = from + 5000; t < to; t += 5000) out.push(...ev.tick(id, name, sample, t)); return out; };
 
 test('defaults: every rule on, thresholds as documented', () => {
   const s = defaultSettings();
@@ -43,15 +46,19 @@ test('socLow fires after the hold time, repeats, recovers once', () => {
   const ev = new Evaluator(defaultSettings());
   const low = { ...ok, soc: 38 };
   assert.deepEqual(ev.tick('p', 'n11', low, noon), [], 'not yet: hold is 5 min');
+  assert.deepEqual(walk(ev, 'p', 'n11', low, noon, noon + 299 * 1000), []);
   assert.deepEqual(ev.tick('p', 'n11', low, noon + 299 * 1000), []);
   const fired = ev.tick('p', 'n11', low, noon + 300 * 1000);
   assert.equal(fired.length, 1); assert.equal(fired[0].rule, 'socLow'); assert.equal(fired[0].event, 'fire'); assert.equal(fired[0].priority, 3);
+  assert.deepEqual(walk(ev, 'p', 'n11', low, noon + 300 * 1000, noon + 400 * 1000), []);
   assert.deepEqual(ev.tick('p', 'n11', low, noon + 400 * 1000), [], 'no spam');
+  assert.deepEqual(walk(ev, 'p', 'n11', low, noon + 400 * 1000, noon + (300 + REPEAT_S) * 1000), []);
   const rep = ev.tick('p', 'n11', low, noon + (300 + REPEAT_S) * 1000);
   assert.equal(rep[0].event, 'repeat');
+  assert.deepEqual(walk(ev, 'p', 'n11', low, noon + (300 + REPEAT_S) * 1000, noon + (400 + REPEAT_S) * 1000), []);
   const rec = ev.tick('p', 'n11', { ...ok, soc: 45 }, noon + (400 + REPEAT_S) * 1000);
   assert.equal(rec.length, 1); assert.equal(rec[0].event, 'recover'); assert.equal(rec[0].priority, 2);
-  assert.deepEqual(ev.tick('p', 'n11', { ...ok, soc: 45 }, noon + (500 + REPEAT_S) * 1000), [], 'recover only once');
+  assert.deepEqual(walk(ev, 'p', 'n11', { ...ok, soc: 45 }, noon + (400 + REPEAT_S) * 1000, noon + (500 + REPEAT_S) * 1000), [], 'recover only once');
 });
 
 test('a dip that does not last the hold time never fires', () => {
@@ -66,8 +73,10 @@ test('critical fires independently of low', () => {
   const ev = new Evaluator(defaultSettings());
   const crit = { ...ok, soc: 20 };
   ev.tick('p', 'n', crit, noon);
+  assert.deepEqual(walk(ev, 'p', 'n', crit, noon, noon + 120 * 1000), []);
   const out = ev.tick('p', 'n', crit, noon + 120 * 1000);
   assert.deepEqual(out.map((e) => e.rule), ['socCritical']);
+  assert.deepEqual(walk(ev, 'p', 'n', crit, noon + 120 * 1000, noon + 300 * 1000), []);
   const out2 = ev.tick('p', 'n', crit, noon + 300 * 1000);
   assert.deepEqual(out2.map((e) => e.rule), ['socLow']);
 });
@@ -132,9 +141,11 @@ test('disabled rules never fire; forget clears state', () => {
 test('formatEvent and ntfy validation', () => {
   const ev = new Evaluator(defaultSettings());
   ev.tick('p', 'n11', { ...ok, soc: 38 }, noon);
+  walk(ev, 'p', 'n11', { ...ok, soc: 38 }, noon, noon + 300 * 1000);
   const [e] = ev.tick('p', 'n11', { ...ok, soc: 38 }, noon + 300 * 1000);
   const m = formatEvent(e, A);
   assert.equal(m.title, 'BatRay: n11'); assert.equal(m.body, 'SOC 38% below 40%');
+  walk(ev, 'p', 'n11', { ...ok, soc: 38 }, noon + 300 * 1000, noon + 400 * 1000);
   const [r] = ev.tick('p', 'n11', ok, noon + 400 * 1000);
   assert.match(formatEvent(r, A).body, /^recovered - /);
   assert.ok(ntfyOk({ server: 'https://ntfy.sh', topic: 'hut-batt_1' }));
@@ -157,4 +168,22 @@ test('bmsAlarm: a protection bit fires after 10 s, recovers, and is off for a cl
   const rec = ev.tick('p', 'n11', clean, t).filter((e) => e.rule === 'bmsAlarm');
   assert.equal(rec.length, 1); assert.equal(rec[0].event, 'recover');
   assert.deepEqual(ev.tick('p', 'n11', clean, t + 60000).filter((e) => e.rule === 'bmsAlarm'), []);
+});
+
+test('0.9.98 (2026-11-23..26 viewer logs): after a frozen page no alert fires from the old reading - holds and repeats count awake time, and only a fresh reading is judged; a full pack is not "not charging"', () => {
+  const ev = new Evaluator(defaultSettings()), crit = { ...ok, soc: 7, cellDelta: 0.14, current: -0.8 };
+  const t0 = noon - 4 * 3600e3;
+  walk(ev, 'p', 'n', crit, t0 - 5000, t0 + 20e3);                    // 20 s awake, every hold still running
+  assert.deepEqual(ev.tick('p', 'n', { ...crit, ageS: 4 * 3600 }, noon), [], 'the wake, the reading 4 h old');
+  assert.deepEqual(ev.tick('p', 'n', { ...crit, ageS: 4 * 3600 + 5 }, noon + 5000), []);
+  assert.deepEqual(ev.tick('p', 'n', crit, noon + 10e3), [], 'fresh again: the holds start from the wake');
+  assert.deepEqual(walk(ev, 'p', 'n', crit, noon + 10e3, noon + 125e3).map((e) => e.rule), ['socCritical'], '120 s of awake, fresh time');
+  const ev2 = new Evaluator(defaultSettings());
+  walk(ev2, 'p', 'n', crit, noon - 5000, noon + 400e3);
+  assert.deepEqual(ev2.tick('p', 'n', { ...crit, ageS: 7200 }, noon + 400e3 + 7200e3), [], 'no repeat after the freeze');
+  assert.deepEqual(ev2.tick('p', 'n', { ...ok, ageS: 7200 }, noon + 400e3 + 7205e3), [], 'and no recover from an old reading');
+  assert.deepEqual(ev2.tick('p', 'n', ok, noon + 400e3 + 7210e3).map((e) => `${e.rule}:${e.event}`), ['socLow:recover', 'socCritical:recover'], 'a fresh good reading recovers what fired (cell delta holds 600 s, not reached)');
+  const rule = RULES.find((r) => r.id === 'noCharge'), cfg = defaultSettings().rules.noCharge;
+  assert.equal(conditionHolds(rule, cfg, { ...ok, soc: 100, current: 0 }, new Date(noon)), false);
+  assert.equal(conditionHolds(rule, cfg, { ...ok, soc: 94, current: 0 }, new Date(noon)), true);
 });

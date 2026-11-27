@@ -43,7 +43,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.97';
+export const APP_VERSION = '0.9.98';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -2222,7 +2222,7 @@ async function requestHistory() {
 function rxHistFile(env) {
   const c = env.v || {};
   if (c.n === 0) log(`history: receiving ${c.day} after id ${c.after} (${c.rows} rows, ${c.bytes} B) in ${c.of} chunks`);
-  const r = rxChunk(histS, c);
+  const r = rxChunk(histS, c, Date.now());
   if (r.action === 'file') storeReceived(r.file).catch((e) => log(`history: storing ${r.file.day} failed: ${e.message}`));
   else if (r.action === 'drop') log(`history: ${c.day} ${r.why} - voided, the next request fetches it again`);
 }

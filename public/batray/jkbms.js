@@ -11,7 +11,7 @@
 // FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
 // more details: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 // Source: https://github.com/ykasidit/clearevo_online_tools
-import { Flag } from './sync.js';
+import { Flag, TIMEOUT } from './sync.js';
 // The decoders and the framing are the Rust parser (rust/jkbms, shared with BatRay's server side),
 // loaded as WebAssembly; test/batray_jk_parity.test.js holds it to the JavaScript decoder it replaced
 // (kept as test/batray_jk_oracle.js) value for value.
@@ -114,6 +114,8 @@ export const STALE_MS = 12000;
 // for the life of the browser process (crash 2026-10-07, Chromium BluetoothDeviceWrapper.connectGatt wraps Android's
 // null without a check): any disconnect() on it, or the handle's own eviction, kills the whole browser.
 export const STUCK_MS = 45000;
+/** A remembered BMS Chrome has not seen since it started: how long to watch for its advertisement (2026-11-26). */
+export const ADV_WAIT_MS = 10000;
 
 /** Has this link gone quiet for longer than a working link ever does? */
 export function isStale(lastFrameAt, now = Date.now(), limitMs = STALE_MS) {
@@ -221,6 +223,7 @@ export class JkBms extends EventTarget {
     this.pending = null;              // the oldest browser connect still unsettled: { since, n, done: Flag }
     this._charTokens = new WeakMap(); // characteristic -> the link token it serves (one listener per object)
     this.openedAt = null;             // when this link's notifications came on
+    this.advWaitMs = ADV_WAIT_MS;     // how long a remembered BMS may take to advertise (within the attempt's 15 s)
     this._resetLink();
   }
 
@@ -269,7 +272,22 @@ export class JkBms extends EventTarget {
     }
     this._log(`connecting to ${device.name || device.id}`);
     const t0 = Date.now();
-    const server = await this._track(device.gatt.connect());
+    let server;
+    try {
+      server = await this._track(device.gatt.connect());
+    } catch (e) {
+      // Chrome connects a remembered device (getDevices, after a reload) only once it has seen it advertise since it
+      // started; until then every connect is "no longer in range" (2026-11-26 reader log: 11 refused, the chooser
+      // then connected at once). Watch for one advertisement, then connect again.
+      if (!/no longer in range/i.test(String(e && e.message)) || typeof device.watchAdvertisements !== 'function') throw e;
+      own();
+      this._log('gatt: Chrome has not seen this BMS advertise since it started - waiting for an advertisement');
+      const t1 = Date.now();
+      if (!await this._advertised(device, signal)) throw new Error(`no advertisement from ${device.name || 'the BMS'} in ${Math.round(this.advWaitMs / 1000)} s - out of range or switched off`, { cause: e });
+      own();
+      this._log(`gatt: advertisement in ${Date.now() - t1} ms, connecting again`);
+      server = await this._track(device.gatt.connect());
+    }
     // The attempt gave up (cancel, its 15 s) but the browser connected after all: the connect has SETTLED, so closing
     // it is safe now (only a pending one must never be closed) - else the link stays up with nobody serving it and
     // the BMS's one Bluetooth slot taken (BLE review 2026-11-01).
@@ -291,6 +309,26 @@ export class JkBms extends EventTarget {
     this._log('notifications on');
     await this.write(buildCommand(CMD_DEVICE_INFO));
     up();
+  }
+
+  /** True once the device advertised within advWaitMs (the callback only sets a Flag); false on no advertisement or
+   *  when the browser refuses to watch. Watching ends with the wait. */
+  async _advertised(device, signal) {
+    const seen = new Flag(false), ac = new AbortController(), on = () => seen.set(true), stop = () => ac.abort();
+    device.addEventListener('advertisementreceived', on);
+    signal.addEventListener('abort', stop, { once: true });
+    try {
+      await device.watchAdvertisements({ signal: ac.signal });
+      return await seen.wait(true, { ms: this.advWaitMs, signal }) !== TIMEOUT;
+    } catch (e) {
+      if (signal.aborted) throw e;
+      this._log(`gatt: watching advertisements refused: ${e && e.message}`);
+      return false;
+    } finally {
+      device.removeEventListener('advertisementreceived', on);
+      signal.removeEventListener('abort', stop);
+      ac.abort();
+    }
   }
 
   /** The browser queues every gatt.connect() behind the oldest unsettled one; that group is `pending` until all of

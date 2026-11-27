@@ -141,6 +141,28 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.98 (2026-11-27): fixes from a second, independent read of every 0.9.95+ log
+
+All 611 auto-uploaded logs since 0.9.95 (9 sessions, 3 readers) were read again
+by a second reviewer. Fixed, each with a test:
+
+- A remembered BMS after a reload: Chrome refuses `gatt.connect()` with "no
+  longer in range" until it has seen the device advertise since it started (a
+  reader log of 2026-11-26: 11 refused connects, then the chooser connected at
+  once). `JkBms.open()` now watches for one advertisement (`ADV_WAIT_MS` 10 s,
+  inside the attempt) and connects again.
+- Alerts after a frozen tab: a viewer woken after hours fired 4-8 alerts from
+  the reading it had before the freeze. A gap between ticks longer than
+  `TICK_GAP_S` restarts every hold and repeat clock, and a rule about the
+  reading is judged only on a reading at most `FRESH_S` (120 s) old; an old one
+  keeps the rule's state (no fire, repeat or recover).
+- "Not charging in daylight" is not raised at or above `FULL_SOC` (95 %).
+- "Server unreachable" / "Back online" alerts wait `REACH_HOLD_MS` 60 s (was
+  10 s; 64 of 71 such alerts on one reader in two days cleared within 60 s).
+- A viewer does not ask for a gap while the reader's answer is still arriving
+  (a file half received, or a chunk within `GAP_REQ_MS`): the reader had sent
+  the rest of the answer twice.
+
 ## 0.9.97 (2026-11-27): one log line per Bluetooth drop
 
 The auto-uploaded logs of two readers (2026-11-24 to 11-27) showed the BMS

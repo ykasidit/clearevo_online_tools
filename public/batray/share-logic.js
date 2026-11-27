@@ -68,7 +68,7 @@ export function liveText(s, T, fmtChip) {
 // ---- internet / server reachability of THIS device, same on both sides. A
 // state must hold REACH_HOLD_MS before it is announced, so a socket reopen is
 // not an outage. ----
-export const REACH_HOLD_MS = 10000;
+export const REACH_HOLD_MS = 60000;   // was 10 s: 64 of 71 "Server unreachable" alerts on the sea-hut reader (2026-11-25..27) cleared within 60 s
 export function reachOf(s) { return !s.net ? 'net' : (s.sig === false ? 'server' : 'ok'); }
 export function reachState() { return { cur: 'ok', pending: null, since: 0 }; }
 /** A state update. Returns { hold: ms } when a timer should be armed, { clear: true } when a pending one should be dropped, null otherwise. */

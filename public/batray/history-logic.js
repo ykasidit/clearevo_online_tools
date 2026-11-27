@@ -261,6 +261,9 @@ export function histReqDecision(hs, { live, now, gap = false }) {
   if (linkUp) { hs.reqAt = now; hs.gapAsks = 0; return { action: 'request', why: 'link up' }; }
   if (gap && hs.gapAsks < GAP_ASKS_MAX) {
     if (now - hs.reqAt < GAP_REQ_MS) return { action: 'noop' };
+    // an answer is still arriving (a file in the assembly, or the last chunk this recently): its later files may
+    // fill the hole, and asking now makes the reader send them again (2026-11-26: 3268 and 19663 rows sent twice)
+    if (hs.rx || (typeof hs.rxAt === 'number' && now - hs.rxAt < GAP_REQ_MS)) return { action: 'noop' };
     hs.gapAsks++; hs.reqAt = now; return { action: 'request', why: 'gap' };
   }
   if (now - hs.reqAt < HIST_REQ_MS) return { action: 'noop' };
@@ -271,8 +274,10 @@ export function chunkB64(b64, size = Math.ceil(XFER_CHUNK * 4 / 3)) {
   const out = []; for (let i = 0; i < b64.length; i += size) out.push(b64.slice(i, i + size)); return out;
 }
 /** A received chunk into the viewer's assembly (one file at a time, in order; a lost chunk voids the file and the
- *  next request fetches it again). Returns the complete file {day, after, b64} when the last chunk lands. */
-export function rxChunk(hs, c) {
+ *  next request fetches it again). Returns the complete file {day, after, b64} when the last chunk lands. `now` marks
+ *  when a chunk last arrived (no gap ask while an answer is still coming). */
+export function rxChunk(hs, c, now = null) {
+  if (typeof now === 'number') hs.rxAt = now;
   const key = `${c.day}:${c.after || 0}`;
   // a chunk 0 always starts a fresh assembly: the same file sent again after a link drop would otherwise land on the
   // half-finished parts of the first try and be dropped for a whole request round (share review 2026-11-01)

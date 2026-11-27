@@ -149,7 +149,7 @@ export default {
         const src = h.strip(h.read('app.js'));
         assert.ok(/if \(env\.k === 'hist-file'\) \{ rxHistFile\(env\); return; \}/.test(src));
         const fn = src.slice(src.indexOf('function rxHistFile('), src.indexOf('async function storeReceived('));
-        assert.ok(/const c = env\.v \|\| \{\};/.test(fn) && /rxChunk\(histS, c\)/.test(fn) && /r\.action === 'file'\) storeReceived\(r\.file\)/.test(fn) && /r\.action === 'drop'/.test(fn), fn.slice(0, 400));
+        assert.ok(/const c = env\.v \|\| \{\};/.test(fn) && /rxChunk\(histS, c(, Date\.now\(\))?\)/.test(fn) && /r\.action === 'file'\) storeReceived\(r\.file\)/.test(fn) && /r\.action === 'drop'/.test(fn), fn.slice(0, 400));
       });
       test('the wake lock request is announced to the state before the await (one in flight)', () => {
         const src = h.strip(h.read('app.js'));
