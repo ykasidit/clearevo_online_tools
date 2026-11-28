@@ -55,8 +55,13 @@ const audit = await evalJs(`(() => {
 })()`);
 check('every visible control on the reader is at least 48 px tall, and there is no <select>', audit.small.length === 0 && audit.selects === 0 && audit.sheetHidden, audit);
 
+const rt = await evalJs(`({ bar: !document.getElementById('tabs').hidden, tabbed: document.body.classList.contains('tabbed'), btns: [...document.querySelectorAll('[data-tab-btn]')].map((b) => b.dataset.tabBtn), cellsShown: getComputedStyle(document.getElementById('cellsCard')).display !== 'none', notesShown: getComputedStyle(document.getElementById('notesCard')).display !== 'none', waitHiddenOnNow: getComputedStyle(document.getElementById('trendWait')).display === 'none' })`);
+check('the reader has the same two tabs as the viewer: Now shows the picture, cells and notes; History is its own tab', rt.bar && rt.tabbed && rt.btns.join(',') === 'now,history' && rt.cellsShown && rt.notesShown && rt.waitHiddenOnNow, rt);
+await evalJs(`document.querySelector('[data-tab-btn=history]').click(); 1`); await sleep(200);
 const tw = await evalJs(`({ shown: getComputedStyle(document.getElementById('trendWait')).display !== 'none', txt: document.getElementById('trendWaitTxt').textContent, w: document.getElementById('trendWaitBar').style.width })`);
 check('the trend placeholder counts the seconds collected with a bar', tw.shown && /\d+ s of 30 s/.test(tw.txt) && parseInt(tw.w, 10) > 0, tw);
+await evalJs(`history.back(); 1`); await sleep(300);
+check('Back on the reader\'s History tab returns to Now', await evalJs(`document.body.dataset.tab`) === 'now', 'still on history');
 await evalJs(`document.getElementById('gBatt').dispatchEvent(new Event('click', { bubbles: true })); 1`); await sleep(250);
 let sh = await evalJs(`({ shown: !document.getElementById('sheet').hidden, title: document.getElementById('sheetTitle').textContent, lead: document.getElementById('sheetLead').textContent, rows: document.querySelectorAll('#sheetRows .k').length, state: history.state, ui: window.__batrayTest.uiState() })`);
 check('tapping the battery opens a sheet: plain sentence with the time to go, technical rows below, a history entry', sh.shown && sh.title === 'Battery' && /% full\./.test(sh.lead) && sh.rows >= 3 && sh.state && sh.state.sheet === 'soc' && sh.ui.sheet && sh.ui.sheet.kind === 'soc', sh);
@@ -127,12 +132,11 @@ const lv = await evalJs(`({ title: document.getElementById('sheetTitle').textCon
 check('tapping the live chip opens a sheet with its full text', lv.title === 'Live link' && lv.lead === lv.chip && lv.lead.length > 5, lv);
 await evalJs(`window.__batrayTest.closeSheet(null, 'test'); 1`); await sleep(300);
 await evalJs(`document.querySelector('[data-tab-btn=history]').click(); 1`); await sleep(200);
-await evalJs(`document.querySelector('[data-tab-btn=more]').click(); 1`); await sleep(200);
-vw = await evalJs(`({ tab: document.body.dataset.tab, state: history.state, on: document.querySelector('[data-tab-btn].on').dataset.tabBtn, flowHidden: getComputedStyle(document.getElementById('flowCard')).display === 'none', notesShown: getComputedStyle(document.getElementById('notesCard')).display !== 'none' })`);
-check('History then More: the More tab shows the detail cards and hides the picture, one history entry', vw.tab === 'more' && vw.state && vw.state.tab === 'more' && vw.on === 'more' && vw.flowHidden && vw.notesShown, vw);
+vw = await evalJs(`({ tab: document.body.dataset.tab, state: history.state, on: document.querySelector('[data-tab-btn].on').dataset.tabBtn, btns: [...document.querySelectorAll('[data-tab-btn]')].map((b) => b.dataset.tabBtn), flowHidden: getComputedStyle(document.getElementById('flowCard')).display === 'none', notesHidden: getComputedStyle(document.getElementById('notesCard')).display === 'none' })`);
+check('two tabs; History hides the picture and the detail cards, one history entry', vw.tab === 'history' && vw.state && vw.state.tab === 'history' && vw.on === 'history' && vw.btns.join(',') === 'now,history' && vw.flowHidden && vw.notesHidden, vw);
 await evalJs(`history.back(); 1`); await sleep(400);
-vw = await evalJs(`({ tab: document.body.dataset.tab, on: document.querySelector('[data-tab-btn].on').dataset.tabBtn, flowShown: getComputedStyle(document.getElementById('flowCard')).display !== 'none' })`);
-check('Back returns to Now once', vw.tab === 'now' && vw.on === 'now', vw);
+vw = await evalJs(`({ tab: document.body.dataset.tab, on: document.querySelector('[data-tab-btn].on').dataset.tabBtn, notesShown: getComputedStyle(document.getElementById('notesCard')).display !== 'none', alertsShown: getComputedStyle(document.getElementById('alertsCard')).display !== 'none' })`);
+check('Back returns to Now once; Now carries what More held (notes, alerts)', vw.tab === 'now' && vw.on === 'now' && vw.notesShown && vw.alertsShown, vw);
 await evalJs(`document.querySelector('[data-tab-btn=history]').click(); 1`); await sleep(200);
 const hw = await evalJs(`({ waitShown: getComputedStyle(document.getElementById('trendWait')).display !== 'none', txt: document.getElementById('trendWaitTxt').textContent, cardHidden: document.getElementById('trendCard').hidden })`);
 check('History never shows blank: without readings it says the trend starts once they arrive', hw.waitShown && /once readings arrive/.test(hw.txt) && hw.cardHidden, hw);

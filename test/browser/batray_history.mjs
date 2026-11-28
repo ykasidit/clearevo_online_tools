@@ -248,7 +248,7 @@ const sheet = await evalJs(`({ open: !document.getElementById('sheet').hidden, t
 check('Delete stored history opens a sheet with Cancel / Delete and the size', sheet.open && sheet.buttons.includes('Delete') && sheet.buttons.includes('Cancel') && /\d+ days?, \d+ KB/.test(sheet.text), sheet);
 await evalJs(`[...document.querySelectorAll('#sheet button')].find((b) => b.textContent.trim() === 'Delete').click(); 1`); await sleep(1000);
 h = await hist(); list = await evalJs('window.__batrayTest.histList()');
-const after = await evalJs(`({ confirms: window.__confirms, toast: document.getElementById('toast').textContent, wait: getComputedStyle(document.getElementById('trendWait')).display !== 'none', card: document.getElementById('trendCard').hidden })`);
+const after = await evalJs(`({ confirms: window.__confirms, toast: document.getElementById('toast').textContent, wait: !document.getElementById('trendWait').hidden, card: document.getElementById('trendCard').hidden })`);   // the reader sits on Now; the card's own state, not the tab's
 const oldLeft = await evalJs(`(async () => { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('batray-history'); const names = []; for await (const [n] of d.entries()) names.push(n); return names.filter((n) => /^\\d{4}-\\d{2}-\\d{2}\\.ndjson/.test(n)); })()`);
 check('Clear stored history also removes the old NDJSON day files', oldLeft.length === 0, oldLeft);
 // the reader's ids go on after a Clear (0.9.94, review round 7): a viewer holds today's earlier rows under them

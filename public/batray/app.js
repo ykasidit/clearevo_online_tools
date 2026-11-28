@@ -44,7 +44,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.100';
+export const APP_VERSION = '0.9.101';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -373,6 +373,7 @@ let snapAc = null;                                  // the share's 10 s snapshot
 // them (imperative shell) and logs every decision. Per-pack BLE state is p.cs. ----
 const shareS = shareState(), tvS = tvUiState(), castS = castState(), viewS = viewState(), reachS = reachState();
 const uiS = uiState(viewMode ? 'viewer' : 'reader');
+let tabBarOn = null;   // the Now / History bar shown (syncTabBar)
 let langCode = 'en';
 const wakeS = wakeState('wakeLock' in navigator, !!viewMode);   // a viewer never plays the keep-awake video (owner, 2026-09-22)
 
@@ -391,12 +392,12 @@ function removePack(pack) {
 function setActive(pack) {
   active = pack;
   if (!pack) {
-    els.readouts.hidden = true; els.empty.hidden = !!viewMode; els.device.hidden = true; els.settingsCard.hidden = true;
+    els.readouts.hidden = true; els.empty.hidden = !!viewMode; els.device.hidden = true; els.settingsCard.hidden = true; syncTabBar();
     document.body.classList.remove('offline', 'loading', 'demo');
     setStatus(() => (viewMode ? T.viewWaiting : T.ready));
     renderPackBar(); renderConnButton(); return;
   }
-  els.empty.hidden = true; els.readouts.hidden = false;
+  els.empty.hidden = true; els.readouts.hidden = false; syncTabBar();
   document.body.classList.toggle('demo', !!pack.demo);
   if (pack.info) renderDevice(pack.info); else els.device.hidden = true;
   if (pack.settings) renderSettings(pack.settings); else els.settingsCard.hidden = true;
@@ -1478,7 +1479,7 @@ window.addEventListener('resize', () => { if (active && active.data) paintHistor
 
 function render(d, relabelOnly = false) {
   if (!relabelOnly) {
-    els.empty.hidden = true; els.readouts.hidden = false;
+    els.empty.hidden = true; els.readouts.hidden = false; syncTabBar();
     document.body.classList.remove('offline', 'loading');
   }
   renderFlow(d);
@@ -2419,7 +2420,7 @@ $('readerOff').addEventListener('click', () => { void openSheet('reader'); });
 $('readerOff').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void openSheet('reader'); } });
 $('readerPhone').addEventListener('click', () => { void openSheet('reader'); });
 async function startView() {
-  document.body.classList.add('view'); $('tabs').hidden = false; renderTabs();
+  document.body.classList.add('view'); syncTabBar();
   $('keepAwakeRow').hidden = true;                                   // a viewer never plays the keep-awake video
   $('titleText').textContent = `BatRay by ClearEvo.com v${APP_VERSION} · ${T.viewTitle}`;
   for (const el of [els.disconnect, $('autoRe').parentElement, els.share, $('tsep')]) el.hidden = true;
@@ -3031,6 +3032,16 @@ function closeSheet(result = null, why = 'dismiss') {
   lp.addEventListener('change', () => { applyLow(); try { localStorage.setItem('batray_lowpower', lp.checked ? '1' : '0'); } catch {} log(`ui: low power ${lp.checked ? 'on' : 'off'}`); });
   applyLow();
 })();
+/** Now / History tabs for both roles (owner, 2026-11-28). A viewer always has them; a reader once it shows readings
+ *  (History lives in the readings block, so without a pack there is only Now and no bar). */
+function syncTabBar() {
+  const on = !!viewMode || !els.readouts.hidden;
+  if (on === tabBarOn) return;
+  tabBarOn = on;
+  $('tabs').hidden = !on; document.body.classList.toggle('tabbed', on);
+  if (!on) uiS.tab = 'now';
+  renderTabs();
+}
 function renderTabs() {
   document.body.dataset.tab = uiS.tab;
   document.querySelectorAll('[data-tab-btn]').forEach((b) => b.classList.toggle('on', b.dataset.tabBtn === uiS.tab));

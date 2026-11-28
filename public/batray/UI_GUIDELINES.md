@@ -94,12 +94,13 @@ core"). The role is a layout decision, not a fork.
 
 ## Layout
 
-- Reader: one screen. Picture, chips, status line, the notes below. Verified
-  at 500 x 900 and 1440 x 900 before every deploy (house rule).
-- Viewer: bottom tab bar, three or four icons, like WhatsApp's tabs. Now
-  (the picture, tappable), History (chart and scrubber), More (cells, exact
-  values, BMS settings, notes, alerts, debug). Feed joins when events are
-  stored. Settings and sharing controls live in sheets, never a hamburger.
+- Reader and viewer: the same bottom tab bar with two icons (owner, 2026-11-28:
+  "merge More into Now so it looks like the reader"). Now = the picture
+  (tappable), chips, cells, exact values, BMS settings, notes, alerts, debug,
+  in the reader's order; History = chart, ranges, lines, storage. The reader
+  shows the bar once it has readings (History lives in the readings block).
+  Verified at 500 x 900 and 1440 x 900 before every deploy (house rule).
+  Settings and sharing controls live in sheets, never a hamburger.
 
 ## Text policy
 

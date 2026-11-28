@@ -252,9 +252,9 @@ body.view #empty,body.view #oneApp{display:none}
 .tabbar button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:none;border:none;color:#7fb0d8;font:11px 'Segoe UI',Tahoma,sans-serif;padding:6px 0;cursor:pointer;min-height:52px}
 .tabbar button svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .tabbar button.on{color:#8fd8ff}.tabbar button.on svg{stroke-width:2.4}
-body.view [data-tab]:not([hidden]){display:none}
-body.view[data-tab=now] [data-tab=now]:not([hidden]),body.view[data-tab=history] [data-tab=history]:not([hidden]),body.view[data-tab=more] [data-tab=more]:not([hidden]){display:block}
-body.view[data-tab=now] details[data-tab=now]:not([hidden]),body.view[data-tab=more] details[data-tab=more]:not([hidden]){display:block}
+body.tabbed [data-tab]:not([hidden]){display:none}
+body.tabbed[data-tab=now] [data-tab=now]:not([hidden]),body.tabbed[data-tab=history] [data-tab=history]:not([hidden]){display:block}
+body.tabbed[data-tab=now] details[data-tab=now]:not([hidden]){display:block}
 body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,body.lowpower #loading .bar,body.lowpower .sheetBox{animation:none}
 </style>
 <script>
@@ -320,7 +320,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
       <div id="viewName" class="chname" data-tab="now" hidden></div>
       <div id="readerOff" class="readerOff" data-tab="now" role="button" tabindex="0" hidden></div>
       <div id="phoneWarn" class="readerOff" data-tab="now" role="status" hidden></div>
-      <details class="card" id="sharePanel" data-tab="more" hidden open>
+      <details class="card" id="sharePanel" data-tab="now" hidden open>
         <summary><span data-i18n="shareH">Share live</span> <span class="note" data-i18n="shareSetupNote">a name for the viewers, and whether to keep the earlier link</span></summary>
         <div class="tvpanel">
           <div class="tvrow"><label><span data-i18n="shareNameLbl">name shown to viewers</span> <input id="shareName" type="text" maxlength="40" size="22"></label></div>
@@ -330,7 +330,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           <div class="tvrow"><button id="shareGo" type="button" class="demobtn" style="padding:6px 16px" data-i18n="shareGo">Start sharing</button> <button id="shareCancel" type="button" class="linkbtn" data-i18n="cancel">Cancel</button></div>
         </div>
       </details>
-      <details class="card" id="qrPanel" data-tab="more" hidden open>
+      <details class="card" id="qrPanel" data-tab="now" hidden open>
         <summary><span data-i18n="qrSummary">QR code of the live view</span> <span class="note" data-i18n="qrHint">Point the other phone's camera at this code to open the live view</span></summary>
         <div class="qrpanel">
           <div id="qrName" class="chname"></div>
@@ -339,7 +339,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           <div class="qrrow"><button id="qrCopy" type="button" class="linkbtn" data-i18n="copyLink">copy link</button> · <button id="qrHide" type="button" class="linkbtn" data-i18n="qrHide">hide QR</button></div>
         </div>
       </details>
-      <details class="card" id="tvPanel" data-tab="more" hidden open>
+      <details class="card" id="tvPanel" data-tab="now" hidden open>
         <summary><span data-i18n="tvH">Show on TV</span> <span class="note" data-i18n="tvSummary">Chromecast / Google TV, TV browser or VLC - not encrypted</span> <button id="tvClose" type="button" class="linkbtn" data-i18n="close">Close</button></summary>
         <div class="tvpanel">
     <div class="tvnote" data-i18n="tvIntro">Turns this picture into a small video a TV can play, about 20 s behind: press Cast for a Chromecast or Google TV on this Wi-Fi (this loads Google's cast library, only then), or open the link in a TV browser or a player such as VLC.</div>
@@ -405,7 +405,7 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           <div class="chips" id="strip"></div>
         </div>
         <div class="check warn" data-tab="now" id="btNote" hidden data-i18n="btKeepOn">Keep Bluetooth on: with it off, a reconnect on this Chrome version can close the tab.</div>
-        <div class="card" data-tab="more" id="cellsCard">
+        <div class="card" data-tab="now" id="cellsCard">
           <h2><span data-i18n="cellsH">Cell voltages</span> <span class="note" id="cellsNote" data-i18n="cellsNote">bar height exaggerates the spread: scale runs from the lowest cell - 50 mV to the highest + 50 mV</span></h2>
           <div class="check" id="cellsStat"></div>
           <div id="cellsWrap"><div id="cells"></div></div>
@@ -433,16 +433,16 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           <div class="check" id="memUse"></div>
           <div class="check" id="histNote"></div>
         </div>
-        <div class="card" data-tab="more" id="moreCard">
+        <div class="card" data-tab="now" id="moreCard">
           <h2><span data-i18n="moreH">More</span> <span class="note" data-i18n="moreNote">same frame as the meters, not covered by the cell-sum check; offsets verified against captured frames from 24-cell, 32-cell and JK-PB firmware (see how to use)</span></h2>
           <div class="grid" id="secondary"></div>
           <button type="button" id="readerPhone" class="linkbtn" data-i18n="readerPhoneBtn" hidden>Reader phone</button>
         </div>
-        <div class="card" id="settingsCard" data-tab="more" hidden>
+        <div class="card" id="settingsCard" data-tab="now" hidden>
           <h2><span data-i18n="settingsH">BMS settings</span> <span class="note" data-i18n="settingsNote">as configured in the BMS (read-only here)</span></h2>
           <div class="grid" id="settings"></div>
         </div>
-        <div class="card" id="notesCard" data-tab="more">
+        <div class="card" id="notesCard" data-tab="now">
           <h2><span data-i18n="notesH">Notes</span></h2>
           <div class="check" id="etaLine"><span id="cutoffPre" data-i18n="cutoffPre">Time to empty counts down to your inverter's low-battery cut-off:</span>
             <div class="cutopt"><label><input type="radio" name="cutMode" id="cutModePct" value="pct" checked> <span data-i18n="cutByPct">at</span></label> <input id="cutoff" type="number" min="0" max="95" step="1" value="10" size="3" aria-label="inverter cut-off, percent of capacity"> <span data-i18n="cutPctPost">% of capacity (default 10 %)</span></div>
@@ -460,11 +460,11 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
           <video id="keepVideo" loop playsinline preload="none" width="16" height="16" aria-hidden="true" tabindex="-1" style="position:fixed;left:0;bottom:0;width:2px;height:2px;opacity:0.02;pointer-events:none"></video>
         </div>
       </div>
-      <details class="card" id="alertsCard" data-tab="more">
+      <details class="card" id="alertsCard" data-tab="now">
         <summary><span data-i18n="alertsH">Alerts</span> <span class="note" data-i18n="alertsNote">Chrome notifications when the battery needs you</span></summary>
         <div id="alertsBody"></div>
       </details>
-      <details class="card" id="debug" data-tab="more">
+      <details class="card" id="debug" data-tab="now">
         <summary><span data-i18n="debugH">Debug</span> <span class="note" data-i18n="debugNote">raw frames - check these if the numbers look wrong</span></summary>
         <div class="hint"><button class="tbtn" id="copy2" title="copy the raw-frame log to the clipboard"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></svg><span class="lbl" data-i18n="copyLog">Copy log</span></button> <button class="tbtn" id="upload2" title="upload the debug log to clearevo.com (asks first)"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg><span class="lbl" data-i18n="uploadLog">Upload log</span></button> <span id="uploadId" class="tvnote" hidden></span><span data-i18n-html="debugHint"></span></div>
         <div class="tvnote" data-i18n="uploadNote">Upload sends this log to clearevo.com only after you confirm the warning: browser and device details, raw BMS frames and readings, the BMS name and serial. Never the share-link key. Kept 90 days, read by the site owner to fix what you report.</div>
@@ -475,7 +475,6 @@ body.lowpower #fDash.chg,body.lowpower #fDash.dis,body.lowpower .chipbar .dot,bo
   <nav id="tabs" class="tabbar" hidden aria-label="sections">
     <button type="button" data-tab-btn="now" class="on"><svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="2"/><path d="M10 1h4M8 12h8"/></svg><span data-i18n="tabNow">Now</span></button>
     <button type="button" data-tab-btn="history"><svg viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 5-8 4 5"/><path d="M3 21h18"/></svg><span data-i18n="tabHistory">History</span></button>
-    <button type="button" data-tab-btn="more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span data-i18n="tabMore">More</span></button>
   </nav>
   <div class="status-bar"><p><span data-i18n="privacy">Runs in your browser - battery data stays on this device unless you turn on Share live or Show on TV</span> (Google Analytics: visit stats only - <a href="/tools-privacy/" target="_blank" rel="noopener" data-i18n="verify">verify</a>) - <a href="/blog/2026/09/11/how_to_monitor_your_jk_bms_battery_in_your_browser/" target="_blank" rel="noopener" data-i18n="howto">how to use</a> - <a href="/tools/" target="_blank" rel="noopener" data-i18n="tools">tools</a> - <a href="https://www.clearevo.com/">clearevo</a> - © 2026 Kasidit Yusuf, GPL v2 - <span id="sbVer"></span><span id="wake" hidden> - ☀ <span data-i18n="wakeOn">screen kept awake while connected</span></span><span id="wakeVideo" hidden> - 🎞 <span data-i18n="wakeVideo">a silent video keeps the screen on</span></span><span id="alertNote" hidden> - 🔔 <span id="alertTxt"></span></span><span id="tvNote" hidden> - 📺 <span data-i18n="tvNote">showing on TV: the picture goes through clearevo.com unencrypted</span></span><span id="liveNote" hidden> - 🔒 <span data-i18n="liveNote">sharing live: readings are encrypted on this device with a key that exists only in the share link</span></span></p></div>
 </div>

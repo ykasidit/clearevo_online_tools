@@ -21,11 +21,12 @@ import { RESUME_S } from './resume-logic.js';
 import { checklistSummary } from './setup-logic.js';
 import { fmt, flowModel, etaModel, chipList, socClass, fmtWhen, fmtAgo, offlineLines } from './view-logic.js';
 
-export const TABS = ['now', 'history', 'more'];
+// two tabs for both roles (owner, 2026-11-28): Now holds what More used to (cells, details, notes, alerts), History stays
+export const TABS = ['now', 'history'];
 export function uiState(role) { return { role: role === 'viewer' ? 'viewer' : 'reader', tab: 'now', sheet: null, lowPower: false }; }
 
 export function tabTap(ui, tab) {
-  if (ui.role !== 'viewer' || !TABS.includes(tab) || ui.tab === tab) return { action: 'noop' };
+  if (!TABS.includes(tab) || ui.tab === tab) return { action: 'noop' };
   ui.tab = tab; return { action: 'switch', tab };
 }
 /** A tap on the sheet's backdrop (review round 1, 2026-11-23: a reader log shows a resume sheet closed by a tap outside
@@ -42,7 +43,7 @@ export function sheetClose(ui) { if (!ui.sheet) return { action: 'noop' }; const
 /** The Back button, as a messenger user expects: closes a sheet, else goes to Now, else leaves the page. */
 export function backDecision(ui) {
   if (ui.sheet) { const kind = ui.sheet.kind; ui.sheet = null; return { action: 'close-sheet', kind }; }
-  if (ui.role === 'viewer' && ui.tab !== 'now') { ui.tab = 'now'; return { action: 'switch', tab: 'now' }; }
+  if (ui.tab !== 'now') { ui.tab = 'now'; return { action: 'switch', tab: 'now' }; }
   return { action: 'leave' };
 }
 export function lowPowerSet(ui, on) { ui.lowPower = !!on; return ui.lowPower; }

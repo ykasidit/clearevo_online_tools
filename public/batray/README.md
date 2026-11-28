@@ -141,6 +141,15 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.101 (2026-11-28): two tabs, Now and History, for the reader and the viewer
+
+Owner: "merge More into Now so it looks like the reader; History stays; two tabs for both". The More tab is gone:
+its cards (cells, More, BMS settings, Notes, Alerts, Debug, Share / QR / TV) carry `data-tab="now"` and follow the
+picture in the reader's order. `ui-logic.js` `TABS = ['now', 'history']`, `tabTap` / `backDecision` for both roles;
+the tab CSS keys on `body.tabbed` (was `body.view`); `syncTabBar()` shows the bar on a viewer always and on a reader
+once it shows readings (History lives in the readings block), and falls back to Now when it hides. Tests:
+batray_ui.test.js (both roles), batray_ui.mjs (reader tabs + Back, viewer two tabs, Now carries notes and alerts).
+
 ## 0.9.100 (2026-11-27): the History chart fills its card on a desktop viewer
 
 A viewer opens on Now, where the History card is hidden; a chart drawn then measured 0 px and kept the 200 px

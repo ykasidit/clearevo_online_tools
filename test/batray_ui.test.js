@@ -22,18 +22,20 @@ const T = I18N.en;
 const owner = decodeCellInfo(F.OWNER_32S_CELL); assert.ok(owner.ok);
 const ctx = (extra = {}) => ({ d: owner, settings: { maxChargeA: 50, maxDischargeA: 100 }, iEmaV: null, cutoffPct: 10, label: 'm-00', lang: 'en', langs: [{ code: 'en', name: 'English' }, { code: 'th', name: 'ไทย' }], res: '1920x1080', mode: 'auto', ...extra });
 
-test('tabs exist only for the viewer; the reader has one screen', () => {
-  const r = uiState('reader');
-  assert.deepEqual(tabTap(r, 'history'), { action: 'noop' }); assert.equal(r.tab, 'now');
-  const v = uiState('viewer');
-  assert.deepEqual(tabTap(v, 'history'), { action: 'switch', tab: 'history' });
-  assert.deepEqual(tabTap(v, 'history'), { action: 'noop' });
-  assert.deepEqual(tabTap(v, 'bogus'), { action: 'noop' });
-  assert.deepEqual(TABS, ['now', 'history', 'more']);
+test('two tabs, Now and History, for the reader and the viewer alike (owner, 2026-11-28: More merged into Now)', () => {
+  assert.deepEqual(TABS, ['now', 'history']);
+  for (const role of ['reader', 'viewer']) {
+    const u = uiState(role);
+    assert.deepEqual(tabTap(u, 'history'), { action: 'switch', tab: 'history' });
+    assert.deepEqual(tabTap(u, 'history'), { action: 'noop' });
+    assert.deepEqual(tabTap(u, 'more'), { action: 'noop' }); assert.equal(u.tab, 'history');    // the old third tab is gone
+    assert.deepEqual(tabTap(u, 'bogus'), { action: 'noop' });
+    assert.deepEqual(tabTap(u, 'now'), { action: 'switch', tab: 'now' });
+  }
 });
 
 test('Back like a messenger: closes the sheet first, then returns to Now, then leaves', () => {
-  const v = uiState('viewer'); tabTap(v, 'more');
+  const v = uiState('viewer'); tabTap(v, 'history');
   assert.deepEqual(sheetOpen(v, 'cells'), { action: 'open', kind: 'cells', replace: false });
   assert.deepEqual(sheetOpen(v, 'soc'), { action: 'open', kind: 'soc', replace: true });     // a second tile replaces the sheet, no extra history entry
   assert.deepEqual(backDecision(v), { action: 'close-sheet', kind: 'soc' }); assert.equal(v.sheet, null);
@@ -41,6 +43,8 @@ test('Back like a messenger: closes the sheet first, then returns to Now, then l
   assert.deepEqual(backDecision(v), { action: 'leave' });
   const r = uiState('reader'); sheetOpen(r, 'lang');
   assert.deepEqual(sheetClose(r), { action: 'close', kind: 'lang' }); assert.deepEqual(sheetClose(r), { action: 'noop' });
+  tabTap(r, 'history');
+  assert.deepEqual(backDecision(r), { action: 'switch', tab: 'now' });   // the reader's History tab goes back to Now too
   assert.deepEqual(backDecision(r), { action: 'leave' });
 });
 
