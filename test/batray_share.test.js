@@ -13,7 +13,7 @@
 // Source: https://github.com/ykasidit/clearevo_online_tools
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, REACH_HOLD_MS, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision, remotePackState, viewPackPick } from '../public/batray/share-logic.js';
+import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, REACH_HOLD_MS, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision, remotePackState, viewPackPick, reconnectProgress, RECONNECT_STEPS } from '../public/batray/share-logic.js';
 import { suggestChannelName } from '../public/batray/live-logic.js';
 
 test('the Share button: opens the setup, is sunk and stops on the next press, greyed while starting', () => {
@@ -151,4 +151,18 @@ test('a viewer opens on a live pack, and a chip tap is never overruled', () => {
   assert.equal(viewPackPick([{ id: 'm-00', live: false }, { id: 's-01', live: false }], 'm-00', false), 'm-00');   // nothing live: no flapping
   assert.equal(viewPackPick([], null, false), null);
   assert.equal(viewPackPick([{ id: 'a', live: true }], 'gone', false), 'a'); // the active id no longer listed
+});
+
+test('reconnectProgress: three steps with their own bounds; the percentage moves within a step and never reaches 100 before live (owner, 2026-11-28)', () => {
+  assert.deepEqual(RECONNECT_STEPS, ['wait', 'open', 'data']);
+  const t = 1_000_000;
+  assert.deepEqual(reconnectProgress({ phase: 'wait', at: t, ms: 4000 }, t), { pct: 0, leftS: 4, n: 1, of: 3, phase: 'wait' });
+  assert.deepEqual(reconnectProgress({ phase: 'open', at: t, ms: 10000 }, t + 500), { pct: 35, leftS: 10, n: 2, of: 3, phase: 'open' });   // 1/3 + 0.05/3
+  assert.deepEqual(reconnectProgress({ phase: 'data', at: t, ms: 15000 }, t + 7500), { pct: 83, leftS: 8, n: 3, of: 3, phase: 'data' });
+  assert.equal(reconnectProgress({ phase: 'data', at: t, ms: 15000 }, t + 60000).pct, 98, 'past its bound a step holds at 95 % of its share');
+  assert.equal(reconnectProgress({ phase: 'data', at: t, ms: 15000 }, t + 60000).leftS, 0);
+  assert.equal(reconnectProgress({ phase: 'open', at: t, ms: 10000 }, t - 5000).pct, 33, 'a clock set back does not go below the step start');
+  // bad input: nothing to show, never a throw or NaN
+  for (const bad of [null, undefined, 'open', {}, { phase: 'more', at: t, ms: 1 }, { phase: 'open', at: 'x', ms: 1 }, { phase: 'open', at: t, ms: 0 }, { phase: 'open', at: t, ms: -5 }, { phase: 'open', at: t, ms: NaN }]) assert.equal(reconnectProgress(bad, t), null, JSON.stringify(bad));
+  assert.equal(reconnectProgress({ phase: 'open', at: t, ms: 1000 }, undefined), null);
 });

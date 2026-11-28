@@ -141,6 +141,17 @@ await evalJs(`document.querySelector('[data-tab-btn=history]').click(); 1`); awa
 const hw = await evalJs(`({ waitShown: getComputedStyle(document.getElementById('trendWait')).display !== 'none', txt: document.getElementById('trendWaitTxt').textContent, cardHidden: document.getElementById('trendCard').hidden })`);
 check('History never shows blank: without readings it says the trend starts once they arrive', hw.waitShown && /once readings arrive/.test(hw.txt) && hw.cardHidden, hw);
 
+// ---- 0.9.102 (owner, 2026-11-28): "reconnecting" says how far it is - a percentage with the step's time limit. The
+// test server has no relay, so this viewer's socket never opens: it counts down, tries, counts down ----
+const rc = await evalJs(`(async () => {
+  window.__batrayTest.remoteTake('rem', { soc: 50, v: 52, i: -3, w: -150 }, Date.now());
+  const seen = [];
+  for (let i = 0; i < 12; i++) { await new Promise((r) => { setTimeout(r, 250); }); seen.push(document.getElementById('stat').textContent); }
+  return { seen, long: document.getElementById('offlineTxt').textContent };
+})()`);
+const pcts = rc.seen.map((x) => (/reconnecting (\d+) % \((next try|connecting to the relay), up to \d+ s\)/.exec(x) || [])[1]).filter(Boolean).map(Number);
+check('reconnecting shows a percentage with the step and its time limit, and the percentage moves', pcts.length >= 6 && Math.max(...pcts) > Math.min(...pcts) && /Reconnecting to the live stream… \d+ % - step [12] of 3: (next try|connecting to the relay), up to \d+ s/.test(rc.long), rc);
+
 // ---- Desktop viewer: History is hidden while the viewer is on Now, so the chart drawn then measured 0 px and kept the
 // 200 px minimum in a ~1000 px card (seen recording the how-to carousel, 2026-11-27); opening the tab sizes it ----
 await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });

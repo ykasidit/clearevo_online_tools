@@ -117,6 +117,18 @@ export function dataPublishDue({ viewers, lastAt, now, everyMs = IDLE_PUBLISH_MS
   if (viewers > 0) return true;
   return lastAt === null || lastAt === undefined || !(now - lastAt < everyMs);
 }
+/** How far a viewer's reconnect has got (owner, 2026-11-28: "a percentage with the timeout"). Three steps, each with
+ *  its own bound: 'wait' (the reopen countdown), 'open' (the socket to the relay, OPEN_MS), 'data' (a fresh reading,
+ *  FRESH_MS). step = { phase, at, ms } from the viewer loop. Returns { pct, leftS, n, of, phase } or null. A step never
+ *  shows more than 95 % of its share: 100 % is only "live". */
+export const RECONNECT_STEPS = ['wait', 'open', 'data'];
+export function reconnectProgress(step, now) {
+  if (!step || typeof step !== 'object' || !RECONNECT_STEPS.includes(step.phase)) return null;
+  if (typeof step.at !== 'number' || typeof step.ms !== 'number' || !(step.ms > 0) || typeof now !== 'number') return null;
+  const i = RECONNECT_STEPS.indexOf(step.phase), of = RECONNECT_STEPS.length;
+  const frac = Math.min(0.95, Math.max(0, (now - step.at) / step.ms));
+  return { pct: Math.round(((i + frac) / of) * 100), leftS: Math.max(0, Math.ceil((step.at + step.ms - now) / 1000)), n: i + 1, of, phase: step.phase };
+}
 export function remotePackState({ streamLive, readerGone, packLive, readerConnected }) {
   if (packLive) return 'live';
   if (readerGone) return 'readerOff';

@@ -27,7 +27,12 @@ const sockets = [];
 class FakeWS {
   constructor(url) { this.url = url; this.readyState = 0; this.sent = []; this.bufferedAmount = 0; sockets.push(this); }
   send(s) { this.sent.push(JSON.parse(s)); }
-  close(code = 1000, reason = '') { if (this.readyState === 3) return; this.readyState = 3; this.onclose && this.onclose({ code, reason, wasClean: true }); }
+  close(code = 1000, reason = '') {
+    if (this.readyState === 3) return;
+    if (this.deferClose) { this.readyState = 2; this.pendingClose = { code, reason }; return; }   // a frozen page: the close event waits for the resume
+    this.readyState = 3; this.onclose && this.onclose({ code, reason, wasClean: true });
+  }
+  flushClose() { const c = this.pendingClose; this.pendingClose = null; this.readyState = 3; this.onclose && this.onclose({ code: c.code, reason: c.reason, wasClean: true }); }
   open() { this.readyState = 1; this.onopen && this.onopen(); }
   push(m) { this.onmessage && this.onmessage({ data: JSON.stringify(m) }); }
   get pings() { return this.sent.filter((m) => m.type === 'ping').length; }
@@ -289,4 +294,53 @@ test('viewer log 2026-11-21: the viewer\'s OWN sleep is not the reader\'s silenc
   assert.equal(v.state.reader, false, 'a reader that stays silent after the wake is still caught by the 35 s rule');
   assert.ok(logs.some((m) => /nothing has come from it for 3\d s - reader offline/.test(m)), logs.filter((m) => /offline/.test(m)));
   } finally { v.stop(); }                                                  // a failed check must not leave the loop running (node would never exit)
+});
+
+// ---- owner 2026-11-28: "coming back to the tab it says reconnecting for 3-4 s - make it faster or say why it must take
+// that long". Measured on the live room: the socket opens in 0.4-0.5 s and the relay's retained reading makes the view
+// live 5 ms later. The rest was the 4 s reopen countdown, sat out because the tab's "I am back" was spent before the
+// socket's close was seen. Both orders, with the real 4 s countdown:
+test('2026-11-28: a viewer frozen with its socket closed (4004) reopens at once on resume, whichever comes first - the resume or the close event', async () => {
+  const v = new Viewer({ room: 'r1', keyB64: makeKeyB64(), log: () => {}, onState: () => {}, onEnvelope: () => {} });   // default 4 s countdown
+  try {
+  await v.start(); await settle(); last().open(); await settle();
+  const n = sockets.length, ws = last();
+  ws.deferClose = true; v.suspend(); await settle();          // the freeze: 4004 sent, the page stops before the close event
+  const t0 = Date.now();
+  v.nudge(); await settle();                                   // resume: Chrome runs the resume event first ...
+  ws.flushClose();                                             // ... then the queued close
+  for (let i = 0; i < 40 && sockets.length === n; i++) await settle(25);
+  assert.equal(sockets.length, n + 1, 'a new socket is opened');
+  assert.ok(Date.now() - t0 < 500, `reopened ${Date.now() - t0} ms after the resume, not after the 4 s countdown`);
+  } finally { v.stop(); await settle(); }
+});
+test('2026-11-28: a socket that dies just after the tab came back (the OS dropped it in the background) reopens at once; a death long after a resume still counts down', async () => {
+  const v = new Viewer({ room: 'r1', keyB64: makeKeyB64(), log: () => {}, onState: () => {}, onEnvelope: () => {} });
+  let t = 7_000_000; v.now = () => t;
+  try {
+  await v.start(); await settle(); last().open(); await settle();
+  let n = sockets.length;
+  v.nudge(); await settle();                                   // the tab is back; the socket still looks open
+  t += 300; last().close(1006, ''); await settle(60);          // ... and its death shows 0.3 s later
+  assert.equal(sockets.length, n + 1, 'reopened at once, no 4 s countdown');
+  last().open(); await settle();
+  n = sockets.length;
+  v.nudge(); await settle();                                   // back again, healthy socket
+  t += 60_000; last().close(1006, ''); await settle(60);       // a minute later the network drops it: an ordinary death
+  assert.equal(sockets.length, n, 'a death a minute after a resume counts down as before');
+  assert.equal(v.state.retryIn, 4);
+  } finally { v.stop(); await settle(); }
+});
+test('2026-11-28: the publisher (reader) comes back from a freeze at once too', async () => {
+  const p = new Publisher({ log: () => {}, onState: () => {}, onRequest: () => {} });
+  try {
+  await p.start(); await settle(); last().open(); await settle();
+  const n = sockets.length, ws = last();
+  ws.deferClose = true; p.suspend(); await settle();
+  const t0 = Date.now();
+  p.nudge(); await settle(); ws.flushClose();
+  for (let i = 0; i < 40 && sockets.length === n; i++) await settle(25);
+  assert.equal(sockets.length, n + 1);
+  assert.ok(Date.now() - t0 < 500, `reopened ${Date.now() - t0} ms after the resume`);
+  } finally { await p.stop(); await settle(); }
 });

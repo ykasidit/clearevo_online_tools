@@ -30,6 +30,10 @@ import { Flag, Channel, sleep, select, isAbort, abortError, deadline } from './s
 
 const API = '/batray/api';
 const RETRY_S = 4;             // reopen countdown after the socket dies
+// A socket that ends within this long of the tab coming back reopens at once: the resume and the socket's close race
+// (a freeze closes it 4004, Android drops it in the background) and a resume spent on pinging the dead socket left the
+// full countdown to sit out - 3-4 s of "reconnecting" on every return (owner, 2026-11-28).
+export const RESUME_FAST_MS = 10000;
 const OPEN_MS = 10000;         // a socket that has not opened by then is given up
 const SEND_MAX = 256 * 1024;   // bytes queued on the socket before an envelope is dropped instead of queued
 
@@ -143,7 +147,7 @@ export class Publisher {
     this.stopped = false; this.reused = false; this.lastStatusKey = null;
     this.retryS = opts.retryS || RETRY_S;
     this.now = () => Date.now();
-    this.resumed = new Channel();     // the tab came back: a countdown ends early, a serving socket is pinged now
+    this.resumed = new Channel(); this.kickAt = null;     // the tab came back: a countdown ends early, a serving socket is pinged now
     this.ac = null; this.task = null;
   }
   /** The app's paint hook: a throw in it is logged, never the end of the loop (long-run review 2026-11-05). */
@@ -205,6 +209,10 @@ export class Publisher {
   }
   /** The countdown on the chip; the tab resuming (nudge) ends it early. */
   async retryWait(seconds, signal) {
+    if (this.kickAt !== null && this.now() - this.kickAt <= RESUME_FAST_MS) {   // the tab just came back: no countdown
+      this.kickAt = null; this.resumed.clear(); this.log('live: tab resumed, reconnecting now');
+      this.state.retryIn = null; this.emit(); return;
+    }
     const dl = deadline(seconds * 1000);                                    // a throttled tab is not owed the missed seconds, a clock set back adds none
     for (;;) {
       const left = Math.ceil(dl.left() / 1000);
@@ -212,7 +220,7 @@ export class Publisher {
       this.state.retryIn = left; this.emit();
       const step = Math.min(1000, dl.left());
       const r = await select(signal, { tick: (s) => sleep(step, s), resume: (s) => this.resumed.ready({ signal: s }) });
-      if (r.key === 'resume') { this.resumed.take(); this.log('live: tab resumed, reconnecting now'); break; }
+      if (r.key === 'resume') { this.resumed.take(); this.kickAt = null; this.log('live: tab resumed, reconnecting now'); break; }
     }
     this.state.retryIn = null; this.emit();
   }
@@ -247,7 +255,7 @@ export class Publisher {
     sock.send(m); this.state.sent++;
   }
   /** The tab just came back: end a countdown now, ping a serving socket now. */
-  nudge() { if (!this.stopped) this.resumed.push(1); }
+  nudge() { if (this.stopped) return; this.kickAt = this.now(); this.resumed.push(1); }
   /** The page is about to be frozen (Chrome Android, about a minute after it is hidden): close the socket with a code
    *  the relay keeps (4004 'frozen'), so viewers and the "reader stopped" push learn it now instead of never - a
    *  frozen page's socket stayed in the room, answered by the relay itself (review round 1). The loop reopens it on resume. */
@@ -287,12 +295,12 @@ export class Viewer {
     // sig: our socket is up; reader: the reader is there (its socket is in the room, or its readings still arrive);
     // live: both; net: this device has internet
     // gone: how the reader's socket ended, while it is away ({ at (this clock), code, reason }, from the relay, 0.9.71)
-    this.state = { viewers: 0, live: false, reader: null, retryIn: null, error: null, received: 0, stale: 0, sig: null, net: true, gone: null };   // null = not known yet
+    this.state = { viewers: 0, live: false, reader: null, retryIn: null, error: null, received: 0, stale: 0, sig: null, net: true, gone: null, step: null };   // null = not known yet
     this.lastRxAt = null; this.serverLive = null; this.lastStatusKey = null;
     this.now = () => Date.now();
     this.stopped = false;
     this.retryS = opts.retryS || RETRY_S;
-    this.resumed = new Channel();
+    this.resumed = new Channel(); this.kickAt = null;
     this.ac = null; this.task = null;
   }
   /** The app's paint hook: a throw in it is logged, never the end of the loop (long-run review 2026-11-05). */
@@ -310,7 +318,7 @@ export class Viewer {
   /** The one owner of the socket: open, serve until it dies, count down, again. The retained messages arrive first. */
   async run(signal) {
     for (;;) {
-      this.state.retryIn = null; this.state.error = null; this.emit();
+      this.state.retryIn = null; this.state.error = null; this.setStep('open', OPEN_MS); this.emit();
       const t0 = Date.now();
       let sock;
       try { sock = await openSock(wsUrl(this.room, 'view', null), signal, (s) => { this.opening = s; }); } catch (e) {
@@ -321,7 +329,7 @@ export class Viewer {
         await this.retryWait(this.retryS, signal);
         continue;
       }
-      this.opening = null; this.sock = sock; this.state.sig = true; this.openAt = this.now(); this.emit();
+      this.opening = null; this.sock = sock; this.state.sig = true; this.openAt = this.now(); this.setStep('data', FRESH_MS); this.emit();
       this.log(`signal: socket open (view) in ${Date.now() - t0} ms`);
       // the page's own sleep is not the reader's silence: the watch starts again at the wake (viewer log 2026-11-21: a
       // 44 s background sleep fired "Reader offline" then "Reader online" 4 s later)
@@ -334,6 +342,11 @@ export class Viewer {
   }
   /** The countdown on the chip; the tab resuming ends it early. */
   async retryWait(seconds, signal) {
+    if (this.kickAt !== null && this.now() - this.kickAt <= RESUME_FAST_MS) {   // the tab just came back: no countdown
+      this.kickAt = null; this.resumed.clear(); this.log('live: tab resumed, reconnecting now');
+      this.state.retryIn = null; this.emit(); return;
+    }
+    this.setStep('wait', seconds * 1000);
     const dl = deadline(seconds * 1000);                                    // a throttled tab is not owed the missed seconds, a clock set back adds none
     for (;;) {
       const left = Math.ceil(dl.left() / 1000);
@@ -341,9 +354,15 @@ export class Viewer {
       this.state.retryIn = left; this.emit();
       const step = Math.min(1000, dl.left());
       const r = await select(signal, { tick: (s) => sleep(step, s), resume: (s) => this.resumed.ready({ signal: s }) });
-      if (r.key === 'resume') { this.resumed.take(); this.log('live: tab resumed, reconnecting now'); break; }
+      if (r.key === 'resume') { this.resumed.take(); this.kickAt = null; this.log('live: tab resumed, reconnecting now'); break; }
     }
     this.state.retryIn = null; this.emit();
+  }
+  /** Where a reconnect is (0.9.102): { phase: 'wait' | 'open' | 'data', at, ms } on the state for the app's
+   *  percentage; null once live. reconnectFrom = the start of this outage, for the "back after N ms" log line. */
+  setStep(phase, ms) {
+    if (!this.state.step) this.reconnectFrom = this.now();
+    this.state.step = { phase, at: this.now(), ms };
   }
   async onMsg(m) {
     if (m.type === 'status') { this.onStatus(m); return; }
@@ -362,6 +381,7 @@ export class Viewer {
   judgeReader(force = false) {
     const reader = readerPresent({ serverLive: this.serverLive, lastRxAt: this.lastRxAt, openAt: this.sock ? this.openAt : null, lastAnyAt: this.lastAnyAt, now: this.now() });
     const live = reader === true && this.state.sig === true;
+    if (live && this.state.step) { this.log(`live: back after ${this.now() - this.reconnectFrom} ms`); this.state.step = null; }   // the time a return took, in the log
     if (!force && reader === this.state.reader && live === this.state.live) return;
     if (this.state.reader !== false && reader === false) this.log(this.serverLive ? `live: the reader's socket is in the room but nothing has come from it for ${Math.round((this.now() - Math.max(this.openAt || 0, this.lastRxAt || 0, this.lastAnyAt || 0)) / 1000)} s - reader offline (frozen or hung)` : 'live: the reader is not in the room and nothing has arrived for a while - reader offline');
     this.state.reader = reader; this.state.live = live; this.emit();
@@ -386,7 +406,7 @@ export class Viewer {
   /** Ask the reader to upload its debug log now (0.9.89); its answer is a `log-id` envelope with this nonce. */
   askLog(nonce) { if (!this.sock) return false; this.sock.send({ type: 'log-req', nonce }); return true; }
   /** The tab just came back: end a countdown now, ping a serving socket now. */
-  nudge() { if (!this.stopped) this.resumed.push(1); }
+  nudge() { if (this.stopped) return; this.kickAt = this.now(); this.resumed.push(1); }
   /** The page is about to be frozen: leave the room now (review round 2: a frozen viewer tab still counted as a viewer,
    *  so the reader kept publishing every frame for it, and the relay queued them to a socket nobody read). The loop
    *  reopens it on resume. */
@@ -396,6 +416,6 @@ export class Viewer {
     if (this.ac) this.ac.abort();
     if (this.sock) { this.sock.close(); this.sock = null; }
     unwatchNet(this);
-    this.state.live = false; this.state.sig = false; this.state.retryIn = null; this.emit();
+    this.state.live = false; this.state.sig = false; this.state.retryIn = null; this.state.step = null; this.emit();
   }
 }

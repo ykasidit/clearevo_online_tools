@@ -141,6 +141,24 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.102 (2026-11-28): back to live in ~0.5 s, and "reconnecting" says how far it is
+
+Owner: "coming back to the tab it says reconnecting for 3-4 s; show a percentage with the timeout; make it faster or
+explain why". Measured on the live room (a viewer frozen and brought back, resume before the socket's close, as on a
+phone): 0.9.101 took 5.0 s every time - the socket opens in 0.4-0.6 s and the relay's retained reading makes the view
+live 5 ms later; the other 4 s were the reopen countdown. The tab's "I am back" (`nudge()`) and the close of the
+socket the freeze had closed (4004) race; when the nudge came first, `serve()` spent it on a ping to the closing
+socket and the loop then sat out the whole countdown. Now `nudge()` stamps `kickAt` and `retryWait()` skips the
+countdown when the socket ended within `RESUME_FAST_MS` (10 s) of a resume - both loops, viewer and reader. One
+fast try per return: a failed open counts down as before. Replays in batray_presence.test.js (resume before close,
+close 0.3 s after a resume, the reader; a death a minute after a resume still counts down).
+
+The viewer loop records its step (`state.step` = {phase wait | open | data, at, ms}: the countdown, OPEN_MS for the
+socket, FRESH_MS for a fresh reading); share-logic `reconnectProgress(step, now)` turns it into a percentage over the
+three steps (a step holds at 95 % of its share past its bound; 100 % is only "live") and the seconds left in the step;
+the status line and the card say "reconnecting 40 % (connecting to the relay, up to 9 s)" / "step 2 of 3: ..."
+(EN/TH), refreshed every second. The log has `live: back after N ms` for each reconnect.
+
 ## 0.9.101 (2026-11-28): two tabs, Now and History, for the reader and the viewer
 
 Owner: "merge More into Now so it looks like the reader; History stays; two tabs for both". The More tab is gone:

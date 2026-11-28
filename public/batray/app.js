@@ -24,7 +24,7 @@ import { checklist, checklistSummary, checklistLine, setupWarn, parseDone, toggl
 import { pushDecision, pushState, b64uBytes } from './push-logic.js';
 import { connState, connCard, connButton, packChipState, wakeWantedByConn, knownDevice, cancelledError, CONNECT_TRIES } from './conn-logic.js';
 import { BleConn } from './conn.js';
-import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision, remotePackState, viewPackPick, dataPublishDue } from './share-logic.js';
+import { shareState, shareTapDecision, shareSetupModel, shareSetupCancelled, shareBegin, shareStarted, shareFailed, shareStopped, shareButton, viewersChange, liveText, reachState, reachEvent, reachSettle, viewState, viewerEvent, viewHello, viewerDataSeen, viewPacks, remotePackDecision, remoteLiveDecision, remotePackState, viewPackPick, dataPublishDue, reconnectProgress } from './share-logic.js';
 import { uiState, tabTap, sheetOpen, sheetClose, backDecision, lowPowerSet, sheetModel, backdropDecision } from './ui-logic.js';
 import { tvUiState, tvTapDecision, tvCloseDecision, tvStartDecision, tvStarted, tvStartFailed, tvStopped, tvButtons, tvPreviewWanted, tvPreviewToggle, previewState, previewEvent, previewSource } from './tv-logic.js';
 import { startDemo } from './demo.js';
@@ -44,7 +44,7 @@ import { makeChart, drawChart } from './history-chart.js';
 import { TvStream } from './tv.js';
 import { drawTvFrame } from './tv-draw.js';
 
-export const APP_VERSION = '0.9.101';
+export const APP_VERSION = '0.9.102';
 
 // The boot trail (0.9.71): the inline script in index.html wrote stage 'html' before any module loaded; each later
 // stage is added here, so the next start can tell a page load that never finished (the owner's two blank tabs of
@@ -1574,6 +1574,7 @@ function tickAge() {
   const lines = active ? stampLines({ readerAt: active.readerAt, localAt: active.localAt, viewer: !!active.remote }, T) : [];
   $('updR').textContent = lines[0] || ''; $('updL').textContent = lines[1] || '';
   if (viewMode) renderReaderOff(); else renderSetupWarn();
+  if (viewMode && active && active.remote && remoteState(active) === 'stream') { setRemoteStatus(active); refreshCard(); }   // the reconnect percentage moves
   fitCorner($('updR')); fitCorner($('updL'));
 }
 void every(1000, tickAge, { onError: jobError('age tick') });
@@ -2262,16 +2263,19 @@ function lastReadingText(p) {
   const d = new Date(p.lastFrameAt), today = new Date().toDateString() === d.toDateString();
   return d.toLocaleString(langCode === 'th' ? 'th-TH' : 'en-GB', today ? { hour: '2-digit', minute: '2-digit' } : { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
+// the viewer's reconnect as a percentage with its step's time limit (owner, 2026-11-28)
+function reconnectNow() { return viewer ? reconnectProgress(viewer.state.step, viewer.now()) : null; }
 function setRemoteStatus(p) {
   const st = remoteState(p), t = lastReadingText(p);
   if (st === 'live') setStatus(() => T.viewingPack(p.label), 'good');
   else if (st === 'readerOff') setStatus(() => T.viewOfflineShort, 'bad');
-  else if (st === 'stream') setStatus(() => T.viewReconnecting, 'bad');
+  else if (st === 'stream') setStatus(() => { const r = reconnectNow(); return r ? T.viewReconnectingAt(r.pct, T.reconnectStep[r.phase], r.leftS) : T.viewReconnecting; }, 'bad');
   else setStatus(() => (st === 'packOff' ? T.viewPackOff(p.label, t) : T.viewPackStale(p.label, t)), 'bad');
 }
 function remoteLongText(p) {
   const st = remoteState(p), t = lastReadingText(p);
-  return st === 'readerOff' ? T.viewOffline : st === 'stream' ? T.viewReconnectingLong : st === 'packOff' ? T.viewPackOffLong(p.label, t) : st === 'packStale' ? T.viewPackStaleLong(p.label, t) : '';
+  const r = st === 'stream' ? reconnectNow() : null;
+  return st === 'readerOff' ? T.viewOffline : st === 'stream' ? (r ? T.viewReconnectingLongAt(r.pct, r.n, r.of, T.reconnectStep[r.phase], r.leftS) : T.viewReconnectingLong) : st === 'packOff' ? T.viewPackOffLong(p.label, t) : st === 'packStale' ? T.viewPackStaleLong(p.label, t) : '';
 }
 // a viewer opens on a live pack: the person's own chip tap stands (userPickedPack)
 let userPickedPack = false;
