@@ -149,6 +149,9 @@ the other half second was the close handshake of the socket the freeze had close
 the closing one. The reopen log line says "reopening now (tab resumed)" or "in N s". Replay in
 batray_presence.test.js; the heartbeat test that drives its loop with nudge() now expects the immediate reopen.
 
+Live check, kept: `test/longrun/resume_live.mjs` (LIVE_URL or LIVE_URL_FILE = a share link; never commit the link)
+plays a freeze and return on the deployed site and fails when the median is over MAX_MS (1500); 0.9.103 measured 0.42-0.49 s.
+
 ## 0.9.102 (2026-11-28): back to live in ~0.5 s, and "reconnecting" says how far it is
 
 Owner: "coming back to the tab it says reconnecting for 3-4 s; show a percentage with the timeout; make it faster or
