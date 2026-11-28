@@ -141,6 +141,14 @@ No store library or framework: the app has no build step beyond content
 hashing, and explicit `render…()` calls after each decision keep it obvious
 when the screen repaints.
 
+## 0.9.103 (2026-11-28): a return does not wait for the old socket's close
+
+Measured on the live room after 0.9.102: 5.0 s -> 0.97 s (median of 5). The app's own "back after" said 420-510 ms;
+the other half second was the close handshake of the socket the freeze had closed (4004), still owed by the relay.
+`serve()` now returns at a resume when its socket is not open (`Sock.open`), so the new socket opens at once beside
+the closing one. The reopen log line says "reopening now (tab resumed)" or "in N s". Replay in
+batray_presence.test.js; the heartbeat test that drives its loop with nudge() now expects the immediate reopen.
+
 ## 0.9.102 (2026-11-28): back to live in ~0.5 s, and "reconnecting" says how far it is
 
 Owner: "coming back to the tab it says reconnecting for 3-4 s; show a percentage with the timeout; make it faster or

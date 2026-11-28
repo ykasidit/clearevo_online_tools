@@ -59,6 +59,7 @@ class Sock {
     this.ws.onerror = () => {};                                 // the close that follows says it
   }
   get backlog() { return this.ws.readyState === 1 ? this.ws.bufferedAmount : 0; }
+  get open() { return this.ws.readyState === 1; }
   send(obj) { if (this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); }
   close(code = 1000, reason = 'bye') { try { this.ws.close(code, reason); } catch { /* already closing */ } }
 }
@@ -91,7 +92,12 @@ async function serve(sock, signal, { onMsg, onTick, onSlept, log, now, resumed }
       if (m.type !== 'pong') await onMsg(m);
       continue;
     }
-    if (r.key === 'resume') resumed.take();
+    if (r.key === 'resume') {
+      resumed.take();
+      // a socket already closing (the freeze closed it, or the OS dropped it) is not waited for: its close handshake with
+      // the relay was half of the second a return still took (live measurement, 2026-11-28)
+      if (!sock.open) return 'closing (tab resumed)';
+    }
     // The page itself slept (Android froze the tab, or Chrome ran its timers once a minute): the socket's silence is
     // ours, not the relay's - ask before judging it, or a healthy socket is torn down and the relay records the
     // reader as unanswered (share review 2026-11-01).
@@ -203,13 +209,13 @@ export class Publisher {
       const why = await serve(sock, signal, { onMsg: (m) => this.onMsg(m), log: this.log, now: this.now, resumed: this.resumed });
       this.sock = null; sock.close();
       this.state.sig = false; this.state.live = false; this.emit();
-      this.log(`signal: socket ${why} - reopening in ${this.retryS} s`);
+      this.log(`signal: socket ${why} - reopening ${this.fastNow() ? 'now (tab resumed)' : `in ${this.retryS} s`}`);
       await this.retryWait(this.retryS, signal);
     }
   }
   /** The countdown on the chip; the tab resuming (nudge) ends it early. */
   async retryWait(seconds, signal) {
-    if (this.kickAt !== null && this.now() - this.kickAt <= RESUME_FAST_MS) {   // the tab just came back: no countdown
+    if (this.fastNow()) {   // the tab just came back: no countdown
       this.kickAt = null; this.resumed.clear(); this.log('live: tab resumed, reconnecting now');
       this.state.retryIn = null; this.emit(); return;
     }
@@ -256,6 +262,7 @@ export class Publisher {
   }
   /** The tab just came back: end a countdown now, ping a serving socket now. */
   nudge() { if (this.stopped) return; this.kickAt = this.now(); this.resumed.push(1); }
+  fastNow() { return this.kickAt !== null && this.now() - this.kickAt <= RESUME_FAST_MS; }
   /** The page is about to be frozen (Chrome Android, about a minute after it is hidden): close the socket with a code
    *  the relay keeps (4004 'frozen'), so viewers and the "reader stopped" push learn it now instead of never - a
    *  frozen page's socket stayed in the room, answered by the relay itself (review round 1). The loop reopens it on resume. */
@@ -336,13 +343,13 @@ export class Viewer {
       const why = await serve(sock, signal, { onMsg: (m) => this.onMsg(m), onTick: () => this.judgeReader(), onSlept: () => { this.openAt = this.now(); }, log: this.log, now: this.now, resumed: this.resumed });
       this.sock = null; sock.close();
       this.state.sig = false; this.state.live = false; this.emit();
-      this.log(`signal: socket ${why} - reopening in ${this.retryS} s`);
+      this.log(`signal: socket ${why} - reopening ${this.fastNow() ? 'now (tab resumed)' : `in ${this.retryS} s`}`);
       await this.retryWait(this.retryS, signal);
     }
   }
   /** The countdown on the chip; the tab resuming ends it early. */
   async retryWait(seconds, signal) {
-    if (this.kickAt !== null && this.now() - this.kickAt <= RESUME_FAST_MS) {   // the tab just came back: no countdown
+    if (this.fastNow()) {   // the tab just came back: no countdown
       this.kickAt = null; this.resumed.clear(); this.log('live: tab resumed, reconnecting now');
       this.state.retryIn = null; this.emit(); return;
     }
@@ -407,6 +414,7 @@ export class Viewer {
   askLog(nonce) { if (!this.sock) return false; this.sock.send({ type: 'log-req', nonce }); return true; }
   /** The tab just came back: end a countdown now, ping a serving socket now. */
   nudge() { if (this.stopped) return; this.kickAt = this.now(); this.resumed.push(1); }
+  fastNow() { return this.kickAt !== null && this.now() - this.kickAt <= RESUME_FAST_MS; }
   /** The page is about to be frozen: leave the room now (review round 2: a frozen viewer tab still counted as a viewer,
    *  so the reader kept publishing every frame for it, and the relay queued them to a socket nobody read). The loop
    *  reopens it on resume. */

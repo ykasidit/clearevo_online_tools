@@ -244,7 +244,9 @@ test('2026-09-22 reader log: the socket pings the relay every 10 s and reopens i
   for (let i = 0; i < SIG_DEAD_MS / 2000; i++) { t += 2000; v.nudge(); await settle(); }   // 30 s of silence, turn by turn as the loop lives it
   assert.equal(ws.readyState, 3, 'no message for 30 s: the socket is closed');
   assert.ok(logs.some((m) => /the socket is dead, reopening/.test(m)), logs.slice(-3));
-  assert.ok(logs.some((m) => /socket dead - reopening in 1 s/.test(m)), 'and the normal countdown follows');
+  // this test wakes the loop with nudge() (a tab resume) every turn, so since 0.9.102 the reopen right after is
+  // immediate (RESUME_FAST_MS); without a recent resume it is the countdown (the 'a death a minute after' test)
+  assert.ok(logs.some((m) => /socket dead - reopening now \(tab resumed\)/.test(m)), logs.slice(-3));
   v.stop();
 });
 
@@ -343,4 +345,20 @@ test('2026-11-28: the publisher (reader) comes back from a freeze at once too', 
   assert.equal(sockets.length, n + 1);
   assert.ok(Date.now() - t0 < 500, `reopened ${Date.now() - t0} ms after the resume`);
   } finally { await p.stop(); await settle(); }
+});
+
+test('2026-11-28 (after the live measurement): a resumed tab does not wait for its old socket to finish closing - the close handshake to the relay was half of the remaining second', async () => {
+  const v = new Viewer({ room: 'r1', keyB64: makeKeyB64(), log: () => {}, onState: () => {}, onEnvelope: () => {} });
+  try {
+    await v.start(); await settle(); last().open(); await settle();
+    const n = sockets.length, ws = last();
+    ws.deferClose = true; v.suspend(); await settle();         // closing (readyState 2): the relay has not answered the close yet
+    v.nudge();
+    for (let i = 0; i < 20 && sockets.length === n; i++) await settle(10);
+    assert.equal(sockets.length, n + 1, 'the new socket opens while the old one is still closing');
+    ws.flushClose(); await settle();                           // the old close lands later: nothing changes
+    assert.equal(sockets.length, n + 1);
+    last().open(); await settle();
+    assert.equal(v.state.sig, true, 'the new socket is the one served');
+  } finally { v.stop(); await settle(); }
 });
